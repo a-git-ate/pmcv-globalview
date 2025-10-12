@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>2D Million Node Graph - TypeScript</title>
+  </head>
+  <body>
+    <div id="container">
+      <div id="info">
+        <div><strong>2D Million Node Graph (TypeScript)</strong></div>
+        <div id="stats">Initializing...</div>
+        <div style="margin-top: 10px; font-size: 12px;">
+          <div>Mouse: Orbit camera</div>
+          <div>Wheel: Zoom</div>
+          <div>Click: Select node</div>
+        </div>
+      </div>
+      
+      <div id="controls">
+        <div><strong>Controls</strong></div>
+        <button id="btn-load-api">Load Graph (ID: 0)</button>
+        <br>
+        <div style="margin: 5px 0; font-size: 11px;">
+          <input type="text" id="project-id" placeholder="PRISM Project ID" style="width: 120px; padding: 2px;">
+          <input type="text" id="view-ids" placeholder="View IDs (1,2,3)" style="width: 100px; padding: 2px;">
+          <br>
+          <button id="btn-load-prism">Load PRISM Project</button>
+          <button id="btn-api-health">Check API</button>
+        </div>
+        <button id="btn-1k">1K Nodes</button>
+        <button id="btn-10k">10K Nodes</button>
+        <button id="btn-100k">100K Nodes</button>
+        <br>
+        <button id="btn-500k">500K Nodes</button>
+        <button id="btn-1m">1M Nodes</button>
+        <br>
+        <button id="btn-force" class="layout-btn">Force Layout</button>
+        <button id="btn-force-directed" class="layout-btn">Force-Directed</button>
+        <br>
+        <button id="btn-grid" class="layout-btn">Grid Layout</button>
+        <button id="btn-circular" class="layout-btn">Circular Layout</button>
+        <br>
+        <button id="btn-lod">Toggle LOD</button>
+        <button id="btn-edges">Toggle Edges</button>
+        <button id="btn-reset">Reset View</button>
+        <br>
+        <button id="btn-clusters">Cluster Mode</button>
+        <button id="btn-export">Export PNG</button>
+        <br><br>
+        <div style="border-top: 1px solid #666; padding-top: 10px; margin-top: 10px;">
+          <div><strong>Parameter View</strong></div>
+          <div style="margin: 5px 0; font-size: 11px;">
+            X-Axis: 
+            <select id="param-x-select" style="width: 60px; padding: 1px;">
+              <option value="0">P0</option>
+              <option value="1">P1</option>
+              <option value="2">P2</option>
+              <option value="3">P3</option>
+              <option value="4">P4</option>
+              <option value="5">P5</option>
+              <option value="6">P6</option>
+              <option value="7">P7</option>
+              <option value="8">P8</option>
+              <option value="9">P9</option>
+            </select>
+            Y-Axis: 
+            <select id="param-y-select" style="width: 60px; padding: 1px;">
+              <option value="0">P0</option>
+              <option value="1" selected>P1</option>
+              <option value="2">P2</option>
+              <option value="3">P3</option>
+              <option value="4">P4</option>
+              <option value="5">P5</option>
+              <option value="6">P6</option>
+              <option value="7">P7</option>
+              <option value="8">P8</option>
+              <option value="9">P9</option>
+            </select>
+          </div>
+          <button id="btn-apply-params">Apply Parameters</button>
+          <button id="btn-reset-layout">Reset Layout</button>
+        </div>
+      </div>
+      
+      <div id="progress" class="hidden">
+        <div id="progress-bar"></div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

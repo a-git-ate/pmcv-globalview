@@ -1,0 +1,206 @@
+// Usage Example: How to integrate PRISM API with your TypeScript graph
+
+import { Graph2D } from './Graph2D-PrismIntegration.js';
+
+// Initialize graph with PRISM API URL
+const graph = new Graph2D({
+  maxVisibleNodes: 100000,
+  lodEnabled: true
+}, 'http://localhost:8080/api'); // Your PRISM server URL
+
+// Example 1: Load a specific PRISM project
+async function loadPrismProject() {
+  try {
+    const projectId = 'my-prism-model';
+    const viewIds = [1, 2, 3]; // Optional view IDs
+    
+    await graph.loadPrismProject(projectId, viewIds);
+    console.log('PRISM project loaded successfully!');
+    
+  } catch (error) {
+    console.error('Failed to load PRISM project:', error);
+  }
+}
+
+// Example 2: API URL format your server expects
+/*
+Based on your Java endpoint:
+
+@Path("/{project_id}")
+@GET
+public Response createUpperGraph(
+    @PathParam("project_id") String projectID,
+    @QueryParam("view") List<Integer> viewID
+)
+
+The API calls will be:
+
+1. Simple project load:
+   GET http://localhost:8080/api/my-project-id
+
+2. With view IDs:
+   GET http://localhost:8080/api/my-project-id?view=1&view=2&view=3
+
+3. Single view:
+   GET http://localhost:8080/api/my-project-id?view=5
+*/
+
+// Example 3: Manual API call (if you want to test directly)
+async function testDirectApiCall() {
+  const projectId = 'my-prism-model';
+  const viewIds = [1, 2];
+  
+  // Build URL
+  const baseUrl = 'http://localhost:8080/api';
+  let url = `${baseUrl}/${encodeURIComponent(projectId)}`;
+  
+  if (viewIds.length > 0) {
+    const params = new URLSearchParams();
+    viewIds.forEach(id => params.append('view', id.toString()));
+    url += `?${params.toString()}`;
+  }
+  
+  console.log('API URL:', url);
+  // Result: http://localhost:8080/api/my-prism-model?view=1&view=2
+  
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    console.log('PRISM Response:', data);
+    
+  } catch (error) {
+    console.error('API call failed:', error);
+  }
+}
+
+// Example 4: Expected response formats (what your Java server should return)
+interface ExpectedPrismResponse {
+  // Option 1: Simple array of states
+  states?: Array<{
+    id: string | number;
+    name?: string;
+    x?: number;
+    y?: number;
+    type?: 'initial' | 'target' | 'deadlock' | 'normal';
+    properties?: Record<string, any>;
+  }>;
+  
+  // Option 2: Full graph structure
+  nodes?: Array<{
+    id: string | number;
+    label?: string;
+    position?: { x: number; y: number; };
+    type?: string;
+  }>;
+  
+  edges?: Array<{
+    source: string | number;
+    target: string | number;
+    probability?: number;
+    action?: string;
+  }>;
+  
+  // Option 3: PRISM-specific format
+  graph?: {
+    vertices: any[];
+    transitions: any[];
+    metadata?: {
+      stateCount: number;
+      transitionCount: number;
+    };
+  };
+}
+
+// Example 5: Full integration in your main.ts
+async function initializeWithPrism() {
+  const graph = new Graph2D({
+    maxVisibleNodes: 50000,
+    lodEnabled: true
+  }, 'http://localhost:8080/api');
+  
+  // Test connection first
+  try {
+    const projects = await graph.getPrismProjects();
+    console.log('Available PRISM projects:', projects);
+    
+    // Load first available project
+    if (projects.length > 0) {
+      await graph.loadPrismProject(projects[0]);
+    } else {
+      // Fallback to manual test data
+      console.log('No PRISM projects found, using test data');
+      await graph.generateNodes(5000);
+    }
+    
+  } catch (error) {
+    console.error('PRISM integration failed:', error);
+    // Fallback to local data generation
+    await graph.generateNodes(5000);
+  }
+}
+
+// Example 6: Add PRISM-specific UI controls
+function addPrismControls() {
+  const controlsDiv = document.getElementById('controls');
+  if (!controlsDiv) return;
+  
+  // Add project selector
+  const projectSelector = document.createElement('div');
+  projectSelector.innerHTML = `
+    <h4>PRISM Projects</h4>
+    <input type="text" id="project-id" placeholder="Enter project ID" />
+    <input type="text" id="view-ids" placeholder="View IDs (1,2,3)" />
+    <button id="load-prism">Load PRISM Project</button>
+    <button id="refresh-prism">Refresh Data</button>
+  `;
+  
+  controlsDiv.appendChild(projectSelector);
+  
+  // Add event listeners
+  document.getElementById('load-prism')?.addEventListener('click', async () => {
+    const projectId = (document.getElementById('project-id') as HTMLInputElement)?.value;
+    const viewIdsStr = (document.getElementById('view-ids') as HTMLInputElement)?.value;
+    
+    if (!projectId) {
+      alert('Please enter a project ID');
+      return;
+    }
+    
+    const viewIds = viewIdsStr 
+      ? viewIdsStr.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id))
+      : undefined;
+    
+    try {
+      await graph.loadPrismProject(projectId, viewIds);
+    } catch (error) {
+      alert(`Failed to load project: ${error}`);
+    }
+  });
+  
+  document.getElementById('refresh-prism')?.addEventListener('click', async () => {
+    try {
+      await graph.refreshPrismData();
+    } catch (error) {
+      alert(`Failed to refresh: ${error}`);
+    }
+  });
+}
+
+// Initialize everything
+document.addEventListener('DOMContentLoaded', () => {
+  initializeWithPrism();
+  addPrismControls();
+});
+
+export { initializeWithPrism, addPrismControls };
