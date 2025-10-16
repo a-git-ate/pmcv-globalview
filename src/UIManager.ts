@@ -18,7 +18,7 @@ export class UIManager {
       'btn-1k', 'btn-10k', 'btn-100k', 'btn-500k', 'btn-1m',
       'btn-force', 'btn-force-directed', 'btn-grid', 'btn-circular',
       'btn-lod', 'btn-edges', 'btn-reset', 'btn-clusters', 'btn-export',
-      'param-x-select', 'param-y-select', 'btn-apply-params', 'btn-reset-layout',
+      'param-x-select', 'param-y-select', 'param-color-select', 'btn-apply-params', 'btn-reset-layout',
       'stats', 'progress', 'progress-bar'
     ];
 
@@ -195,21 +195,23 @@ export class UIManager {
   private handleApplyParameters(): void {
     const xSelect = this.getElement('param-x-select') as HTMLSelectElement;
     const ySelect = this.getElement('param-y-select') as HTMLSelectElement;
-    
-    if (!xSelect || !ySelect) {
+    const colorSelect = this.getElement('param-color-select') as HTMLSelectElement;
+
+    if (!xSelect || !ySelect || !colorSelect) {
       console.warn('Parameter selection elements not found');
       return;
     }
-    
+
     const xParamIndex = parseInt(xSelect.value);
     const yParamIndex = parseInt(ySelect.value);
-    
-    if (isNaN(xParamIndex) || isNaN(yParamIndex)) {
+    const colorParamIndex = parseInt(colorSelect.value);
+
+    if (isNaN(xParamIndex) || isNaN(yParamIndex) || isNaN(colorParamIndex)) {
       console.warn('Invalid parameter indices');
       return;
     }
-    
-    this.graph.rearrangeByParameters(xParamIndex, yParamIndex);
+
+    this.graph.rearrangeByParameters(xParamIndex, yParamIndex, colorParamIndex);
   }
 
   private async handleAPIHealthCheck(): Promise<void> {

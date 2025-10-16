@@ -12,10 +12,10 @@ export default defineConfig(({ command, mode }): UserConfig => {
     // Development server options
     server: {
       host: true, // Listen on all local IPs
-      port: 3000,
+      port: 3001,
       open: true, // Automatically open in browser
       cors: true, // Enable CORS for development
-      strictPort: false, // Try other ports if 3000 is busy
+      strictPort: false, // Try other ports if 3001 is busy
     },
     
     // Preview server options (for build preview)

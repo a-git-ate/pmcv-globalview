@@ -24,6 +24,18 @@ export class Graph2D {
   private currentLayout: LayoutType = 'random';
   private edgeLines: THREE.LineSegments | null = null;
 
+  // Axis visualization
+  private axisGroup: THREE.Group | null = null;
+
+  // Store current parameter axes info for dynamic updates
+  private currentAxisInfo: {
+    xParamIndex: number;
+    yParamIndex: number;
+    minValues: { x: number; y: number };
+    maxValues: { x: number; y: number };
+    spread: number;
+  } | null = null;
+
   // Transform and interaction
   private panOffset: THREE.Vector2 = new THREE.Vector2(0, 0);
   private zoomLevel: number = 1.0;
@@ -193,6 +205,11 @@ export class Graph2D {
     this.camera.bottom = -viewSize + this.panOffset.y;
 
     this.camera.updateProjectionMatrix();
+
+    // Update axes if they exist
+    if (this.currentAxisInfo) {
+      this.updateAxisVisualization();
+    }
   }
 
   public async generateNodes(count: number): Promise<void> {
@@ -205,6 +222,9 @@ export class Graph2D {
       this.clearEdgeLines();
       this.nodes = [];
       this.edges = [];
+
+      // Reset parameter centers for new random distribution
+      this.parameterCenters = null;
 
       // Create geometry arrays
       const geometry = new THREE.BufferGeometry();
@@ -299,16 +319,15 @@ export class Graph2D {
   }
 
   private async generateLayout(
-    count: number, 
-    positions: Float32Array, 
-    colors: Float32Array, 
+    count: number,
+    positions: Float32Array,
+    colors: Float32Array,
     sizes: Float32Array
   ): Promise<void> {
     const spread = Math.sqrt(count) * 0.5;
 
-    // Initialize nodes first
+    // Initialize nodes with parameters first
     for (let i = 0; i < count; i++) {
-      // Store node data with parameters first
       const nodeData: NodeData = {
         id: i,
         x: 0, // Will be set below
@@ -321,11 +340,43 @@ export class Graph2D {
         parameters: this.generateNodeParameters()
       };
       this.nodes.push(nodeData);
+    }
+
+    // Calculate min/max parameter values if using parameter positioning
+    let minX = 0, maxX = 100;
+    let minY = 0, maxY = 100;
+
+    if (this.config.useParameterPositioning) {
+      const xParamIndex = this.config.parameterXAxis ?? 0;
+      const yParamIndex = this.config.parameterYAxis ?? 1;
+
+      minX = Infinity;
+      maxX = -Infinity;
+      minY = Infinity;
+      maxY = -Infinity;
+
+      for (let i = 0; i < count; i++) {
+        const node = this.nodes[i];
+        minX = Math.min(minX, node.parameters[xParamIndex]);
+        maxX = Math.max(maxX, node.parameters[xParamIndex]);
+        minY = Math.min(minY, node.parameters[yParamIndex]);
+        maxY = Math.max(maxY, node.parameters[yParamIndex]);
+      }
+    }
+
+    // Now position all nodes
+    for (let i = 0; i < count; i++) {
+      const nodeData = this.nodes[i];
 
       // Calculate position based on parameters or layout
       let position: THREE.Vector2;
       if (this.config.useParameterPositioning) {
-        position = this.calculateParameterPosition(nodeData, spread);
+        position = this.calculateParameterPosition(
+          nodeData,
+          spread,
+          { x: minX, y: minY },
+          { x: maxX, y: maxY }
+        );
       } else {
         position = this.calculateNodePosition(i, count, spread);
       }
@@ -346,34 +397,39 @@ export class Graph2D {
       this.applyForceDirectedLayout(count, positions, spread);
     }
     
+    // Pre-calculate color table for common degree values to avoid creating Color objects
+    const colorCache = new Map<number, { r: number; g: number; b: number }>();
+    const getColorForDegree = (degree: number): { r: number; g: number; b: number } => {
+      const key = Math.min(degree, 20); // Cap at 20 for cache efficiency
+      if (!colorCache.has(key)) {
+        const hue = key > 0 ? Math.min(0.3, key * 0.05) : 0.6;
+        const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
+        colorCache.set(key, { r: color.r, g: color.g, b: color.b });
+      }
+      return colorCache.get(key)!;
+    };
+
     // Update colors and sizes based on final positions and connectivity
     for (let i = 0; i < count; i++) {
       const x = positions[i * 3];
       const y = positions[i * 3 + 1];
-      
+
       const size = this.calculateNodeSize(x, y, spread);
-      
+
       // Adjust size based on node degree (connectivity)
       const degree = (this.nodes[i] as any).degree || 0;
-      const adjustedSize = size + (degree * 0.2); // Nodes with more connections are larger
-      
+      const adjustedSize = size + (degree * 0.2);
+
       this.nodes[i].radius = adjustedSize;
-      
-      // Set colors array - color based on connectivity
-      const connectivityHue = degree > 0 ? Math.min(0.3, degree * 0.05) : 0.6; // Connected = warmer, isolated = cooler
-      const connectivityColor = new THREE.Color().setHSL(connectivityHue, 0.8, 0.6);
-      colors[i * 3] = connectivityColor.r;
-      colors[i * 3 + 1] = connectivityColor.g;
-      colors[i * 3 + 2] = connectivityColor.b;
+
+      // Set colors array - color based on connectivity (using cache)
+      const color = getColorForDegree(degree);
+      colors[i * 3] = color.r;
+      colors[i * 3 + 1] = color.g;
+      colors[i * 3 + 2] = color.b;
 
       // Set sizes array
       sizes[i] = adjustedSize;
-
-      // Yield control occasionally
-      if (i % 10000 === 0 && i > 0) {
-        this.ui.updateNodeCount(i);
-        await new Promise<void>(resolve => setTimeout(resolve, 1));
-      }
     }
   }
 
@@ -382,41 +438,113 @@ export class Graph2D {
     let u = 0, v = 0;
     while(u === 0) u = Math.random(); // Converting [0,1) to (0,1)
     while(v === 0) v = Math.random();
-    
+
     const normal = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
     const value = mean + stdDev * normal;
-    
-    // Clamp to [0, 100] range
-    return Math.max(0, Math.min(100, value));
+
+    // No clamping - allow full Gaussian distribution
+    return value;
+  }
+
+  // Random center points for each parameter (shared across all nodes)
+  private parameterCenters: [number, number, number, number, number, number, number, number, number, number] | null = null;
+
+  // Viridis color scale - excellent for ordinal/sequential data
+  // 6 distinct colors with larger perceptual differences
+  private viridisColors = [
+    { r: 0.267004, g: 0.004874, b: 0.329415 }, // Dark purple
+    { r: 0.253935, g: 0.265254, b: 0.529983 }, // Blue-purple
+    { r: 0.163625, g: 0.471133, b: 0.558148 }, // Cyan-blue
+    { r: 0.134692, g: 0.658636, b: 0.517649 }, // Green-cyan
+    { r: 0.477504, g: 0.821444, b: 0.318195 }, // Yellow-green
+    { r: 0.993248, g: 0.906157, b: 0.143936 }  // Bright yellow
+  ];
+
+  // Initialize random center points for parameters
+  private initializeParameterCenters(): void {
+    this.parameterCenters = [
+      Math.random() * 100, // Parameter 0 center
+      Math.random() * 100, // Parameter 1 center
+      Math.random() * 100, // Parameter 2 center
+      Math.random() * 100, // Parameter 3 center
+      Math.random() * 100, // Parameter 4 center
+      Math.random() * 100, // Parameter 5 center
+      Math.random() * 100, // Parameter 6 center
+      Math.random() * 100, // Parameter 7 center
+      Math.random() * 100, // Parameter 8 center
+      Math.random() * 100  // Parameter 9 center
+    ];
+  }
+
+  // Map parameter value to viridis color using linear interpolation
+  // Uses dynamic range based on actual min/max values in the dataset
+  private getColorFromParameter(value: number, minValue: number, maxValue: number): { r: number; g: number; b: number } {
+    // Normalize value to [0, 1] range based on actual data range
+    const range = maxValue - minValue;
+    const normalizedValue = range > 0 ? (value - minValue) / range : 0.5;
+    const clampedValue = Math.max(0, Math.min(1, normalizedValue));
+
+    // Map to color stops range (0 to length-1)
+    const scaledValue = clampedValue * (this.viridisColors.length - 1);
+    const lowerIndex = Math.floor(scaledValue);
+    const upperIndex = Math.min(lowerIndex + 1, this.viridisColors.length - 1);
+    const t = scaledValue - lowerIndex; // interpolation factor [0, 1]
+
+    // Linear interpolation between two color stops
+    const colorLower = this.viridisColors[lowerIndex];
+    const colorUpper = this.viridisColors[upperIndex];
+
+    return {
+      r: colorLower.r + (colorUpper.r - colorLower.r) * t,
+      g: colorLower.g + (colorUpper.g - colorLower.g) * t,
+      b: colorLower.b + (colorUpper.b - colorLower.b) * t
+    };
   }
 
   // Generate 10 parameters with Gaussian distribution for a node
   private generateNodeParameters(): [number, number, number, number, number, number, number, number, number, number] {
-    const parameters: [number, number, number, number, number, number, number, number, number, number] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    
-    for (let i = 0; i < 10; i++) {
-      // Each parameter gets a random center for Gaussian distribution
-      const randomCenter = Math.random() * 100;
-      const stdDev = 15 + Math.random() * 10; // Standard deviation between 15-25
-      parameters[i] = this.generateGaussian(randomCenter, stdDev);
+    // Initialize centers if not already done
+    if (!this.parameterCenters) {
+      this.initializeParameterCenters();
     }
-    
+
+    const parameters: [number, number, number, number, number, number, number, number, number, number] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const stdDev = 15; // Standard deviation for all parameters
+
+    for (let i = 0; i < 10; i++) {
+      // Use the shared center point for this parameter
+      parameters[i] = this.generateGaussian(this.parameterCenters![i], stdDev);
+    }
+
     return parameters;
   }
 
   // Calculate position based on parameter values
-  private calculateParameterPosition(node: NodeData, spread: number): THREE.Vector2 {
+  // Note: minValues and maxValues need to be passed in for correct mapping
+  private calculateParameterPosition(
+    node: NodeData,
+    spread: number,
+    minValues: { x: number; y: number },
+    maxValues: { x: number; y: number }
+  ): THREE.Vector2 {
     if (this.config.useParameterPositioning) {
       const xParam = this.config.parameterXAxis ?? 0;
       const yParam = this.config.parameterYAxis ?? 1;
-      
-      // Map parameter values (0-100) to position coordinates
-      const x = ((node.parameters[xParam] - 50) / 50) * spread;
-      const y = ((node.parameters[yParam] - 50) / 50) * spread;
-      
+
+      // Map parameter values to position coordinates based on actual data range
+      const xRange = maxValues.x - minValues.x;
+      const yRange = maxValues.y - minValues.y;
+
+      const xNormalized = xRange > 0 ? (node.parameters[xParam] - minValues.x) / xRange : 0.5;
+      const yNormalized = yRange > 0 ? (node.parameters[yParam] - minValues.y) / yRange : 0.5;
+
+      // Map from [0, 1] to [-spread, spread]
+      const x = (xNormalized - 0.5) * 2 * spread;
+      const y = (yNormalized - 0.5) * 2 * spread;
+
       return new THREE.Vector2(x, y);
     }
-    
+
     // Fallback to random position
     return new THREE.Vector2((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread);
   }
@@ -469,7 +597,7 @@ export class Graph2D {
   private calculateNodeSize(x: number, y: number, spread: number): number {
     const distanceFromCenter = Math.sqrt(x * x + y * y);
     const normalizedDistance = Math.min(1, distanceFromCenter / spread);
-    const baseSize = (1 - normalizedDistance * 0.3) * 12 + 6; // Three times larger: 6-18
+    const baseSize = (1 - normalizedDistance * 0.3) * 6 + 3; // Half size: 3-9
     return baseSize;
   }
 
@@ -516,93 +644,112 @@ export class Graph2D {
   }
 
   private applyForceDirectedLayout(_nodeCount: number, positions: Float32Array, spread: number): void {
-    const iterations = (this.config as any).iterations || 500;
+    const nodeCount = this.nodes.length;
+
+    // Scale down iterations for large graphs
+    let iterations = (this.config as any).iterations || 500;
+    if (nodeCount > 10000) {
+      iterations = Math.min(100, iterations);
+    } else if (nodeCount > 1000) {
+      iterations = Math.min(200, iterations);
+    }
+
     const forceStrength = (this.config as any).forceStrength || 0.3;
     const springLength = (this.config as any).springLength || 20;
-    
-    // Initialize simulation nodes
-    const simNodes: ForceSimulationNode[] = this.nodes.map((node, i) => ({
-      ...node,
-      x: positions[i * 3] || (Math.random() - 0.5) * spread,
-      y: positions[i * 3 + 1] || (Math.random() - 0.5) * spread,
-      z: 0,
-      vx: 0,
-      vy: 0
-    }));
-    
+
+    // For large graphs (>10k nodes), skip expensive all-pairs repulsion
+    const useFullRepulsion = nodeCount < 10000;
+
+    // Initialize simulation nodes with typed arrays for better performance
+    const simX = new Float32Array(nodeCount);
+    const simY = new Float32Array(nodeCount);
+    const simVX = new Float32Array(nodeCount);
+    const simVY = new Float32Array(nodeCount);
+
+    for (let i = 0; i < nodeCount; i++) {
+      simX[i] = positions[i * 3] || (Math.random() - 0.5) * spread;
+      simY[i] = positions[i * 3 + 1] || (Math.random() - 0.5) * spread;
+      simVX[i] = 0;
+      simVY[i] = 0;
+    }
+
+    const damping = 0.9;
+    const centerForce = 0.01;
+
     for (let iter = 0; iter < iterations; iter++) {
       // Reset forces
-      simNodes.forEach(node => {
-        node.vx = 0;
-        node.vy = 0;
-      });
-      
-      // Repulsion between all nodes
-      for (let i = 0; i < simNodes.length; i++) {
-        for (let j = i + 1; j < simNodes.length; j++) {
-          const dx = simNodes[i].x - simNodes[j].x;
-          const dy = simNodes[i].y - simNodes[j].y;
-          const distance = Math.sqrt(dx * dx + dy * dy) + 0.1;
-          
-          const force = forceStrength * 500 / (distance * distance);
-          const fx = (dx / distance) * force;
-          const fy = (dy / distance) * force;
-          
-          simNodes[i].vx += fx;
-          simNodes[i].vy += fy;
-          simNodes[j].vx -= fx;
-          simNodes[j].vy -= fy;
+      simVX.fill(0);
+      simVY.fill(0);
+
+      // Only apply full repulsion for smaller graphs
+      if (useFullRepulsion) {
+        // Repulsion between all nodes
+        for (let i = 0; i < nodeCount; i++) {
+          for (let j = i + 1; j < nodeCount; j++) {
+            const dx = simX[i] - simX[j];
+            const dy = simY[i] - simY[j];
+            const distSq = dx * dx + dy * dy + 0.01;
+            const dist = Math.sqrt(distSq);
+
+            const force = forceStrength * 500 / distSq;
+            const fx = (dx / dist) * force;
+            const fy = (dy / dist) * force;
+
+            simVX[i] += fx;
+            simVY[i] += fy;
+            simVX[j] -= fx;
+            simVY[j] -= fy;
+          }
         }
       }
-      
-      // Spring forces for connected nodes
-      this.edges.forEach(edge => {
-        const nodeA = simNodes[edge.from];
-        const nodeB = simNodes[edge.to];
-        if (!nodeA || !nodeB) return;
-        
-        const dx = nodeB.x - nodeA.x;
-        const dy = nodeB.y - nodeA.y;
-        const distance = Math.sqrt(dx * dx + dy * dy) + 0.1;
-        
-        const force = forceStrength * (distance - springLength) / distance;
+
+      // Spring forces for connected nodes (always applied)
+      for (let e = 0; e < this.edges.length; e++) {
+        const edge = this.edges[e];
+        const i = edge.from;
+        const j = edge.to;
+
+        if (i >= nodeCount || j >= nodeCount) continue;
+
+        const dx = simX[j] - simX[i];
+        const dy = simY[j] - simY[i];
+        const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
+
+        const force = forceStrength * (dist - springLength) / dist;
         const fx = dx * force;
         const fy = dy * force;
-        
-        nodeA.vx += fx;
-        nodeA.vy += fy;
-        nodeB.vx -= fx;
-        nodeB.vy -= fy;
-      });
-      
-      // Center force to pull nodes toward origin
-      const centerForce = 0.01;
-      simNodes.forEach(node => {
-        const distance = Math.sqrt(node.x * node.x + node.y * node.y) + 0.1;
-        const force = centerForce * distance;
-        node.vx -= (node.x / distance) * force;
-        node.vy -= (node.y / distance) * force;
-      });
-      
+
+        simVX[i] += fx;
+        simVY[i] += fy;
+        simVX[j] -= fx;
+        simVY[j] -= fy;
+      }
+
       // Apply forces and update positions
-      const damping = 0.9;
-      simNodes.forEach((node, i) => {
-        node.vx *= damping;
-        node.vy *= damping;
-        node.x += node.vx;
-        node.y += node.vy;
-        
+      for (let i = 0; i < nodeCount; i++) {
+        // Center force
+        const dist = Math.sqrt(simX[i] * simX[i] + simY[i] * simY[i]) + 0.1;
+        const cForce = centerForce * dist;
+        simVX[i] -= (simX[i] / dist) * cForce;
+        simVY[i] -= (simY[i] / dist) * cForce;
+
+        // Apply velocity with damping
+        simVX[i] *= damping;
+        simVY[i] *= damping;
+        simX[i] += simVX[i];
+        simY[i] += simVY[i];
+
         // Update positions array
-        positions[i * 3] = node.x;
-        positions[i * 3 + 1] = node.y;
-      });
+        positions[i * 3] = simX[i];
+        positions[i * 3 + 1] = simY[i];
+      }
     }
-    
+
     // Update node data with final positions
-    simNodes.forEach((node, i) => {
-      this.nodes[i].x = node.x;
-      this.nodes[i].y = node.y;
-    });
+    for (let i = 0; i < nodeCount; i++) {
+      this.nodes[i].x = simX[i];
+      this.nodes[i].y = simY[i];
+    }
   }
 
   private createEdgeLines(): void {
@@ -761,15 +908,16 @@ export class Graph2D {
     geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
     const material = new THREE.PointsMaterial({
-      size: 12.0,
+      size: 6.0,
       vertexColors: true,
-      sizeAttenuation: true,
+      sizeAttenuation: false, // Disable size attenuation so nodes don't disappear when zooming
       transparent: true,
       opacity: 0.9,
       alphaTest: 0.1
     });
 
     this.pointCloud = new THREE.Points(geometry, material);
+    this.pointCloud.frustumCulled = false; // Prevent nodes from being culled when zooming
     this.scene.add(this.pointCloud);
   }
 
@@ -787,6 +935,8 @@ export class Graph2D {
 
   public applyLayout(layoutType: LayoutType): void {
     this.currentLayout = layoutType;
+    this.config.useParameterPositioning = false;
+    this.clearAxisVisualization();
     this.ui.onLayoutChange(layoutType);
 
     if (this.nodeCount === 0) {
@@ -919,11 +1069,326 @@ export class Graph2D {
     this.ui.updateStatus("View reset to center");
   }
 
-  public rearrangeByParameters(xParamIndex: number, yParamIndex: number): void {
+  // Calculate nice round intervals for axis labels
+  private calculateNiceInterval(min: number, max: number, targetDivisions: number = 5): number[] {
+    const range = max - min;
+    if (range === 0) return [min];
+
+    // Calculate rough interval
+    const roughInterval = range / (targetDivisions - 1);
+
+    // Find the magnitude (power of 10)
+    const magnitude = Math.pow(10, Math.floor(Math.log10(roughInterval)));
+
+    // Normalize the rough interval to be between 1 and 10
+    const normalized = roughInterval / magnitude;
+
+    // Choose a nice interval (1, 2, 5, or 10)
+    let niceNormalized: number;
+    if (normalized < 1.5) {
+      niceNormalized = 1;
+    } else if (normalized < 3) {
+      niceNormalized = 2;
+    } else if (normalized < 7) {
+      niceNormalized = 5;
+    } else {
+      niceNormalized = 10;
+    }
+
+    const niceInterval = niceNormalized * magnitude;
+
+    // Generate nice tick values
+    const minTick = Math.ceil(min / niceInterval) * niceInterval;
+    const maxTick = Math.floor(max / niceInterval) * niceInterval;
+
+    const ticks: number[] = [];
+    for (let tick = minTick; tick <= maxTick; tick += niceInterval) {
+      // Handle floating point precision issues
+      const roundedTick = Math.round(tick / magnitude) * magnitude;
+      ticks.push(roundedTick);
+    }
+
+    // Ensure we have at least 2 ticks
+    if (ticks.length < 2) {
+      return [min, max];
+    }
+
+    return ticks;
+  }
+
+  // Create a canvas-based texture for text labels
+  private createTextTexture(text: string, fontSize: number = 48): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d')!;
+
+    // Set font to measure text width
+    context.font = `${fontSize}px monospace`;
+    const metrics = context.measureText(text);
+    const textWidth = metrics.width;
+
+    // Set canvas size with padding
+    const padding = 20;
+    canvas.width = Math.max(256, textWidth + padding * 2);
+    canvas.height = 128;
+
+    // Configure text rendering (need to set font again after resizing canvas)
+    context.fillStyle = 'rgba(0, 0, 0, 0)';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.font = `${fontSize}px monospace`;
+    context.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+
+    // Draw text
+    context.fillText(text, canvas.width / 2, canvas.height / 2);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  // Create axis labels in the 3D scene
+  private createAxisVisualization(
+    xParamIndex: number,
+    yParamIndex: number,
+    minValues: { x: number; y: number },
+    maxValues: { x: number; y: number },
+    spread: number
+  ): void {
+    // Store axis info for dynamic updates
+    this.currentAxisInfo = {
+      xParamIndex,
+      yParamIndex,
+      minValues,
+      maxValues,
+      spread
+    };
+
+    // Create the visualization
+    this.updateAxisVisualization();
+  }
+
+  // Update axis visualization based on current viewport
+  private updateAxisVisualization(): void {
+    if (!this.currentAxisInfo) return;
+
+    const { xParamIndex, yParamIndex, minValues, maxValues, spread } = this.currentAxisInfo;
+
+    // Remove existing axis group
+    this.clearAxisVisualization();
+
+    // Create new group for axis elements
+    this.axisGroup = new THREE.Group();
+
+    // Create axis lines with constant screen-space width
+    const axisLinesMaterial = new THREE.LineBasicMaterial({
+      color: 0xffffff,
+      opacity: 0.5,
+      transparent: true,
+      linewidth: 1 // Note: linewidth > 1 only works with WebGLRenderer, defaults to 1 on most platforms
+    });
+
+    // Get viewport bounds in world coordinates
+    const viewLeft = this.camera.left;
+    const viewRight = this.camera.right;
+    const viewBottom = this.camera.bottom;
+    const viewTop = this.camera.top;
+
+    // Calculate where the data min positions are
+    const dataMinX = -spread;
+    const dataMinY = -spread;
+    const dataMaxX = spread;
+    const dataMaxY = spread;
+
+    // Snap X-axis to bottom of screen if data min Y is out of view
+    const xAxisY = Math.max(viewBottom, Math.min(viewTop, dataMinY));
+
+    // Snap Y-axis to left of screen if data min X is out of view
+    const yAxisX = Math.max(viewLeft, Math.min(viewRight, dataMinX));
+
+    // X-axis: horizontal line, clamped to visible X range
+    const xAxisGeometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(Math.max(viewLeft, dataMinX), xAxisY, 0),
+      new THREE.Vector3(Math.min(viewRight, dataMaxX), xAxisY, 0)
+    ]);
+    const xAxisLine = new THREE.Line(xAxisGeometry, axisLinesMaterial);
+    this.axisGroup.add(xAxisLine);
+
+    // Y-axis: vertical line, clamped to visible Y range
+    const yAxisGeometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(yAxisX, Math.max(viewBottom, dataMinY), 0),
+      new THREE.Vector3(yAxisX, Math.min(viewTop, dataMaxY), 0)
+    ]);
+    const yAxisLine = new THREE.Line(yAxisGeometry, axisLinesMaterial);
+    this.axisGroup.add(yAxisLine);
+
+    // Create labels along X-axis
+    // Calculate label scale based on viewport size to maintain constant screen size
+    const viewHeight = viewTop - viewBottom;
+    const labelScale = viewHeight * 0.075; // 7.5% of viewport height (2.5x larger)
+
+    // Calculate visible X range in parameter space
+    const visibleMinXWorld = Math.max(viewLeft, dataMinX);
+    const visibleMaxXWorld = Math.min(viewRight, dataMaxX);
+    const xRange = maxValues.x - minValues.x;
+    const visibleMinX = xRange > 0 ? minValues.x + ((visibleMinXWorld + spread) / (2 * spread)) * xRange : minValues.x;
+    const visibleMaxX = xRange > 0 ? minValues.x + ((visibleMaxXWorld + spread) / (2 * spread)) * xRange : maxValues.x;
+
+    // Calculate nice tick values for visible X-axis range
+    const xTicks = this.calculateNiceInterval(visibleMinX, visibleMaxX);
+
+    for (const value of xTicks) {
+      // Calculate position based on actual value
+      const normalizedX = xRange > 0 ? (value - minValues.x) / xRange : 0.5;
+      const xPos = -spread + normalizedX * (spread * 2);
+
+      // Only show labels that are within visible range
+      if (xPos < visibleMinXWorld || xPos > visibleMaxXWorld) continue;
+
+      // Determine decimal places based on magnitude
+      const magnitude = Math.abs(value);
+      let decimals = 0;
+      if (magnitude < 1 && magnitude > 0) {
+        decimals = Math.max(0, -Math.floor(Math.log10(magnitude)) + 1);
+      } else if (magnitude >= 10) {
+        decimals = 0;
+      } else {
+        decimals = 1;
+      }
+
+      // Create text sprite
+      const texture = this.createTextTexture(value.toFixed(decimals), 64);
+      const spriteMaterial = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.95,
+        sizeAttenuation: false // Keep labels same size regardless of zoom
+      });
+      const sprite = new THREE.Sprite(spriteMaterial);
+      sprite.position.set(xPos, xAxisY - labelScale * 0.8, 0);
+      sprite.scale.set(labelScale * 1.2, labelScale * 0.6, 1);
+      this.axisGroup.add(sprite);
+
+      // Add tick mark on the x-axis line
+      const tickGeometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(xPos, xAxisY, 0),
+        new THREE.Vector3(xPos, xAxisY - labelScale * 0.2, 0)
+      ]);
+      const tickLine = new THREE.Line(tickGeometry, axisLinesMaterial);
+      this.axisGroup.add(tickLine);
+    }
+
+    // Calculate visible Y range in parameter space
+    const visibleMinYWorld = Math.max(viewBottom, dataMinY);
+    const visibleMaxYWorld = Math.min(viewTop, dataMaxY);
+    const yRange = maxValues.y - minValues.y;
+    const visibleMinY = yRange > 0 ? minValues.y + ((visibleMinYWorld + spread) / (2 * spread)) * yRange : minValues.y;
+    const visibleMaxY = yRange > 0 ? minValues.y + ((visibleMaxYWorld + spread) / (2 * spread)) * yRange : maxValues.y;
+
+    // Calculate nice tick values for visible Y-axis range
+    const yTicks = this.calculateNiceInterval(visibleMinY, visibleMaxY);
+
+    for (const value of yTicks) {
+      // Calculate position based on actual value
+      const normalizedY = yRange > 0 ? (value - minValues.y) / yRange : 0.5;
+      const yPos = -spread + normalizedY * (spread * 2);
+
+      // Only show labels that are within visible range
+      if (yPos < visibleMinYWorld || yPos > visibleMaxYWorld) continue;
+
+      // Determine decimal places based on magnitude
+      const magnitude = Math.abs(value);
+      let decimals = 0;
+      if (magnitude < 1 && magnitude > 0) {
+        decimals = Math.max(0, -Math.floor(Math.log10(magnitude)) + 1);
+      } else if (magnitude >= 10) {
+        decimals = 0;
+      } else {
+        decimals = 1;
+      }
+
+      // Create text sprite
+      const texture = this.createTextTexture(value.toFixed(decimals), 64);
+      const spriteMaterial = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.95,
+        sizeAttenuation: false // Keep labels same size regardless of zoom
+      });
+      const sprite = new THREE.Sprite(spriteMaterial);
+      sprite.position.set(yAxisX - labelScale * 1.2, yPos, 0);
+      sprite.scale.set(labelScale * 1.2, labelScale * 0.6, 1);
+      this.axisGroup.add(sprite);
+
+      // Add tick mark on the y-axis line
+      const tickGeometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(yAxisX, yPos, 0),
+        new THREE.Vector3(yAxisX - labelScale * 0.2, yPos, 0)
+      ]);
+      const tickLine = new THREE.Line(tickGeometry, axisLinesMaterial);
+      this.axisGroup.add(tickLine);
+    }
+
+    // Add axis titles positioned near the center of visible axis
+    const xTitleTexture = this.createTextTexture(`Parameter ${xParamIndex}`, 72);
+    const xTitleMaterial = new THREE.SpriteMaterial({
+      map: xTitleTexture,
+      transparent: true,
+      opacity: 1.0,
+      sizeAttenuation: false
+    });
+    const xTitle = new THREE.Sprite(xTitleMaterial);
+    const xTitleX = (visibleMinXWorld + visibleMaxXWorld) / 2;
+    xTitle.position.set(xTitleX, xAxisY - labelScale * 2, 0);
+    xTitle.scale.set(labelScale * 2.5, labelScale * 0.8, 1);
+    this.axisGroup.add(xTitle);
+
+    const yTitleTexture = this.createTextTexture(`Parameter ${yParamIndex}`, 72);
+    const yTitleMaterial = new THREE.SpriteMaterial({
+      map: yTitleTexture,
+      transparent: true,
+      opacity: 1.0,
+      sizeAttenuation: false
+    });
+    const yTitle = new THREE.Sprite(yTitleMaterial);
+    const yTitleY = (visibleMinYWorld + visibleMaxYWorld) / 2;
+    yTitle.position.set(yAxisX - labelScale * 3, yTitleY, 0);
+    yTitle.scale.set(labelScale * 2.5, labelScale * 0.8, 1);
+    this.axisGroup.add(yTitle);
+
+    // Add the axis group to the scene
+    this.scene.add(this.axisGroup);
+  }
+
+  // Clear axis visualization
+  private clearAxisVisualization(): void {
+    if (this.axisGroup) {
+      // Dispose of all geometries, materials, and textures
+      this.axisGroup.traverse((child) => {
+        if (child instanceof THREE.Line) {
+          child.geometry.dispose();
+          if (child.material instanceof THREE.Material) {
+            child.material.dispose();
+          }
+        } else if (child instanceof THREE.Sprite) {
+          if (child.material instanceof THREE.SpriteMaterial) {
+            if (child.material.map) {
+              child.material.map.dispose();
+            }
+            child.material.dispose();
+          }
+        }
+      });
+      this.scene.remove(this.axisGroup);
+      this.axisGroup = null;
+    }
+  }
+
+  public rearrangeByParameters(xParamIndex: number, yParamIndex: number, colorParamIndex: number = -1): void {
     if (!this.pointCloud || this.nodes.length === 0) return;
 
     this.ui.updateStatus(`Rearranging nodes by parameters ${xParamIndex} and ${yParamIndex}...`);
-    
+
     // Update configuration
     this.config.parameterXAxis = xParamIndex;
     this.config.parameterYAxis = yParamIndex;
@@ -931,28 +1396,75 @@ export class Graph2D {
 
     const spread = Math.sqrt(this.nodes.length) * 0.5;
     const positions = this.pointCloud.geometry.attributes.position as THREE.BufferAttribute;
+    const colors = this.pointCloud.geometry.attributes.color as THREE.BufferAttribute;
 
-    // Recalculate positions based on parameters
+    // Track min and max parameter values for axis labels and color mapping
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    let minColor = Infinity, maxColor = -Infinity;
+
+    // First pass: find min/max values for all parameters
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
-      const newPosition = this.calculateParameterPosition(node, spread);
-      
+      minX = Math.min(minX, node.parameters[xParamIndex]);
+      maxX = Math.max(maxX, node.parameters[xParamIndex]);
+      minY = Math.min(minY, node.parameters[yParamIndex]);
+      maxY = Math.max(maxY, node.parameters[yParamIndex]);
+
+      if (colorParamIndex >= 0 && colorParamIndex < 10) {
+        minColor = Math.min(minColor, node.parameters[colorParamIndex]);
+        maxColor = Math.max(maxColor, node.parameters[colorParamIndex]);
+      }
+    }
+
+    // Second pass: update positions and colors using actual min/max values
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+      const newPosition = this.calculateParameterPosition(
+        node,
+        spread,
+        { x: minX, y: minY },
+        { x: maxX, y: maxY }
+      );
+
       // Update node data
       node.x = newPosition.x;
       node.y = newPosition.y;
-      
+
       // Update positions buffer
       positions.setXYZ(i, newPosition.x, newPosition.y, 0);
+
+      // Update colors if color parameter is specified
+      if (colorParamIndex >= 0 && colorParamIndex < 10) {
+        const colorValue = node.parameters[colorParamIndex];
+        const color = this.getColorFromParameter(colorValue, minColor, maxColor);
+        colors.setXYZ(i, color.r, color.g, color.b);
+      }
     }
 
     positions.needsUpdate = true;
-    this.ui.updateStatus(`Nodes rearranged by parameters ${xParamIndex} (X) and ${yParamIndex} (Y)`);
+    if (colorParamIndex >= 0) {
+      colors.needsUpdate = true;
+    }
+
+    // Create axis visualization in Three.js scene
+    this.createAxisVisualization(
+      xParamIndex,
+      yParamIndex,
+      { x: minX, y: minY },
+      { x: maxX, y: maxY },
+      spread
+    );
+
+    const colorMsg = colorParamIndex >= 0 ? `, colored by P${colorParamIndex}` : '';
+    this.ui.updateStatus(`Nodes rearranged by parameters ${xParamIndex} (X) and ${yParamIndex} (Y)${colorMsg}`);
   }
 
   public resetToLayoutMode(): void {
     this.config.useParameterPositioning = false;
+    this.clearAxisVisualization();
     this.ui.updateStatus("Reset to original layout mode");
-    
+
     // Optionally regenerate layout
     if (this.nodes.length > 0) {
       this.applyLayout(this.currentLayout);
@@ -1082,7 +1594,8 @@ export class Graph2D {
   // Cleanup method
   public dispose(): void {
     this.clearPointCloud();
-    
+    this.clearAxisVisualization();
+
     if (this.renderer) {
       this.renderer.dispose();
       this.renderer = null;
