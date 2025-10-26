@@ -1,13 +1,12 @@
 import * as THREE from 'three';
 import { UIManager } from './UIManager';
 import { PrismAPI } from './PrismAPI';
-import type { 
-  NodeData, 
+import type {
+  NodeData,
   EdgeData,
-  GraphConfig, 
-  LayoutType, 
-  NodeClickEvent,
-  ForceSimulationNode
+  GraphConfig,
+  LayoutType,
+  NodeClickEvent
 } from './types';
 
 export class Graph2D {
@@ -26,6 +25,7 @@ export class Graph2D {
 
   // Axis visualization
   private axisGroup: THREE.Group | null = null;
+  private gridLinesVisible: boolean = false;
 
   // Store current parameter axes info for dynamic updates
   private currentAxisInfo: {
@@ -174,12 +174,15 @@ export class Graph2D {
     canvas.addEventListener('wheel', (event: WheelEvent) => {
       event.preventDefault();
 
-      const zoomSpeed = 0.1;
-      const zoomDelta = event.deltaY > 0 ? -zoomSpeed : zoomSpeed;
+      // Use multiplicative zoom for constant speed regardless of zoom level
+      const zoomFactor = 1.1; // 10% change per scroll
+      const newZoomLevel = event.deltaY > 0
+        ? this.zoomLevel / zoomFactor  // Zoom out
+        : this.zoomLevel * zoomFactor; // Zoom in
 
       this.zoomLevel = Math.max(
         this.config.minZoom,
-        Math.min(this.config.maxZoom, this.zoomLevel + zoomDelta)
+        Math.min(this.config.maxZoom, newZoomLevel)
       );
 
       this.updateCameraPosition();
@@ -273,28 +276,24 @@ export class Graph2D {
 
       // Fetch graph data using PrismAPI
       const graphData = await this.prismAPI.fetchSimpleGraph(graphId);
-      
+
       this.nodes = graphData.nodes;
       this.edges = graphData.edges;
-      
-      // Ensure all nodes have parameters (generate if missing)
-      this.nodes.forEach(node => {
-        if (!node.parameters) {
-          node.parameters = this.generateNodeParameters();
-        }
-      });
-      
+
+      // Parameters are now extracted from PRISM API data in PrismAPI.convertNewFormatToInternal
+      // No need to generate random parameters anymore
+
       const nodeCount = this.nodes.length;
-      
+
       // Create geometry arrays
       const geometry = new THREE.BufferGeometry();
       const positions = new Float32Array(nodeCount * 3);
       const colors = new Float32Array(nodeCount * 3);
       const sizes = new Float32Array(nodeCount);
-      
+
       // Generate layout using existing method
       await this.generateLayout(nodeCount, positions, colors, sizes);
-      
+
       // Create edge lines if edges are visible
       if (this.config.edgesVisible) {
         this.createEdgeLines();
@@ -307,6 +306,10 @@ export class Graph2D {
       this.nodeCount = nodeCount;
       this.ui.updateNodeCount(nodeCount);
       this.resetView();
+
+      // Update parameter selection dropdowns with actual parameter names
+      const paramLabels = this.prismAPI.getParameterLabels('s');
+      this.ui.updateParameterSelections(paramLabels);
 
       this.ui.updateStatus(`Loaded ${nodeCount.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API`);
     } catch (error) {
@@ -810,92 +813,94 @@ export class Graph2D {
     }
   }
 
-  private updateNodeConnectivity(): void {
-    // Initialize connections array for all nodes
-    const connections: number[][] = Array(this.nodes.length).fill(null).map(() => []);
-    
-    // Build connections from edges
-    this.edges.forEach(edge => {
-      if (edge.from < this.nodes.length && edge.to < this.nodes.length) {
-        connections[edge.from].push(edge.to);
-        connections[edge.to].push(edge.from); // Undirected graph
-      }
-    });
-    
-    // Update node data with connections
-    this.nodes.forEach((node, index) => {
-      (node as any).connections = connections[index];
-      (node as any).degree = connections[index].length;
-    });
-  }
+  // Note: This method is currently unused but kept for potential future use
+  // private updateNodeConnectivity(): void {
+  //   // Initialize connections array for all nodes
+  //   const connections: number[][] = Array(this.nodes.length).fill(null).map(() => []);
+  //
+  //   // Build connections from edges
+  //   this.edges.forEach(edge => {
+  //     if (edge.from < this.nodes.length && edge.to < this.nodes.length) {
+  //       connections[edge.from].push(edge.to);
+  //       connections[edge.to].push(edge.from); // Undirected graph
+  //     }
+  //   });
+  //
+  //   // Update node data with connections
+  //   this.nodes.forEach((node, index) => {
+  //     (node as any).connections = connections[index];
+  //     (node as any).degree = connections[index].length;
+  //   });
+  // }
 
-  private async generateLayoutFromNodes(
-    positions: Float32Array, 
-    colors: Float32Array, 
-    sizes: Float32Array
-  ): Promise<void> {
-    const nodeCount = this.nodes.length;
-    const spread = Math.sqrt(nodeCount) * 0.5;
-
-    // Initialize positions from node data or random
-    for (let i = 0; i < nodeCount; i++) {
-      const node = this.nodes[i];
-      let x = node.x;
-      let y = node.y;
-      
-      // If no position provided, use random or layout algorithm
-      if (x === 0 && y === 0) {
-        const position = this.calculateNodePosition(i, nodeCount, spread);
-        x = position.x;
-        y = position.y;
-        
-        // Update node data
-        this.nodes[i].x = x;
-        this.nodes[i].y = y;
-      }
-      
-      // Set initial positions array
-      positions[i * 3] = x;
-      positions[i * 3 + 1] = y;
-      positions[i * 3 + 2] = 0;
-    }
-    
-    // Apply force-directed layout if selected
-    if (this.currentLayout === ('force_directed' as any)) {
-      this.ui.updateStatus('Computing force-directed layout...');
-      this.applyForceDirectedLayout(nodeCount, positions, spread);
-    }
-    
-    // Update colors and sizes based on final positions and connectivity
-    for (let i = 0; i < nodeCount; i++) {
-      const x = positions[i * 3];
-      const y = positions[i * 3 + 1];
-      
-      const size = this.calculateNodeSize(x, y, spread);
-      
-      // Adjust size based on node degree (connectivity)
-      const degree = (this.nodes[i] as any).degree || 0;
-      const adjustedSize = size + (degree * 0.2); // Nodes with more connections are larger
-      
-      this.nodes[i].radius = adjustedSize;
-      
-      // Set colors array - color based on connectivity
-      const connectivityHue = degree > 0 ? Math.min(0.3, degree * 0.05) : 0.6; // Connected = warmer, isolated = cooler
-      const connectivityColor = new THREE.Color().setHSL(connectivityHue, 0.8, 0.6);
-      colors[i * 3] = connectivityColor.r;
-      colors[i * 3 + 1] = connectivityColor.g;
-      colors[i * 3 + 2] = connectivityColor.b;
-
-      // Set sizes array
-      sizes[i] = adjustedSize;
-
-      // Yield control occasionally
-      if (i % 10000 === 0 && i > 0) {
-        this.ui.updateNodeCount(i);
-        await new Promise<void>(resolve => setTimeout(resolve, 1));
-      }
-    }
-  }
+  // Note: This method is currently unused but kept for potential future use
+  // private async generateLayoutFromNodes(
+  //   positions: Float32Array,
+  //   colors: Float32Array,
+  //   sizes: Float32Array
+  // ): Promise<void> {
+  //   const nodeCount = this.nodes.length;
+  //   const spread = Math.sqrt(nodeCount) * 0.5;
+  //
+  //   // Initialize positions from node data or random
+  //   for (let i = 0; i < nodeCount; i++) {
+  //     const node = this.nodes[i];
+  //     let x = node.x;
+  //     let y = node.y;
+  //
+  //     // If no position provided, use random or layout algorithm
+  //     if (x === 0 && y === 0) {
+  //       const position = this.calculateNodePosition(i, nodeCount, spread);
+  //       x = position.x;
+  //       y = position.y;
+  //
+  //       // Update node data
+  //       this.nodes[i].x = x;
+  //       this.nodes[i].y = y;
+  //     }
+  //
+  //     // Set initial positions array
+  //     positions[i * 3] = x;
+  //     positions[i * 3 + 1] = y;
+  //     positions[i * 3 + 2] = 0;
+  //   }
+  //
+  //   // Apply force-directed layout if selected
+  //   if (this.currentLayout === ('force_directed' as any)) {
+  //     this.ui.updateStatus('Computing force-directed layout...');
+  //     this.applyForceDirectedLayout(nodeCount, positions, spread);
+  //   }
+  //
+  //   // Update colors and sizes based on final positions and connectivity
+  //   for (let i = 0; i < nodeCount; i++) {
+  //     const x = positions[i * 3];
+  //     const y = positions[i * 3 + 1];
+  //
+  //     const size = this.calculateNodeSize(x, y, spread);
+  //
+  //     // Adjust size based on node degree (connectivity)
+  //     const degree = (this.nodes[i] as any).degree || 0;
+  //     const adjustedSize = size + (degree * 0.2); // Nodes with more connections are larger
+  //
+  //     this.nodes[i].radius = adjustedSize;
+  //
+  //     // Set colors array - color based on connectivity
+  //     const connectivityHue = degree > 0 ? Math.min(0.3, degree * 0.05) : 0.6; // Connected = warmer, isolated = cooler
+  //     const connectivityColor = new THREE.Color().setHSL(connectivityHue, 0.8, 0.6);
+  //     colors[i * 3] = connectivityColor.r;
+  //     colors[i * 3 + 1] = connectivityColor.g;
+  //     colors[i * 3 + 2] = connectivityColor.b;
+  //
+  //     // Set sizes array
+  //     sizes[i] = adjustedSize;
+  //
+  //     // Yield control occasionally
+  //     if (i % 10000 === 0 && i > 0) {
+  //       this.ui.updateNodeCount(i);
+  //       await new Promise<void>(resolve => setTimeout(resolve, 1));
+  //     }
+  //   }
+  // }
 
   private createPointCloud(
     geometry: THREE.BufferGeometry,
@@ -1061,20 +1066,40 @@ export class Graph2D {
     this.ui.updateStatus(`Cluster mode ${this.config.clusterMode ? 'enabled' : 'disabled'}`);
   }
 
+  public toggleGrid(): void {
+    this.gridLinesVisible = !this.gridLinesVisible;
+
+    // Update axis visualization to show/hide grid
+    if (this.currentAxisInfo) {
+      this.updateAxisVisualization();
+    }
+
+    this.ui.updateStatus(`Grid lines ${this.gridLinesVisible ? 'visible' : 'hidden'}`);
+  }
+
   public resetView(): void {
-    this.panOffset.set(0, 0);
-    this.zoomLevel = 1.0;
-    this.updateCameraPosition();
-    this.ui.updateZoomDisplay(this.zoomLevel);
-    this.ui.updateStatus("View reset to center");
+    // If using parameter positioning, reset to fitted view
+    if (this.config.useParameterPositioning && this.currentAxisInfo) {
+      const { spread } = this.currentAxisInfo;
+      this.fitViewToParameterRange(spread);
+      this.ui.updateStatus("View reset to fit all nodes");
+    } else {
+      // Standard reset for non-parameter layouts
+      this.panOffset.set(0, 0);
+      this.zoomLevel = 1.0;
+      this.updateCameraPosition();
+      this.ui.updateZoomDisplay(this.zoomLevel);
+      this.ui.updateStatus("View reset to center");
+    }
   }
 
   // Calculate nice round intervals for axis labels
-  private calculateNiceInterval(min: number, max: number, targetDivisions: number = 5): number[] {
+  // Triple frequency: targeting 15 divisions instead of 5
+  private calculateNiceInterval(min: number, max: number, targetDivisions: number = 15): number[] {
     const range = max - min;
     if (range === 0) return [min];
 
-    // Calculate rough interval
+    // Calculate rough interval with higher frequency
     const roughInterval = range / (targetDivisions - 1);
 
     // Find the magnitude (power of 10)
@@ -1083,9 +1108,11 @@ export class Graph2D {
     // Normalize the rough interval to be between 1 and 10
     const normalized = roughInterval / magnitude;
 
-    // Choose a nice interval (1, 2, 5, or 10)
+    // Choose a nice interval (0.5, 1, 2, 5, or 10) - added 0.5 for finer granularity
     let niceNormalized: number;
-    if (normalized < 1.5) {
+    if (normalized < 0.75) {
+      niceNormalized = 0.5;
+    } else if (normalized < 1.5) {
       niceNormalized = 1;
     } else if (normalized < 3) {
       niceNormalized = 2;
@@ -1183,9 +1210,9 @@ export class Graph2D {
     // Create axis lines with constant screen-space width
     const axisLinesMaterial = new THREE.LineBasicMaterial({
       color: 0xffffff,
-      opacity: 0.5,
+      opacity: 0.7,
       transparent: true,
-      linewidth: 1 // Note: linewidth > 1 only works with WebGLRenderer, defaults to 1 on most platforms
+      linewidth: 1
     });
 
     // Get viewport bounds in world coordinates
@@ -1194,56 +1221,58 @@ export class Graph2D {
     const viewBottom = this.camera.bottom;
     const viewTop = this.camera.top;
 
-    // Calculate where the data min positions are
-    const dataMinX = -spread;
-    const dataMinY = -spread;
-    const dataMaxX = spread;
-    const dataMaxY = spread;
+    // SCREEN-EDGE-FIXED AXES: Always at the edges of the viewport
+    const xAxisY = viewBottom; // X-axis fixed to bottom of screen
+    const yAxisX = viewLeft;   // Y-axis fixed to left of screen
 
-    // Snap X-axis to bottom of screen if data min Y is out of view
-    const xAxisY = Math.max(viewBottom, Math.min(viewTop, dataMinY));
-
-    // Snap Y-axis to left of screen if data min X is out of view
-    const yAxisX = Math.max(viewLeft, Math.min(viewRight, dataMinX));
-
-    // X-axis: horizontal line, clamped to visible X range
+    // X-axis: horizontal line spanning the entire screen width
     const xAxisGeometry = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(Math.max(viewLeft, dataMinX), xAxisY, 0),
-      new THREE.Vector3(Math.min(viewRight, dataMaxX), xAxisY, 0)
+      new THREE.Vector3(viewLeft, xAxisY, 0),
+      new THREE.Vector3(viewRight, xAxisY, 0)
     ]);
     const xAxisLine = new THREE.Line(xAxisGeometry, axisLinesMaterial);
     this.axisGroup.add(xAxisLine);
 
-    // Y-axis: vertical line, clamped to visible Y range
+    // Y-axis: vertical line spanning the entire screen height
     const yAxisGeometry = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(yAxisX, Math.max(viewBottom, dataMinY), 0),
-      new THREE.Vector3(yAxisX, Math.min(viewTop, dataMaxY), 0)
+      new THREE.Vector3(yAxisX, viewBottom, 0),
+      new THREE.Vector3(yAxisX, viewTop, 0)
     ]);
     const yAxisLine = new THREE.Line(yAxisGeometry, axisLinesMaterial);
     this.axisGroup.add(yAxisLine);
 
+    // Create grid lines material (lighter and more transparent than axes)
+    const gridLinesMaterial = new THREE.LineBasicMaterial({
+      color: 0x444444,
+      opacity: 0.2,
+      transparent: true,
+      linewidth: 1
+    });
+
     // Create labels along X-axis
     // Calculate label scale based on viewport size to maintain constant screen size
     const viewHeight = viewTop - viewBottom;
-    const labelScale = viewHeight * 0.075; // 7.5% of viewport height (2.5x larger)
+    const labelScale = viewHeight * 0.08; // 8% of viewport height for larger labels
 
     // Calculate visible X range in parameter space
-    const visibleMinXWorld = Math.max(viewLeft, dataMinX);
-    const visibleMaxXWorld = Math.min(viewRight, dataMaxX);
+    // Map viewport coordinates to parameter values
     const xRange = maxValues.x - minValues.x;
-    const visibleMinX = xRange > 0 ? minValues.x + ((visibleMinXWorld + spread) / (2 * spread)) * xRange : minValues.x;
-    const visibleMaxX = xRange > 0 ? minValues.x + ((visibleMaxXWorld + spread) / (2 * spread)) * xRange : maxValues.x;
+    const yRange = maxValues.y - minValues.y;
+
+    // Convert viewport left/right to parameter values
+    const visibleMinX = xRange > 0 ? minValues.x + ((viewLeft + spread) / (2 * spread)) * xRange : minValues.x;
+    const visibleMaxX = xRange > 0 ? minValues.x + ((viewRight + spread) / (2 * spread)) * xRange : maxValues.x;
 
     // Calculate nice tick values for visible X-axis range
     const xTicks = this.calculateNiceInterval(visibleMinX, visibleMaxX);
 
     for (const value of xTicks) {
-      // Calculate position based on actual value
+      // Calculate world position based on parameter value
       const normalizedX = xRange > 0 ? (value - minValues.x) / xRange : 0.5;
       const xPos = -spread + normalizedX * (spread * 2);
 
-      // Only show labels that are within visible range
-      if (xPos < visibleMinXWorld || xPos > visibleMaxXWorld) continue;
+      // Only show labels that are within viewport
+      if (xPos < viewLeft || xPos > viewRight) continue;
 
       // Determine decimal places based on magnitude
       const magnitude = Math.abs(value);
@@ -1256,45 +1285,53 @@ export class Graph2D {
         decimals = 1;
       }
 
-      // Create text sprite
+      // Create text sprite for label
       const texture = this.createTextTexture(value.toFixed(decimals), 64);
       const spriteMaterial = new THREE.SpriteMaterial({
         map: texture,
         transparent: true,
         opacity: 0.95,
-        sizeAttenuation: false // Keep labels same size regardless of zoom
+        sizeAttenuation: false
       });
       const sprite = new THREE.Sprite(spriteMaterial);
-      sprite.position.set(xPos, xAxisY - labelScale * 0.8, 0);
+      sprite.position.set(xPos, xAxisY + labelScale * 0.6, 0); // Position above the axis line
       sprite.scale.set(labelScale * 1.2, labelScale * 0.6, 1);
       this.axisGroup.add(sprite);
 
       // Add tick mark on the x-axis line
       const tickGeometry = new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(xPos, xAxisY, 0),
-        new THREE.Vector3(xPos, xAxisY - labelScale * 0.2, 0)
+        new THREE.Vector3(xPos, xAxisY + labelScale * 0.3, 0)
       ]);
       const tickLine = new THREE.Line(tickGeometry, axisLinesMaterial);
       this.axisGroup.add(tickLine);
+
+      // Add vertical grid line if enabled
+      if (this.gridLinesVisible) {
+        const gridGeometry = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(xPos, viewBottom, 0),
+          new THREE.Vector3(xPos, viewTop, 0)
+        ]);
+        const gridLine = new THREE.Line(gridGeometry, gridLinesMaterial);
+        this.axisGroup.add(gridLine);
+      }
     }
 
     // Calculate visible Y range in parameter space
-    const visibleMinYWorld = Math.max(viewBottom, dataMinY);
-    const visibleMaxYWorld = Math.min(viewTop, dataMaxY);
-    const yRange = maxValues.y - minValues.y;
-    const visibleMinY = yRange > 0 ? minValues.y + ((visibleMinYWorld + spread) / (2 * spread)) * yRange : minValues.y;
-    const visibleMaxY = yRange > 0 ? minValues.y + ((visibleMaxYWorld + spread) / (2 * spread)) * yRange : maxValues.y;
+    // Convert viewport bottom/top to parameter values
+    const visibleMinY = yRange > 0 ? minValues.y + ((viewBottom + spread) / (2 * spread)) * yRange : minValues.y;
+    const visibleMaxY = yRange > 0 ? minValues.y + ((viewTop + spread) / (2 * spread)) * yRange : maxValues.y;
 
     // Calculate nice tick values for visible Y-axis range
     const yTicks = this.calculateNiceInterval(visibleMinY, visibleMaxY);
 
     for (const value of yTicks) {
-      // Calculate position based on actual value
+      // Calculate world position based on parameter value
       const normalizedY = yRange > 0 ? (value - minValues.y) / yRange : 0.5;
       const yPos = -spread + normalizedY * (spread * 2);
 
-      // Only show labels that are within visible range
-      if (yPos < visibleMinYWorld || yPos > visibleMaxYWorld) continue;
+      // Only show labels that are within viewport
+      if (yPos < viewBottom || yPos > viewTop) continue;
 
       // Determine decimal places based on magnitude
       const magnitude = Math.abs(value);
@@ -1307,30 +1344,46 @@ export class Graph2D {
         decimals = 1;
       }
 
-      // Create text sprite
+      // Create text sprite for label
       const texture = this.createTextTexture(value.toFixed(decimals), 64);
       const spriteMaterial = new THREE.SpriteMaterial({
         map: texture,
         transparent: true,
         opacity: 0.95,
-        sizeAttenuation: false // Keep labels same size regardless of zoom
+        sizeAttenuation: false
       });
       const sprite = new THREE.Sprite(spriteMaterial);
-      sprite.position.set(yAxisX - labelScale * 1.2, yPos, 0);
+      sprite.position.set(yAxisX + labelScale * 0.8, yPos, 0); // Position to the right of the axis line
       sprite.scale.set(labelScale * 1.2, labelScale * 0.6, 1);
       this.axisGroup.add(sprite);
 
       // Add tick mark on the y-axis line
       const tickGeometry = new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(yAxisX, yPos, 0),
-        new THREE.Vector3(yAxisX - labelScale * 0.2, yPos, 0)
+        new THREE.Vector3(yAxisX + labelScale * 0.3, yPos, 0)
       ]);
       const tickLine = new THREE.Line(tickGeometry, axisLinesMaterial);
       this.axisGroup.add(tickLine);
+
+      // Add horizontal grid line if enabled
+      if (this.gridLinesVisible) {
+        const gridGeometry = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(viewLeft, yPos, 0),
+          new THREE.Vector3(viewRight, yPos, 0)
+        ]);
+        const gridLine = new THREE.Line(gridGeometry, gridLinesMaterial);
+        this.axisGroup.add(gridLine);
+      }
     }
 
-    // Add axis titles positioned near the center of visible axis
-    const xTitleTexture = this.createTextTexture(`Parameter ${xParamIndex}`, 72);
+    // Add axis titles positioned at screen edges
+    // Get parameter names from API metadata
+    const paramLabels = this.prismAPI.getParameterLabels('s');
+    const xParamLabel = paramLabels[xParamIndex]?.label || `P${xParamIndex}`;
+    const yParamLabel = paramLabels[yParamIndex]?.label || `P${yParamIndex}`;
+
+    // X-axis title: centered horizontally at bottom of screen
+    const xTitleTexture = this.createTextTexture(xParamLabel, 64);
     const xTitleMaterial = new THREE.SpriteMaterial({
       map: xTitleTexture,
       transparent: true,
@@ -1338,12 +1391,13 @@ export class Graph2D {
       sizeAttenuation: false
     });
     const xTitle = new THREE.Sprite(xTitleMaterial);
-    const xTitleX = (visibleMinXWorld + visibleMaxXWorld) / 2;
-    xTitle.position.set(xTitleX, xAxisY - labelScale * 2, 0);
-    xTitle.scale.set(labelScale * 2.5, labelScale * 0.8, 1);
+    const xTitleX = (viewLeft + viewRight) / 2; // Center of screen
+    xTitle.position.set(xTitleX, xAxisY + labelScale * 1.5, 0);
+    xTitle.scale.set(labelScale * 2.0, labelScale * 0.7, 1);
     this.axisGroup.add(xTitle);
 
-    const yTitleTexture = this.createTextTexture(`Parameter ${yParamIndex}`, 72);
+    // Y-axis title: centered vertically at left of screen
+    const yTitleTexture = this.createTextTexture(yParamLabel, 64);
     const yTitleMaterial = new THREE.SpriteMaterial({
       map: yTitleTexture,
       transparent: true,
@@ -1351,9 +1405,9 @@ export class Graph2D {
       sizeAttenuation: false
     });
     const yTitle = new THREE.Sprite(yTitleMaterial);
-    const yTitleY = (visibleMinYWorld + visibleMaxYWorld) / 2;
-    yTitle.position.set(yAxisX - labelScale * 3, yTitleY, 0);
-    yTitle.scale.set(labelScale * 2.5, labelScale * 0.8, 1);
+    const yTitleY = (viewBottom + viewTop) / 2; // Center of screen
+    yTitle.position.set(yAxisX + labelScale * 2.0, yTitleY, 0);
+    yTitle.scale.set(labelScale * 2.0, labelScale * 0.7, 1);
     this.axisGroup.add(yTitle);
 
     // Add the axis group to the scene
@@ -1394,7 +1448,6 @@ export class Graph2D {
     this.config.parameterYAxis = yParamIndex;
     this.config.useParameterPositioning = true;
 
-    const spread = Math.sqrt(this.nodes.length) * 0.5;
     const positions = this.pointCloud.geometry.attributes.position as THREE.BufferAttribute;
     const colors = this.pointCloud.geometry.attributes.color as THREE.BufferAttribute;
 
@@ -1416,6 +1469,18 @@ export class Graph2D {
         maxColor = Math.max(maxColor, node.parameters[colorParamIndex]);
       }
     }
+
+    // Calculate spread independently for X and Y to maintain 1:1 aspect ratio
+    const xRange = maxX - minX;
+    const yRange = maxY - minY;
+
+    // Each spread maps to world coordinates with 1:1 ratio
+    // Use the actual ranges to preserve aspect ratio
+    const spreadX = xRange > 0 ? xRange * 0.5 : 50;
+    const spreadY = yRange > 0 ? yRange * 0.5 : 50;
+
+    // For compatibility with existing code, use max spread
+    const spread = Math.max(spreadX, spreadY);
 
     // Second pass: update positions and colors using actual min/max values
     for (let i = 0; i < this.nodes.length; i++) {
@@ -1456,8 +1521,43 @@ export class Graph2D {
       spread
     );
 
+    // Adjust camera view to fit all nodes with some padding
+    this.fitViewToParameterRange(spread);
+
     const colorMsg = colorParamIndex >= 0 ? `, colored by P${colorParamIndex}` : '';
     this.ui.updateStatus(`Nodes rearranged by parameters ${xParamIndex} (X) and ${yParamIndex} (Y)${colorMsg}`);
+  }
+
+  /**
+   * Adjust camera view to fit the parameter-based node layout
+   */
+  private fitViewToParameterRange(spread: number): void {
+    // Reset pan to center
+    this.panOffset.set(0, 0);
+
+    // Calculate zoom level to fit all nodes in view with some padding
+    // spread represents half the data range, so we need to show 2*spread in each dimension
+    // Add 20% padding
+    const dataSize = spread * 2 * 1.2;
+
+    // The default viewSize is 50, so we want to zoom such that dataSize fits in view
+    const aspect = window.innerWidth / window.innerHeight;
+    const viewHeight = 100; // Base view size (2 * 50)
+    const viewWidth = viewHeight * aspect;
+
+    // Choose zoom to fit the larger dimension
+    const requiredZoomX = viewWidth / dataSize;
+    const requiredZoomY = viewHeight / dataSize;
+    this.zoomLevel = Math.min(requiredZoomX, requiredZoomY);
+
+    // Clamp to config limits
+    this.zoomLevel = Math.max(
+      this.config.minZoom,
+      Math.min(this.config.maxZoom, this.zoomLevel)
+    );
+
+    this.updateCameraPosition();
+    this.ui.updateZoomDisplay(this.zoomLevel);
   }
 
   public resetToLayoutMode(): void {
@@ -1535,28 +1635,24 @@ export class Graph2D {
       // Fetch PRISM project data
       const prismData = await this.prismAPI.fetchProject(projectId, viewIds);
       const graphData = this.prismAPI.convertPrismToInternal(prismData);
-      
+
       this.nodes = graphData.nodes;
       this.edges = graphData.edges;
-      
-      // Ensure all nodes have parameters (generate if missing)
-      this.nodes.forEach(node => {
-        if (!node.parameters) {
-          node.parameters = this.generateNodeParameters();
-        }
-      });
-      
+
+      // Parameters are now extracted from PRISM API data
+      // No need to generate random parameters anymore
+
       const nodeCount = this.nodes.length;
-      
+
       // Create geometry arrays
       const geometry = new THREE.BufferGeometry();
       const positions = new Float32Array(nodeCount * 3);
       const colors = new Float32Array(nodeCount * 3);
       const sizes = new Float32Array(nodeCount);
-      
+
       // Generate layout using existing method
       await this.generateLayout(nodeCount, positions, colors, sizes);
-      
+
       // Create edge lines if edges are visible
       if (this.config.edgesVisible) {
         this.createEdgeLines();
@@ -1569,6 +1665,10 @@ export class Graph2D {
       this.nodeCount = nodeCount;
       this.ui.updateNodeCount(nodeCount);
       this.resetView();
+
+      // Update parameter selection dropdowns with actual parameter names
+      const paramLabels = this.prismAPI.getParameterLabels('s');
+      this.ui.updateParameterSelections(paramLabels);
 
       const viewInfo = viewIds ? ` (views: ${viewIds.join(', ')})` : '';
       this.ui.updateStatus(`Loaded PRISM project "${projectId}"${viewInfo}: ${nodeCount.toLocaleString()} nodes, ${this.edges.length.toLocaleString()} edges`);

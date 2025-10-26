@@ -17,7 +17,7 @@ export class UIManager {
       'btn-load-api', 'btn-load-prism', 'btn-api-health', 'project-id', 'view-ids',
       'btn-1k', 'btn-10k', 'btn-100k', 'btn-500k', 'btn-1m',
       'btn-force', 'btn-force-directed', 'btn-grid', 'btn-circular',
-      'btn-lod', 'btn-edges', 'btn-reset', 'btn-clusters', 'btn-export',
+      'btn-lod', 'btn-edges', 'btn-reset', 'btn-clusters', 'btn-gridlines', 'btn-export',
       'param-x-select', 'param-y-select', 'param-color-select', 'btn-apply-params', 'btn-reset-layout',
       'stats', 'progress', 'progress-bar'
     ];
@@ -65,6 +65,7 @@ export class UIManager {
     this.addClickListener('btn-edges', () => this.graph.toggleEdges());
     this.addClickListener('btn-reset', () => this.graph.resetView());
     this.addClickListener('btn-clusters', () => this.graph.toggleClusters());
+    this.addClickListener('btn-gridlines', () => this.graph.toggleGrid());
     this.addClickListener('btn-export', () => this.graph.exportImage());
 
     // Parameter view controls
@@ -223,6 +224,63 @@ export class UIManager {
     } catch (error) {
       this.updateStatus('API health check failed ✗');
     }
+  }
+
+  /**
+   * Update parameter selection dropdowns with actual parameter names
+   */
+  public updateParameterSelections(paramLabels: Array<{ index: number; label: string; fullPath: string }>): void {
+    const xSelect = this.getElement('param-x-select') as HTMLSelectElement;
+    const ySelect = this.getElement('param-y-select') as HTMLSelectElement;
+    const colorSelect = this.getElement('param-color-select') as HTMLSelectElement;
+
+    if (!xSelect || !ySelect || !colorSelect) {
+      console.warn('Parameter selection elements not found');
+      return;
+    }
+
+    // Store current selections
+    const currentX = xSelect.value;
+    const currentY = ySelect.value;
+    const currentColor = colorSelect.value;
+
+    // Update X-axis dropdown
+    this.populateParameterDropdown(xSelect, paramLabels);
+    xSelect.value = currentX;
+
+    // Update Y-axis dropdown
+    this.populateParameterDropdown(ySelect, paramLabels);
+    ySelect.value = currentY;
+
+    // Update Color dropdown (includes "None" option)
+    colorSelect.innerHTML = '<option value="-1">None</option>';
+    paramLabels.forEach(param => {
+      const option = document.createElement('option');
+      option.value = param.index.toString();
+      option.textContent = param.label;
+      option.title = param.fullPath;
+      colorSelect.appendChild(option);
+    });
+    colorSelect.value = currentColor;
+
+    console.log(`[UI] Parameter dropdowns updated with ${paramLabels.length} parameters`);
+  }
+
+  /**
+   * Populate a parameter dropdown with options
+   */
+  private populateParameterDropdown(
+    select: HTMLSelectElement,
+    paramLabels: Array<{ index: number; label: string; fullPath: string }>
+  ): void {
+    select.innerHTML = '';
+    paramLabels.forEach(param => {
+      const option = document.createElement('option');
+      option.value = param.index.toString();
+      option.textContent = param.label;
+      option.title = param.fullPath; // Tooltip shows full path
+      select.appendChild(option);
+    });
   }
 
   // Cleanup method for proper disposal
