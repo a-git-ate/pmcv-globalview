@@ -27,6 +27,13 @@ export class Graph2D {
   private axisGroup: THREE.Group | null = null;
   private gridLinesVisible: boolean = false;
 
+  // Overlap labels
+  private overlapLabelsGroup: THREE.Group | null = null;
+
+  // Tooltip
+  private tooltipElement: HTMLElement | null = null;
+  private hoveredNodeIndex: number = -1;
+
   // Store current parameter axes info for dynamic updates
   private currentAxisInfo: {
     xParamIndex: number;
@@ -62,8 +69,8 @@ export class Graph2D {
     this.config = {
       maxVisibleNodes: 10000,
       renderDistance: 500,
-      minZoom: 0.1,
-      maxZoom: 50.0,
+      minZoom: 0.001, // Allow zooming out much further (was 0.1)
+      maxZoom: 100.0, // Increased max zoom as well (was 50.0)
       lodEnabled: true,
       edgesVisible: false,
       clusterMode: false,
@@ -105,6 +112,7 @@ export class Graph2D {
       this.setupRenderer();
       this.setupCamera();
       this.setupControls();
+      this.setupTooltip();
       this.startAnimationLoop();
 
       this.ui.updateStatus("2D system ready");
@@ -115,6 +123,13 @@ export class Graph2D {
     }
   }
 
+  private setupTooltip(): void {
+    this.tooltipElement = document.getElementById('node-tooltip');
+    if (!this.tooltipElement) {
+      console.warn('Tooltip element not found');
+    }
+  }
+
   private setupRenderer(): void {
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -122,7 +137,7 @@ export class Graph2D {
     });
 
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setClearColor(0x0a0a0a, 1.0);
+    this.renderer.setClearColor(0xf5f5f5, 1.0); // Light gray background
 
     const container = document.getElementById('container');
     if (!container) {
@@ -194,6 +209,11 @@ export class Graph2D {
       this.onNodeClick(event);
     });
 
+    // Hover (tooltip)
+    canvas.addEventListener('mousemove', (event: MouseEvent) => {
+      this.onMouseMove(event);
+    });
+
     // Window resize
     window.addEventListener('resize', () => this.onWindowResize());
   }
@@ -202,16 +222,32 @@ export class Graph2D {
     const aspect = window.innerWidth / window.innerHeight;
     const viewSize = 50 / this.zoomLevel;
 
-    this.camera.left = -viewSize * aspect + this.panOffset.x;
-    this.camera.right = viewSize * aspect + this.panOffset.x;
-    this.camera.top = viewSize + this.panOffset.y;
-    this.camera.bottom = -viewSize + this.panOffset.y;
+    // For 1:1 aspect ratio, use the same scale for both X and Y
+    // Only adjust horizontal extent based on aspect ratio
+    if (aspect > 1) {
+      // Wider than tall - expand horizontally
+      this.camera.left = -viewSize * aspect + this.panOffset.x;
+      this.camera.right = viewSize * aspect + this.panOffset.x;
+      this.camera.top = viewSize + this.panOffset.y;
+      this.camera.bottom = -viewSize + this.panOffset.y;
+    } else {
+      // Taller than wide - expand vertically
+      this.camera.left = -viewSize + this.panOffset.x;
+      this.camera.right = viewSize + this.panOffset.x;
+      this.camera.top = viewSize / aspect + this.panOffset.y;
+      this.camera.bottom = -viewSize / aspect + this.panOffset.y;
+    }
 
     this.camera.updateProjectionMatrix();
 
     // Update axes if they exist
     if (this.currentAxisInfo) {
       this.updateAxisVisualization();
+    }
+
+    // Update overlap label positions for new zoom/pan
+    if (this.overlapLabelsGroup) {
+      this.updateOverlapLabelPositions();
     }
   }
 
@@ -237,13 +273,17 @@ export class Graph2D {
 
       // Generate random edges first
       this.generateRandomEdges(count);
+      console.log(`[Generate Nodes] Created ${this.edges.length} random edges for ${count} nodes`);
       
       // Generate layout based on connectivity
       await this.generateLayout(count, positions, colors, sizes);
-      
+
       // Create edge lines if edges are visible
+      // Note: edges default to hidden for better performance
       if (this.config.edgesVisible) {
         this.createEdgeLines();
+      } else {
+        console.log(`[Generate Nodes] ${this.edges.length} edges created but hidden (use Toggle Edges to show)`);
       }
 
       // Create point cloud
@@ -311,6 +351,9 @@ export class Graph2D {
       const paramLabels = this.prismAPI.getParameterLabels('s');
       this.ui.updateParameterSelections(paramLabels);
 
+      // Update overlap labels
+      this.updateOverlapLabels();
+
       this.ui.updateStatus(`Loaded ${nodeCount.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load graph from API';
@@ -329,20 +372,32 @@ export class Graph2D {
   ): Promise<void> {
     const spread = Math.sqrt(count) * 0.5;
 
-    // Initialize nodes with parameters first
-    for (let i = 0; i < count; i++) {
-      const nodeData: NodeData = {
-        id: i,
-        x: 0, // Will be set below
-        y: 0, // Will be set below
-        z: 0,
-        radius: 0,
-        cluster: Math.floor(i / Math.max(1, count / 10)) % 10,
-        value: Math.random(),
-        type: Math.random() > 0.95 ? 'important' : 'normal',
-        parameters: this.generateNodeParameters()
-      };
-      this.nodes.push(nodeData);
+    // Pre-allocate array for better performance
+    this.nodes = new Array(count);
+
+    // Initialize nodes with parameters in batches for large graphs
+    const batchSize = 50000;
+    for (let batch = 0; batch < count; batch += batchSize) {
+      const end = Math.min(batch + batchSize, count);
+
+      for (let i = batch; i < end; i++) {
+        this.nodes[i] = {
+          id: i,
+          x: 0, // Will be set below
+          y: 0, // Will be set below
+          z: 0,
+          radius: 0,
+          cluster: Math.floor(i / Math.max(1, count / 10)) % 10,
+          value: Math.random(),
+          type: Math.random() > 0.95 ? 'important' : 'normal',
+          parameters: this.generateNodeParameters()
+        };
+      }
+
+      // Yield control for large graphs to keep UI responsive
+      if (count > 50000 && end < count) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
     }
 
     // Calculate min/max parameter values if using parameter positioning
@@ -555,42 +610,17 @@ export class Graph2D {
   private calculateNodePosition(index: number, count: number, spread: number): THREE.Vector2 {
     let x: number, y: number;
 
-    switch (this.currentLayout) {
-      case 'grid':
-        const cols = Math.ceil(Math.sqrt(count));
-        x = (index % cols - cols / 2) * (spread / cols) * 2;
-        y = (Math.floor(index / cols) - cols / 2) * (spread / cols) * 2;
-        break;
-
-      case 'circular':
-        const radius = spread * 0.8;
-        const angle = (index / count) * Math.PI * 2;
-        x = Math.cos(angle) * radius * (0.5 + Math.random() * 0.5);
-        y = Math.sin(angle) * radius * (0.5 + Math.random() * 0.5);
-        break;
-
-      case 'force':
-        const clusterCount = Math.min(50, Math.sqrt(count / 100));
-        const clusterId = Math.floor(Math.random() * clusterCount);
-        const clusterAngle = (clusterId / clusterCount) * Math.PI * 2;
-        const clusterRadius = spread * 0.3;
-
-        const clusterX = Math.cos(clusterAngle) * clusterRadius;
-        const clusterY = Math.sin(clusterAngle) * clusterRadius;
-
-        x = clusterX + (Math.random() - 0.5) * spread * 0.2;
-        y = clusterY + (Math.random() - 0.5) * spread * 0.2;
-        break;
-
-      case 'force_directed' as LayoutType:
-        const position = this.calculateForceDirectedPosition(index, spread);
-        x = position.x;
-        y = position.y;
-        break;
-
-      default: // random
-        x = (Math.random() - 0.5) * spread;
-        y = (Math.random() - 0.5) * spread;
+    if (this.currentLayout === 'force_directed') {
+      // Force layout starts with a distributed initial position
+      const hash = (index * 2654435761) % 2147483647;
+      const initAngle = (hash / 2147483647) * Math.PI * 2;
+      const initRadius = spread * 0.5 * Math.sqrt((hash % 10000) / 10000);
+      x = Math.cos(initAngle) * initRadius;
+      y = Math.sin(initAngle) * initRadius;
+    } else {
+      // Random position for other layouts
+      x = (Math.random() - 0.5) * spread;
+      y = (Math.random() - 0.5) * spread;
     }
 
     return new THREE.Vector2(x, y);
@@ -600,35 +630,53 @@ export class Graph2D {
   private calculateNodeSize(x: number, y: number, spread: number): number {
     const distanceFromCenter = Math.sqrt(x * x + y * y);
     const normalizedDistance = Math.min(1, distanceFromCenter / spread);
-    const baseSize = (1 - normalizedDistance * 0.3) * 6 + 3; // Half size: 3-9
+    const baseSize = ((1 - normalizedDistance * 0.3) * 6 + 3) * 1.5; // Increased by 1.5x: 4.5-13.5
     return baseSize;
   }
 
   private generateRandomEdges(nodeCount: number): void {
-    const edgeCount = Math.min((this.config as any).edgeCount || 400, nodeCount);
+    // Generate 0.5x as many edges as nodes (moderate connectivity)
+    const edgeCount = Math.min(Math.floor(nodeCount * 0.5), nodeCount * (nodeCount - 1) / 2);
     this.edges = [];
-    
-    // Track node connections for degree calculation
-    const connections: number[][] = Array(nodeCount).fill(null).map(() => []);
-    
-    for (let i = 0; i < edgeCount; i++) {
+
+    // Use Sets for O(1) duplicate detection instead of arrays
+    const connectionSets: Set<number>[] = Array(nodeCount).fill(null).map(() => new Set());
+    const edgeSet = new Set<string>(); // Track edges as "from-to" strings
+
+    let edgesCreated = 0;
+    let attempts = 0;
+    const maxAttempts = edgeCount * 10; // Avoid infinite loops
+
+    while (edgesCreated < edgeCount && attempts < maxAttempts) {
+      attempts++;
+
       const from = Math.floor(Math.random() * nodeCount);
-      let to = Math.floor(Math.random() * nodeCount);
-      
-      // Ensure no self-loops and no duplicate edges
-      while (to === from || connections[from].includes(to)) {
-        to = Math.floor(Math.random() * nodeCount);
-      }
-      
+      const to = Math.floor(Math.random() * nodeCount);
+
+      // Skip self-loops
+      if (from === to) continue;
+
+      // Create canonical edge key (smaller index first for undirected)
+      const edgeKey = from < to ? `${from}-${to}` : `${to}-${from}`;
+
+      // Skip if edge already exists
+      if (edgeSet.has(edgeKey)) continue;
+
+      // Add the edge
       this.edges.push({ from, to, weight: Math.random() });
-      connections[from].push(to);
-      connections[to].push(from); // Undirected graph
+      edgeSet.add(edgeKey);
+      connectionSets[from].add(to);
+      connectionSets[to].add(from);
+      edgesCreated++;
     }
-    
-    // Update node data with connections
+
+    console.log(`[generateRandomEdges] Successfully created ${edgesCreated} edges for ${nodeCount} nodes`);
+
+    // Convert Sets back to arrays for node data
     this.nodes.forEach((node, index) => {
-      (node as any).connections = connections[index];
-      (node as any).degree = connections[index].length;
+      const connectionsArray = Array.from(connectionSets[index]);
+      (node as any).connections = connectionsArray;
+      (node as any).degree = connectionsArray.length;
     });
   }
 
@@ -649,19 +697,22 @@ export class Graph2D {
   private applyForceDirectedLayout(_nodeCount: number, positions: Float32Array, spread: number): void {
     const nodeCount = this.nodes.length;
 
-    // Scale down iterations for large graphs
-    let iterations = (this.config as any).iterations || 500;
-    if (nodeCount > 10000) {
-      iterations = Math.min(100, iterations);
-    } else if (nodeCount > 1000) {
-      iterations = Math.min(200, iterations);
-    }
+    // Maximum iterations before stopping - increased for large graphs
+    const maxIterations = nodeCount > 10000 ? 400 : nodeCount > 1000 ? 500 : 700;
 
-    const forceStrength = (this.config as any).forceStrength || 0.3;
-    const springLength = (this.config as any).springLength || 20;
+    // Force parameters - optimized for sparse graphs (0.5x edges)
+    const repulsionStrength = 500; // Moderate repulsion
+    const attractionStrength = 0.2; // Strong attraction to keep connected nodes together
+    const targetLinkLength = spread * 0.15; // Moderate desired edge length
+    const centeringStrength = 0.005; // Very weak centering
+    const damping = 0.85; // Higher damping for stability
 
-    // For large graphs (>10k nodes), skip expensive all-pairs repulsion
+    // Convergence threshold - stop when movement is small (relaxed for large graphs)
+    const convergenceThreshold = nodeCount > 10000 ? 0.08 : 0.015;
+
+    // For large graphs (>10k nodes), use approximate repulsion with sampling
     const useFullRepulsion = nodeCount < 10000;
+    const repulsionSampleSize = 50; // Sample this many random nodes for repulsion calculation
 
     // Initialize simulation nodes with typed arrays for better performance
     const simX = new Float32Array(nodeCount);
@@ -676,27 +727,26 @@ export class Graph2D {
       simVY[i] = 0;
     }
 
-    const damping = 0.9;
-    const centerForce = 0.01;
-
-    for (let iter = 0; iter < iterations; iter++) {
+    // Simulation loop with convergence detection
+    for (let iter = 0; iter < maxIterations; iter++) {
       // Reset forces
       simVX.fill(0);
       simVY.fill(0);
 
-      // Only apply full repulsion for smaller graphs
+      // 1. REPULSION: All nodes repel each other
       if (useFullRepulsion) {
-        // Repulsion between all nodes
+        // Full O(n^2) repulsion for smaller graphs
         for (let i = 0; i < nodeCount; i++) {
           for (let j = i + 1; j < nodeCount; j++) {
             const dx = simX[i] - simX[j];
             const dy = simY[i] - simY[j];
-            const distSq = dx * dx + dy * dy + 0.01;
+            const distSq = dx * dx + dy * dy + 0.01; // Small epsilon to avoid division by zero
             const dist = Math.sqrt(distSq);
 
-            const force = forceStrength * 500 / distSq;
-            const fx = (dx / dist) * force;
-            const fy = (dy / dist) * force;
+            // Coulomb's law: F = k / r^2
+            const repulsionForce = repulsionStrength / distSq;
+            const fx = (dx / dist) * repulsionForce;
+            const fy = (dy / dist) * repulsionForce;
 
             simVX[i] += fx;
             simVY[i] += fy;
@@ -704,9 +754,34 @@ export class Graph2D {
             simVY[j] -= fy;
           }
         }
+      } else {
+        // Approximate repulsion using random sampling for large graphs
+        // Each node samples a subset of other nodes to reduce from O(n^2) to O(n*k)
+        for (let i = 0; i < nodeCount; i++) {
+          // Sample random nodes for repulsion calculation
+          for (let s = 0; s < repulsionSampleSize; s++) {
+            const j = Math.floor(Math.random() * nodeCount);
+            if (i === j) continue; // Skip self
+
+            const dx = simX[i] - simX[j];
+            const dy = simY[i] - simY[j];
+            const distSq = dx * dx + dy * dy + 0.01;
+            const dist = Math.sqrt(distSq);
+
+            // Scale up the force to compensate for sampling
+            // We're only seeing ~sampleSize nodes instead of all nodeCount nodes
+            const scaleFactor = nodeCount / repulsionSampleSize;
+            const repulsionForce = (repulsionStrength * scaleFactor) / distSq;
+            const fx = (dx / dist) * repulsionForce;
+            const fy = (dy / dist) * repulsionForce;
+
+            simVX[i] += fx;
+            simVY[i] += fy;
+          }
+        }
       }
 
-      // Spring forces for connected nodes (always applied)
+      // 2. ATTRACTION: Connected nodes attract each other (Hooke's law)
       for (let e = 0; e < this.edges.length; e++) {
         const edge = this.edges[e];
         const i = edge.from;
@@ -718,9 +793,11 @@ export class Graph2D {
         const dy = simY[j] - simY[i];
         const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
 
-        const force = forceStrength * (dist - springLength) / dist;
-        const fx = dx * force;
-        const fy = dy * force;
+        // Spring force: F = k * (distance - targetLength)
+        const displacement = dist - targetLinkLength;
+        const attractionForce = attractionStrength * displacement;
+        const fx = (dx / dist) * attractionForce;
+        const fy = (dy / dist) * attractionForce;
 
         simVX[i] += fx;
         simVY[i] += fy;
@@ -728,23 +805,66 @@ export class Graph2D {
         simVY[j] -= fy;
       }
 
-      // Apply forces and update positions
+      // 3. CENTER FORCE: Gentle pull towards center to keep graph compact
+      // Only apply to nodes that are far from center to prevent central clumping
+      const centerThreshold = spread * 0.5; // Only pull nodes beyond this distance
       for (let i = 0; i < nodeCount; i++) {
-        // Center force
-        const dist = Math.sqrt(simX[i] * simX[i] + simY[i] * simY[i]) + 0.1;
-        const cForce = centerForce * dist;
-        simVX[i] -= (simX[i] / dist) * cForce;
-        simVY[i] -= (simY[i] / dist) * cForce;
+        const distFromCenter = Math.sqrt(simX[i] * simX[i] + simY[i] * simY[i]);
 
+        if (distFromCenter > centerThreshold) {
+          // Only apply centering force to outliers
+          const excessDist = distFromCenter - centerThreshold;
+          const centerForce = centeringStrength * excessDist;
+          const dist = distFromCenter + 0.1;
+          simVX[i] -= (simX[i] / dist) * centerForce;
+          simVY[i] -= (simY[i] / dist) * centerForce;
+        }
+      }
+
+      // 4. UPDATE POSITIONS: Apply forces with damping
+      let maxMovement = 0;
+      for (let i = 0; i < nodeCount; i++) {
         // Apply velocity with damping
         simVX[i] *= damping;
         simVY[i] *= damping;
+
+        // Clamp velocities to prevent explosions (increased limit for better spreading)
+        const maxVelocity = spread * 0.2;
+        simVX[i] = Math.max(-maxVelocity, Math.min(maxVelocity, simVX[i]));
+        simVY[i] = Math.max(-maxVelocity, Math.min(maxVelocity, simVY[i]));
+
+        // Update positions
         simX[i] += simVX[i];
         simY[i] += simVY[i];
+
+        // Safety check: ensure positions are valid numbers
+        if (!isFinite(simX[i]) || !isFinite(simY[i])) {
+          console.warn(`Invalid position at node ${i}, resetting`);
+          simX[i] = (Math.random() - 0.5) * spread * 0.5;
+          simY[i] = (Math.random() - 0.5) * spread * 0.5;
+          simVX[i] = 0;
+          simVY[i] = 0;
+        }
+
+        // Track maximum movement for convergence detection
+        const movement = Math.sqrt(simVX[i] * simVX[i] + simVY[i] * simVY[i]);
+        maxMovement = Math.max(maxMovement, movement);
 
         // Update positions array
         positions[i * 3] = simX[i];
         positions[i * 3 + 1] = simY[i];
+      }
+
+      // Check for convergence - stop if nodes barely moving
+      if (maxMovement < convergenceThreshold) {
+        console.log(`Force simulation converged after ${iter + 1} iterations`);
+        this.ui.updateStatus(`Force simulation converged after ${iter + 1} iterations`);
+        break;
+      }
+
+      // Progress update every 50 iterations
+      if (iter % 50 === 0 && iter > 0) {
+        console.log(`Force simulation: iteration ${iter}, max movement: ${maxMovement.toFixed(4)}`);
       }
     }
 
@@ -757,27 +877,56 @@ export class Graph2D {
 
   private createEdgeLines(): void {
     if (!this.edges.length || !this.nodes.length) return;
-    
-    const geometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(this.edges.length * 6); // 2 points per edge, 3 coords per point
-    const colors = new Float32Array(this.edges.length * 6); // 2 points per edge, 3 colors per point
-    
-    this.edges.forEach((edge, i) => {
+
+    // Filter out invalid edges (edges pointing to non-existent nodes)
+    const validEdges = this.edges.filter(edge => {
+      return edge.from >= 0 && edge.from < this.nodes.length &&
+             edge.to >= 0 && edge.to < this.nodes.length &&
+             this.nodes[edge.from] && this.nodes[edge.to];
+    });
+
+    if (validEdges.length === 0) {
+      console.warn('[createEdgeLines] No valid edges to render');
+      return;
+    }
+
+    if (validEdges.length < this.edges.length) {
+      console.warn(`[createEdgeLines] Filtered out ${this.edges.length - validEdges.length} invalid edges`);
+    }
+
+    console.log(`[createEdgeLines] Rendering ${validEdges.length} valid edges out of ${this.edges.length} total`);
+
+    // Calculate edge extent for debugging
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    validEdges.forEach(edge => {
       const fromNode = this.nodes[edge.from];
       const toNode = this.nodes[edge.to];
-      
-      if (!fromNode || !toNode) return;
-      
+      minX = Math.min(minX, fromNode.x, toNode.x);
+      maxX = Math.max(maxX, fromNode.x, toNode.x);
+      minY = Math.min(minY, fromNode.y, toNode.y);
+      maxY = Math.max(maxY, fromNode.y, toNode.y);
+    });
+    console.log(`[createEdgeLines] Edge extent: X[${minX.toFixed(1)}, ${maxX.toFixed(1)}], Y[${minY.toFixed(1)}, ${maxY.toFixed(1)}]`);
+    console.log(`[createEdgeLines] Camera bounds: X[${this.camera.left.toFixed(1)}, ${this.camera.right.toFixed(1)}], Y[${this.camera.bottom.toFixed(1)}, ${this.camera.top.toFixed(1)}]`);
+
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(validEdges.length * 6); // 2 points per edge, 3 coords per point
+    const colors = new Float32Array(validEdges.length * 6); // 2 points per edge, 3 colors per point
+
+    validEdges.forEach((edge, i) => {
+      const fromNode = this.nodes[edge.from];
+      const toNode = this.nodes[edge.to];
+
       // Start point
       positions[i * 6] = fromNode.x;
       positions[i * 6 + 1] = fromNode.y;
       positions[i * 6 + 2] = 0;
-      
+
       // End point
       positions[i * 6 + 3] = toNode.x;
       positions[i * 6 + 4] = toNode.y;
       positions[i * 6 + 5] = 0;
-      
+
       // Edge color (brighter white for better visibility)
       const color = new THREE.Color(0xaaaaaa);
       colors[i * 6] = color.r;
@@ -787,19 +936,22 @@ export class Graph2D {
       colors[i * 6 + 4] = color.g;
       colors[i * 6 + 5] = color.b;
     });
-    
+
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    
+
     const material = new THREE.LineBasicMaterial({
       vertexColors: true,
       transparent: true,
       opacity: 0.8,
       linewidth: 2
     });
-    
+
     this.edgeLines = new THREE.LineSegments(geometry, material);
+    // Ensure edges render behind nodes by setting renderOrder
+    this.edgeLines.renderOrder = -1;
     this.scene.add(this.edgeLines);
+    console.log('[createEdgeLines] Edge lines added to scene with renderOrder = -1');
   }
 
   private clearEdgeLines(): void {
@@ -913,7 +1065,7 @@ export class Graph2D {
     geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
     const material = new THREE.PointsMaterial({
-      size: 6.0,
+      size: 9.0, // Increased from 6.0 to 9.0 (1.5x)
       vertexColors: true,
       sizeAttenuation: false, // Disable size attenuation so nodes don't disappear when zooming
       transparent: true,
@@ -923,6 +1075,7 @@ export class Graph2D {
 
     this.pointCloud = new THREE.Points(geometry, material);
     this.pointCloud.frustumCulled = false; // Prevent nodes from being culled when zooming
+    this.pointCloud.renderOrder = 0; // Render nodes on top of edges (edges are at -1)
     this.scene.add(this.pointCloud);
   }
 
@@ -944,13 +1097,109 @@ export class Graph2D {
     this.clearAxisVisualization();
     this.ui.onLayoutChange(layoutType);
 
-    if (this.nodeCount === 0) {
+    if (this.nodeCount === 0 || !this.pointCloud) {
       this.ui.updateStatus("Generate nodes first!");
       return;
     }
 
     this.ui.updateStatus(`Applying ${layoutType} layout...`);
-    this.generateNodes(this.nodeCount);
+    this.relayoutExistingNodes();
+  }
+
+  /**
+   * Re-layout existing nodes without regenerating them (preserves API data)
+   */
+  private async relayoutExistingNodes(): Promise<void> {
+    if (!this.pointCloud || this.nodes.length === 0) return;
+
+    const count = this.nodes.length;
+    const spread = Math.sqrt(count) * 0.5;
+    const positions = this.pointCloud.geometry.attributes.position as THREE.BufferAttribute;
+    const colors = this.pointCloud.geometry.attributes.color as THREE.BufferAttribute;
+    const sizes = this.pointCloud.geometry.attributes.size as THREE.BufferAttribute;
+
+    // Reposition all nodes based on current layout
+    for (let i = 0; i < count; i++) {
+      const nodeData = this.nodes[i];
+      const position = this.calculateNodePosition(i, count, spread);
+
+      // Update node data
+      nodeData.x = position.x;
+      nodeData.y = position.y;
+
+      // Update positions buffer
+      positions.setXYZ(i, position.x, position.y, 0);
+    }
+
+    // Apply force-directed layout if selected (both 'force' and 'force_directed' use physics simulation)
+    if (this.currentLayout === 'force_directed' || this.currentLayout === 'force') {
+      this.ui.updateStatus('Computing force-directed layout...');
+      await this.applyForceDirectedLayoutToBuffer(positions, spread);
+    }
+
+    // Update colors based on connectivity
+    const colorCache = new Map<number, { r: number; g: number; b: number }>();
+    const getColorForDegree = (degree: number): { r: number; g: number; b: number } => {
+      const key = Math.min(degree, 20);
+      if (!colorCache.has(key)) {
+        const hue = key > 0 ? Math.min(0.3, key * 0.05) : 0.6;
+        const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
+        colorCache.set(key, { r: color.r, g: color.g, b: color.b });
+      }
+      return colorCache.get(key)!;
+    };
+
+    for (let i = 0; i < count; i++) {
+      const x = positions.getX(i);
+      const y = positions.getY(i);
+      const size = this.calculateNodeSize(x, y, spread);
+      const degree = (this.nodes[i] as any).degree || 0;
+      const adjustedSize = size + (degree * 0.2);
+
+      this.nodes[i].radius = adjustedSize;
+
+      const color = getColorForDegree(degree);
+      colors.setXYZ(i, color.r, color.g, color.b);
+      sizes.setX(i, adjustedSize);
+    }
+
+    // Mark buffers as needing update
+    positions.needsUpdate = true;
+    colors.needsUpdate = true;
+    sizes.needsUpdate = true;
+
+    // Redraw edges if visible
+    console.log(`[relayoutExistingNodes] Before edge redraw: ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}, edgeLines exists: ${!!this.edgeLines}`);
+    if (this.config.edgesVisible && this.edges.length > 0) {
+      this.clearEdgeLines();
+      this.createEdgeLines();
+    } else {
+      console.log(`[relayoutExistingNodes] Skipping edge creation (edgesVisible=${this.config.edgesVisible}, edges.length=${this.edges.length})`);
+    }
+
+    this.resetView();
+
+    // Update overlap labels after layout
+    this.updateOverlapLabels();
+
+    this.ui.updateStatus(`${this.currentLayout} layout applied`);
+  }
+
+  /**
+   * Apply force-directed layout directly to position buffer
+   */
+  private async applyForceDirectedLayoutToBuffer(positions: THREE.BufferAttribute, spread: number): Promise<void> {
+    const nodeCount = this.nodes.length;
+    const positionsArray = positions.array as Float32Array;
+
+    // Call existing force-directed method
+    this.applyForceDirectedLayout(nodeCount, positionsArray, spread);
+
+    // Update node data with final positions
+    for (let i = 0; i < nodeCount; i++) {
+      this.nodes[i].x = positionsArray[i * 3];
+      this.nodes[i].y = positionsArray[i * 3 + 1];
+    }
   }
 
   private startAnimationLoop(): void {
@@ -992,6 +1241,160 @@ export class Graph2D {
         this.ui.updateStatus("Render error: " + message);
       }
     }
+  }
+
+  private onMouseMove(event: MouseEvent): void {
+    if (!this.renderer || !this.pointCloud || !this.tooltipElement) return;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1
+    );
+
+    const raycaster = new THREE.Raycaster();
+
+    // For orthographic camera with screen-space points (sizeAttenuation: false),
+    // we need a much smaller threshold since the points are rendered as pixels
+    // Calculate threshold based on view size and screen size
+    const viewHeight = this.camera.top - this.camera.bottom;
+    const screenHeight = window.innerHeight;
+
+    // Each pixel represents this many world units
+    const worldUnitsPerPixel = viewHeight / screenHeight;
+
+    // Node visual size is 9 pixels, so we want a threshold of about 4.5 pixels (half)
+    const nodeRadiusPixels = 5; // Slightly larger than visual radius for easier hovering
+    const threshold = nodeRadiusPixels * worldUnitsPerPixel;
+
+    raycaster.params.Points = { threshold: threshold };
+    raycaster.setFromCamera(mouse, this.camera);
+
+    const intersects = raycaster.intersectObject(this.pointCloud);
+
+    if (intersects.length > 0) {
+      const index = intersects[0].index;
+      if (index !== undefined && index !== this.hoveredNodeIndex) {
+        this.hoveredNodeIndex = index;
+        this.showNodeTooltip(index, event.clientX, event.clientY);
+      } else if (index !== undefined) {
+        // Update tooltip position
+        this.updateTooltipPosition(event.clientX, event.clientY);
+      }
+    } else {
+      this.hideNodeTooltip();
+    }
+  }
+
+  private showNodeTooltip(nodeIndex: number, x: number, y: number): void {
+    if (!this.tooltipElement || nodeIndex >= this.nodes.length) {
+      return;
+    }
+
+    const node = this.nodes[nodeIndex];
+
+    // Find all nodes at the same position (stacked nodes)
+    // Use a more generous epsilon for matching positions
+    const epsilon = 0.1; // Increased tolerance for position matching
+    const stackedNodes: number[] = [nodeIndex]; // Always include the hovered node
+
+    // Only search through nodes if we have a reasonable number
+    const maxNodesToSearch = Math.min(this.nodes.length, 10000);
+    for (let i = 0; i < maxNodesToSearch; i++) {
+      if (i === nodeIndex) continue; // Skip the node we already added
+
+      const otherNode = this.nodes[i];
+      if (!otherNode) continue; // Skip if node doesn't exist
+
+      const dx = Math.abs(otherNode.x - node.x);
+      const dy = Math.abs(otherNode.y - node.y);
+
+      if (dx < epsilon && dy < epsilon) {
+        stackedNodes.push(i);
+      }
+    }
+
+    // Get parameter labels from PRISM API
+    const paramLabels = this.prismAPI.getParameterLabels('s');
+
+    // Build tooltip content
+    let html = '';
+
+    if (stackedNodes.length > 1) {
+      // Limit to showing first 5 stacked nodes to avoid huge tooltips
+      const nodesToShow = stackedNodes.slice(0, 5);
+      const remainingCount = stackedNodes.length - nodesToShow.length;
+
+      html += `<strong>${stackedNodes.length} Stacked Nodes${remainingCount > 0 ? ` (showing ${nodesToShow.length})` : ''}</strong>`;
+      html += `<div style="display: flex; gap: 12px; margin-top: 8px; flex-wrap: wrap;">`;
+
+      // Show each stacked node in a column
+      nodesToShow.forEach((stackedIndex) => {
+        const stackedNode = this.nodes[stackedIndex];
+        html += `<div style="flex: 1; min-width: 200px; max-width: 250px; padding: 8px; background: rgba(230, 230, 230, 0.5); border-radius: 3px;">`;
+        html += `<strong style="font-size: 11px; border-bottom: 1px solid #bbb;">Node #${stackedNode.id}</strong>`;
+        html += `<div class="property">Pos: (${stackedNode.x.toFixed(2)}, ${stackedNode.y.toFixed(2)})</div>`;
+
+        if ((stackedNode as any).degree !== undefined) {
+          html += `<div class="property">Connections: ${(stackedNode as any).degree}</div>`;
+        }
+
+        html += `<div class="property">Cluster: ${stackedNode.cluster}</div>`;
+        html += `<div class="property">Type: ${stackedNode.type}</div>`;
+
+        // Show parameters
+        html += `<div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #bbb;">`;
+        stackedNode.parameters.forEach((value, index) => {
+          const label = paramLabels[index]?.label || `P${index}`;
+          html += `<div class="property">${label}: ${value.toFixed(3)}</div>`;
+        });
+        html += `</div>`;
+        html += `</div>`;
+      });
+
+      html += `</div>`;
+    } else {
+      // Single node tooltip (original format)
+      html = `<strong>Node #${node.id}</strong>`;
+      html += `<div class="property">Position: (${node.x.toFixed(2)}, ${node.y.toFixed(2)})</div>`;
+
+      if ((node as any).degree !== undefined) {
+        html += `<div class="property">Connections: ${(node as any).degree}</div>`;
+      }
+
+      html += `<div class="property">Cluster: ${node.cluster}</div>`;
+      html += `<div class="property">Type: ${node.type}</div>`;
+
+      // Show parameters
+      html += `<div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #ddd;">`;
+      node.parameters.forEach((value, index) => {
+        const label = paramLabels[index]?.label || `P${index}`;
+        html += `<div class="property">${label}: ${value.toFixed(3)}</div>`;
+      });
+      html += `</div>`;
+    }
+
+    this.tooltipElement.innerHTML = html;
+    this.tooltipElement.classList.remove('hidden');
+    this.updateTooltipPosition(x, y);
+  }
+
+  private updateTooltipPosition(x: number, y: number): void {
+    if (!this.tooltipElement) return;
+
+    // Position tooltip offset from cursor
+    const offsetX = 15;
+    const offsetY = 15;
+
+    this.tooltipElement.style.left = `${x + offsetX}px`;
+    this.tooltipElement.style.top = `${y + offsetY}px`;
+  }
+
+  private hideNodeTooltip(): void {
+    if (!this.tooltipElement) return;
+
+    this.hoveredNodeIndex = -1;
+    this.tooltipElement.classList.add('hidden');
   }
 
   private onNodeClick(event: MouseEvent): void {
@@ -1085,43 +1488,139 @@ export class Graph2D {
       this.ui.updateStatus("View reset to fit all nodes");
     } else {
       // Standard reset for non-parameter layouts
+      // Calculate the actual extent of nodes to fit them in view
+      if (this.nodes.length > 0) {
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+
+        this.nodes.forEach(node => {
+          minX = Math.min(minX, node.x);
+          maxX = Math.max(maxX, node.x);
+          minY = Math.min(minY, node.y);
+          maxY = Math.max(maxY, node.y);
+        });
+
+        const rangeX = maxX - minX;
+        const rangeY = maxY - minY;
+        const maxRange = Math.max(rangeX, rangeY);
+
+        // Calculate zoom to fit all nodes with some padding
+        const viewSize = 50; // Base camera size
+        const padding = 1.2; // 20% padding
+        this.zoomLevel = (viewSize * 2) / (maxRange * padding);
+
+        console.log(`[resetView] Node extent: X[${minX.toFixed(1)}, ${maxX.toFixed(1)}], Y[${minY.toFixed(1)}, ${maxY.toFixed(1)}]`);
+        console.log(`[resetView] Setting zoom to ${this.zoomLevel.toFixed(3)}x to fit range ${maxRange.toFixed(1)}`);
+      } else {
+        this.zoomLevel = 1.0;
+      }
+
       this.panOffset.set(0, 0);
-      this.zoomLevel = 1.0;
       this.updateCameraPosition();
       this.ui.updateZoomDisplay(this.zoomLevel);
-      this.ui.updateStatus("View reset to center");
+      this.ui.updateStatus("View reset to fit all nodes");
     }
   }
 
+  // Determine how many decimal places to show based on the interval
+  private getDecimalPlaces(interval: number): number {
+    if (interval === 0) return 0;
+
+    // For intervals like 2.5, 0.25, 0.025, we need enough decimals
+    // Get the power of 10
+    const log10 = Math.log10(Math.abs(interval));
+    const power = Math.floor(log10);
+
+    // Normalize to [1, 10)
+    const normalized = interval / Math.pow(10, power);
+
+    // If normalized is 2.5, we need one decimal place regardless of power
+    // Examples:
+    // - interval = 2.5 (power=0, normalized=2.5) -> need 1 decimal
+    // - interval = 0.25 (power=-1, normalized=2.5) -> need 2 decimals
+    // - interval = 25 (power=1, normalized=2.5) -> need 0 decimals
+    // - interval = 1 (power=0, normalized=1) -> need 0 decimals
+    // - interval = 0.1 (power=-1, normalized=1) -> need 1 decimal
+
+    const hasDecimalMultiplier = Math.abs(normalized - 2.5) < 0.01; // Check if it's 2.5
+
+    if (hasDecimalMultiplier) {
+      // For 2.5 multipliers, need one extra decimal
+      return Math.max(0, -power + 1);
+    } else {
+      // For 1 and 5 multipliers
+      return Math.max(0, -power);
+    }
+  }
+
+  // Calculate a single nice world-space interval
+  // Only uses 1, 2.5, 5 × 10^n (e.g., 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, etc.)
+  private calculateNiceWorldInterval(visibleRange: number): number {
+    // Target approximately 10-20 grid squares across the visible range
+    const targetDivisions = 15;
+    const roughInterval = visibleRange / targetDivisions;
+
+    // Find the power of 10
+    const log10 = Math.log10(roughInterval);
+    const powerOf10 = Math.floor(log10);
+    const magnitude = Math.pow(10, powerOf10);
+
+    // Normalize to range [1, 10)
+    const normalized = roughInterval / magnitude;
+
+    // Choose from allowed values: 1, 2.5, 5, 10
+    let multiplier: number;
+    if (normalized <= 1.5) {
+      multiplier = 1;
+    } else if (normalized <= 3.5) {
+      multiplier = 2.5;
+    } else if (normalized <= 7.5) {
+      multiplier = 5;
+    } else {
+      // Use 10, which is 1 × 10^(powerOf10 + 1)
+      return Math.pow(10, powerOf10 + 1);
+    }
+
+    return multiplier * magnitude;
+  }
+
   // Calculate nice round intervals for axis labels
-  // Triple frequency: targeting 15 divisions instead of 5
+  // Only uses whole and half powers of 10: 0.5, 1, 2.5, 5, 10, 25, 50, 100, etc.
   private calculateNiceInterval(min: number, max: number, targetDivisions: number = 15): number[] {
     const range = max - min;
     if (range === 0) return [min];
 
-    // Calculate rough interval with higher frequency
+    // Calculate rough interval
     const roughInterval = range / (targetDivisions - 1);
 
-    // Find the magnitude (power of 10)
-    const magnitude = Math.pow(10, Math.floor(Math.log10(roughInterval)));
+    // Find the base magnitude (power of 10)
+    const log10 = Math.log10(roughInterval);
+    const baseMagnitude = Math.floor(log10);
 
-    // Normalize the rough interval to be between 1 and 10
-    const normalized = roughInterval / magnitude;
+    // Allowed multipliers: 0.5, 1, 2.5, 5 (repeating pattern)
+    // These correspond to: 0.5×10^n, 1×10^n, 2.5×10^n, 5×10^n, 10×10^n (which is 1×10^(n+1))
+    const allowedMultipliers = [0.5, 1, 2.5, 5];
 
-    // Choose a nice interval (0.5, 1, 2, 5, or 10) - added 0.5 for finer granularity
+    // Normalize the rough interval to be between 0.5 and 5
+    const normalized = roughInterval / Math.pow(10, baseMagnitude);
+
+    // Find the best multiplier
     let niceNormalized: number;
     if (normalized < 0.75) {
       niceNormalized = 0.5;
-    } else if (normalized < 1.5) {
+    } else if (normalized < 1.75) {
       niceNormalized = 1;
-    } else if (normalized < 3) {
-      niceNormalized = 2;
-    } else if (normalized < 7) {
+    } else if (normalized < 3.5) {
+      niceNormalized = 2.5;
+    } else if (normalized < 7.5) {
       niceNormalized = 5;
     } else {
-      niceNormalized = 10;
+      // Jump to next power of 10
+      niceNormalized = 1;
+      return this.calculateNiceInterval(min, max, Math.ceil(targetDivisions / 2));
     }
 
+    const magnitude = Math.pow(10, baseMagnitude);
     const niceInterval = niceNormalized * magnitude;
 
     // Generate nice tick values
@@ -1131,7 +1630,8 @@ export class Graph2D {
     const ticks: number[] = [];
     for (let tick = minTick; tick <= maxTick; tick += niceInterval) {
       // Handle floating point precision issues
-      const roundedTick = Math.round(tick / magnitude) * magnitude;
+      // Round to avoid floating point errors
+      const roundedTick = Math.round(tick / (magnitude * 0.01)) * (magnitude * 0.01);
       ticks.push(roundedTick);
     }
 
@@ -1141,6 +1641,176 @@ export class Graph2D {
     }
 
     return ticks;
+  }
+
+  /**
+   * Detect overlapping nodes and create labels for them
+   */
+  private updateOverlapLabels(): void {
+    // Clear existing overlap labels
+    this.clearOverlapLabels();
+
+    if (!this.nodes.length) return;
+
+    // Create a map of positions to node indices
+    const positionMap = new Map<string, number[]>();
+    const epsilon = 0.001; // Tolerance for considering positions "equal"
+
+    // Group nodes by position
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+      // Round to avoid floating point precision issues
+      const posKey = `${Math.round(node.x / epsilon) * epsilon},${Math.round(node.y / epsilon) * epsilon}`;
+
+      if (!positionMap.has(posKey)) {
+        positionMap.set(posKey, []);
+      }
+      positionMap.get(posKey)!.push(i);
+    }
+
+    // Create labels for positions with multiple nodes
+    this.overlapLabelsGroup = new THREE.Group();
+
+    positionMap.forEach((nodeIndices) => {
+      if (nodeIndices.length > 1) {
+        // Get position from first node
+        const firstNode = this.nodes[nodeIndices[0]];
+        const count = nodeIndices.length;
+
+        // Create label sprite
+        const texture = this.createOverlapCountTexture(count.toString());
+        const spriteMaterial = new THREE.SpriteMaterial({
+          map: texture,
+          transparent: true,
+          opacity: 0.95,
+          sizeAttenuation: false, // Use screen-space sizing
+          depthTest: false // Always render on top
+        });
+        const sprite = new THREE.Sprite(spriteMaterial);
+
+        // Calculate screen-space offset: 1vh up, 1vw right
+        // Convert viewport units to normalized device coordinates
+        const viewportHeight = window.innerHeight;
+        const viewportWidth = window.innerWidth;
+        const offsetYViewport = viewportHeight * 0.01; // 1vh
+        const offsetXViewport = viewportWidth * 0.01; // 1vw
+
+        // Convert to world space based on current camera view
+        const viewHeight = this.camera.top - this.camera.bottom;
+        const viewWidth = this.camera.right - this.camera.left;
+        const offsetY = (offsetYViewport / viewportHeight) * viewHeight;
+        const offsetX = (offsetXViewport / viewportWidth) * viewWidth;
+
+        sprite.position.set(firstNode.x + offsetX, firstNode.y + offsetY, 1);
+
+        // Font size: 0.5vh in screen space
+        // Convert viewport height percentage to world space
+        const labelScale = viewHeight * 0.02; // 2% of view height for visibility
+        sprite.scale.set(labelScale, labelScale, 1);
+
+        // Store node reference for position updates
+        sprite.userData = { nodeIndex: nodeIndices[0] };
+
+        if (this.overlapLabelsGroup) {
+          this.overlapLabelsGroup.add(sprite);
+        }
+      }
+    });
+
+    if (this.overlapLabelsGroup && this.overlapLabelsGroup.children.length > 0) {
+      this.scene.add(this.overlapLabelsGroup);
+      console.log(`Created ${this.overlapLabelsGroup.children.length} overlap labels`);
+    } else {
+      console.log('No overlapping nodes found');
+    }
+  }
+
+  /**
+   * Create a texture for overlap count labels
+   */
+  private createOverlapCountTexture(text: string): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d')!;
+
+    // Much smaller font for tiny labels
+    const fontSize = 80;
+    context.font = `bold ${fontSize}px Arial`;
+    const metrics = context.measureText(text);
+    const textWidth = metrics.width;
+
+    // Set canvas size with minimal padding
+    const padding = 8;
+    canvas.width = Math.max(96, textWidth + padding * 2);
+    canvas.height = 96;
+
+    // Clear background (transparent)
+    context.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw text - black, no background
+    context.font = `bold ${fontSize}px Arial`;
+    context.fillStyle = 'rgba(0, 0, 0, 1.0)'; // Black text
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(text, canvas.width / 2, canvas.height / 2);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  /**
+   * Update overlap label positions and scales without recreating them
+   */
+  private updateOverlapLabelPositions(): void {
+    if (!this.overlapLabelsGroup) return;
+
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+    const offsetYViewport = viewportHeight * 0.01; // 1vh
+    const offsetXViewport = viewportWidth * 0.01; // 1vw
+
+    // Convert to world space based on current camera view
+    const viewHeight = this.camera.top - this.camera.bottom;
+    const viewWidth = this.camera.right - this.camera.left;
+    const offsetY = (offsetYViewport / viewportHeight) * viewHeight;
+    const offsetX = (offsetXViewport / viewportWidth) * viewWidth;
+
+    // Font size: 0.5vh in screen space
+    // Convert viewport height percentage to world space
+    const labelScale = viewHeight * 0.02; // 2% of view height for visibility
+
+    // Update each sprite's position and scale
+    this.overlapLabelsGroup.children.forEach((sprite) => {
+      if (sprite instanceof THREE.Sprite && sprite.userData.nodeIndex !== undefined) {
+        const nodeIndex = sprite.userData.nodeIndex as number;
+        const node = this.nodes[nodeIndex];
+        if (node) {
+          // Update position based on current node position and viewport offsets
+          sprite.position.set(node.x + offsetX, node.y + offsetY, 1);
+          sprite.scale.set(labelScale, labelScale, 1);
+        }
+      }
+    });
+  }
+
+  /**
+   * Clear overlap labels
+   */
+  private clearOverlapLabels(): void {
+    if (this.overlapLabelsGroup) {
+      this.overlapLabelsGroup.traverse((child) => {
+        if (child instanceof THREE.Sprite) {
+          if (child.material instanceof THREE.SpriteMaterial) {
+            if (child.material.map) {
+              child.material.map.dispose();
+            }
+            child.material.dispose();
+          }
+        }
+      });
+      this.scene.remove(this.overlapLabelsGroup);
+      this.overlapLabelsGroup = null;
+    }
   }
 
   // Create a canvas-based texture for text labels
@@ -1162,7 +1832,7 @@ export class Graph2D {
     context.fillStyle = 'rgba(0, 0, 0, 0)';
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.font = `${fontSize}px monospace`;
-    context.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    context.fillStyle = 'rgba(0, 0, 0, 0.9)'; // Dark text for light background
     context.textAlign = 'center';
     context.textBaseline = 'middle';
 
@@ -1209,8 +1879,8 @@ export class Graph2D {
 
     // Create axis lines with constant screen-space width
     const axisLinesMaterial = new THREE.LineBasicMaterial({
-      color: 0xffffff,
-      opacity: 0.7,
+      color: 0x000000,
+      opacity: 0.8,
       transparent: true,
       linewidth: 1
     });
@@ -1241,10 +1911,10 @@ export class Graph2D {
     const yAxisLine = new THREE.Line(yAxisGeometry, axisLinesMaterial);
     this.axisGroup.add(yAxisLine);
 
-    // Create grid lines material (lighter and more transparent than axes)
+    // Create grid lines material (more visible)
     const gridLinesMaterial = new THREE.LineBasicMaterial({
-      color: 0x444444,
-      opacity: 0.2,
+      color: 0x666666,
+      opacity: 0.3,
       transparent: true,
       linewidth: 1
     });
@@ -1252,6 +1922,7 @@ export class Graph2D {
     // Create labels along X-axis
     // Calculate label scale based on viewport size to maintain constant screen size
     const viewHeight = viewTop - viewBottom;
+    const viewWidth = viewRight - viewLeft;
     const labelScale = viewHeight * 0.08; // 8% of viewport height for larger labels
 
     // Calculate visible X range in parameter space
@@ -1262,9 +1933,45 @@ export class Graph2D {
     // Convert viewport left/right to parameter values
     const visibleMinX = xRange > 0 ? minValues.x + ((viewLeft + spread) / (2 * spread)) * xRange : minValues.x;
     const visibleMaxX = xRange > 0 ? minValues.x + ((viewRight + spread) / (2 * spread)) * xRange : maxValues.x;
+    const visibleMinY = yRange > 0 ? minValues.y + ((viewBottom + spread) / (2 * spread)) * yRange : minValues.y;
+    const visibleMaxY = yRange > 0 ? minValues.y + ((viewTop + spread) / (2 * spread)) * yRange : maxValues.y;
 
-    // Calculate nice tick values for visible X-axis range
-    const xTicks = this.calculateNiceInterval(visibleMinX, visibleMaxX);
+    // To make square grids, we need the same WORLD-SPACE interval on both axes
+    // Calculate visible world space ranges
+    const visibleWorldWidth = viewRight - viewLeft;
+    const visibleWorldHeight = viewTop - viewBottom;
+
+    // Use the larger dimension to determine a nice world-space interval
+    const maxWorldDimension = Math.max(visibleWorldWidth, visibleWorldHeight);
+
+    // Calculate nice world-space interval using only 1, 2.5, 5 × 10^n
+    const worldInterval = this.calculateNiceWorldInterval(maxWorldDimension);
+
+    // Now convert world interval to parameter intervals (different for X and Y if ranges differ)
+    // worldInterval units in world space = how many parameter units?
+    // World space spans 2*spread = entire parameter range
+    const xParamPerWorld = xRange / (2 * spread);
+    const yParamPerWorld = yRange / (2 * spread);
+
+    const xParamInterval = worldInterval * xParamPerWorld;
+    const yParamInterval = worldInterval * yParamPerWorld;
+
+    // Generate X-axis ticks starting from 0 (or nearest multiple below visible range)
+    const xTicks: number[] = [];
+    // Find the world position of parameter value 0
+    const zeroWorldX = -spread + (xRange > 0 ? (0 - minValues.x) / xRange : 0.5) * (2 * spread);
+
+    // Find starting tick that's a multiple of xParamInterval and at or before visible range
+    // Start from 0 and go in both directions
+    const xStartMultiplier = Math.floor(visibleMinX / xParamInterval);
+    const xEndMultiplier = Math.ceil(visibleMaxX / xParamInterval);
+
+    for (let mult = xStartMultiplier; mult <= xEndMultiplier; mult++) {
+      const val = mult * xParamInterval;
+      if (val >= visibleMinX - xParamInterval * 0.01 && val <= visibleMaxX + xParamInterval * 0.01) {
+        xTicks.push(val);
+      }
+    }
 
     for (const value of xTicks) {
       // Calculate world position based on parameter value
@@ -1274,16 +1981,9 @@ export class Graph2D {
       // Only show labels that are within viewport
       if (xPos < viewLeft || xPos > viewRight) continue;
 
-      // Determine decimal places based on magnitude
-      const magnitude = Math.abs(value);
-      let decimals = 0;
-      if (magnitude < 1 && magnitude > 0) {
-        decimals = Math.max(0, -Math.floor(Math.log10(magnitude)) + 1);
-      } else if (magnitude >= 10) {
-        decimals = 0;
-      } else {
-        decimals = 1;
-      }
+      // Determine decimal places based on interval size
+      // For intervals like 0.25, 2.5, we need appropriate decimal places
+      const decimals = this.getDecimalPlaces(xParamInterval);
 
       // Create text sprite for label
       const texture = this.createTextTexture(value.toFixed(decimals), 64);
@@ -1317,13 +2017,18 @@ export class Graph2D {
       }
     }
 
-    // Calculate visible Y range in parameter space
-    // Convert viewport bottom/top to parameter values
-    const visibleMinY = yRange > 0 ? minValues.y + ((viewBottom + spread) / (2 * spread)) * yRange : minValues.y;
-    const visibleMaxY = yRange > 0 ? minValues.y + ((viewTop + spread) / (2 * spread)) * yRange : maxValues.y;
+    // Generate Y-axis ticks starting from 0 (or nearest multiple below visible range)
+    const yTicks: number[] = [];
+    // Start from 0 and go in both directions
+    const yStartMultiplier = Math.floor(visibleMinY / yParamInterval);
+    const yEndMultiplier = Math.ceil(visibleMaxY / yParamInterval);
 
-    // Calculate nice tick values for visible Y-axis range
-    const yTicks = this.calculateNiceInterval(visibleMinY, visibleMaxY);
+    for (let mult = yStartMultiplier; mult <= yEndMultiplier; mult++) {
+      const val = mult * yParamInterval;
+      if (val >= visibleMinY - yParamInterval * 0.01 && val <= visibleMaxY + yParamInterval * 0.01) {
+        yTicks.push(val);
+      }
+    }
 
     for (const value of yTicks) {
       // Calculate world position based on parameter value
@@ -1333,16 +2038,8 @@ export class Graph2D {
       // Only show labels that are within viewport
       if (yPos < viewBottom || yPos > viewTop) continue;
 
-      // Determine decimal places based on magnitude
-      const magnitude = Math.abs(value);
-      let decimals = 0;
-      if (magnitude < 1 && magnitude > 0) {
-        decimals = Math.max(0, -Math.floor(Math.log10(magnitude)) + 1);
-      } else if (magnitude >= 10) {
-        decimals = 0;
-      } else {
-        decimals = 1;
-      }
+      // Determine decimal places based on interval size
+      const decimals = this.getDecimalPlaces(yParamInterval);
 
       // Create text sprite for label
       const texture = this.createTextTexture(value.toFixed(decimals), 64);
@@ -1438,9 +2135,45 @@ export class Graph2D {
     }
   }
 
+  /**
+   * Apply color parameter to nodes without changing their positions
+   */
+  public applyColorParameter(colorParamIndex: number): void {
+    if (!this.pointCloud || this.nodes.length === 0) return;
+
+    if (colorParamIndex < 0 || colorParamIndex >= 10) {
+      this.ui.updateStatus('Invalid color parameter index');
+      return;
+    }
+
+    this.ui.updateStatus(`Applying color parameter ${colorParamIndex}...`);
+
+    const colors = this.pointCloud.geometry.attributes.color as THREE.BufferAttribute;
+
+    // Find min/max values for color mapping
+    let minColor = Infinity, maxColor = -Infinity;
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+      minColor = Math.min(minColor, node.parameters[colorParamIndex]);
+      maxColor = Math.max(maxColor, node.parameters[colorParamIndex]);
+    }
+
+    // Apply colors
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+      const colorValue = node.parameters[colorParamIndex];
+      const color = this.getColorFromParameter(colorValue, minColor, maxColor);
+      colors.setXYZ(i, color.r, color.g, color.b);
+    }
+
+    colors.needsUpdate = true;
+    this.ui.updateStatus(`Colored by parameter ${colorParamIndex}`);
+  }
+
   public rearrangeByParameters(xParamIndex: number, yParamIndex: number, colorParamIndex: number = -1): void {
     if (!this.pointCloud || this.nodes.length === 0) return;
 
+    console.log(`[Parameter View] Starting with ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
     this.ui.updateStatus(`Rearranging nodes by parameters ${xParamIndex} and ${yParamIndex}...`);
 
     // Update configuration
@@ -1512,6 +2245,14 @@ export class Graph2D {
       colors.needsUpdate = true;
     }
 
+    // Redraw edge lines if they are visible
+    console.log(`[Parameter View] Finished - ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
+    if (this.config.edgesVisible && this.edges.length > 0) {
+      console.log(`[Parameter View] Redrawing ${this.edges.length} edge lines`);
+      this.clearEdgeLines();
+      this.createEdgeLines();
+    }
+
     // Create axis visualization in Three.js scene
     this.createAxisVisualization(
       xParamIndex,
@@ -1523,6 +2264,9 @@ export class Graph2D {
 
     // Adjust camera view to fit all nodes with some padding
     this.fitViewToParameterRange(spread);
+
+    // Update overlap labels after rearrangement
+    this.updateOverlapLabels();
 
     const colorMsg = colorParamIndex >= 0 ? `, colored by P${colorParamIndex}` : '';
     this.ui.updateStatus(`Nodes rearranged by parameters ${xParamIndex} (X) and ${yParamIndex} (Y)${colorMsg}`);
@@ -1610,13 +2354,33 @@ export class Graph2D {
     const aspect = window.innerWidth / window.innerHeight;
     const viewSize = 50 / this.zoomLevel;
 
-    this.camera.left = -viewSize * aspect + this.panOffset.x;
-    this.camera.right = viewSize * aspect + this.panOffset.x;
-    this.camera.top = viewSize + this.panOffset.y;
-    this.camera.bottom = -viewSize + this.panOffset.y;
+    // For 1:1 aspect ratio, use the same scale for both X and Y
+    if (aspect > 1) {
+      // Wider than tall - expand horizontally
+      this.camera.left = -viewSize * aspect + this.panOffset.x;
+      this.camera.right = viewSize * aspect + this.panOffset.x;
+      this.camera.top = viewSize + this.panOffset.y;
+      this.camera.bottom = -viewSize + this.panOffset.y;
+    } else {
+      // Taller than wide - expand vertically
+      this.camera.left = -viewSize + this.panOffset.x;
+      this.camera.right = viewSize + this.panOffset.x;
+      this.camera.top = viewSize / aspect + this.panOffset.y;
+      this.camera.bottom = -viewSize / aspect + this.panOffset.y;
+    }
 
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+
+    // Update axes if they exist
+    if (this.currentAxisInfo) {
+      this.updateAxisVisualization();
+    }
+
+    // Update overlap label positions for new window size
+    if (this.overlapLabelsGroup) {
+      this.updateOverlapLabelPositions();
+    }
   }
 
 
@@ -1670,6 +2434,9 @@ export class Graph2D {
       const paramLabels = this.prismAPI.getParameterLabels('s');
       this.ui.updateParameterSelections(paramLabels);
 
+      // Update overlap labels
+      this.updateOverlapLabels();
+
       const viewInfo = viewIds ? ` (views: ${viewIds.join(', ')})` : '';
       this.ui.updateStatus(`Loaded PRISM project "${projectId}"${viewInfo}: ${nodeCount.toLocaleString()} nodes, ${this.edges.length.toLocaleString()} edges`);
     } catch (error) {
@@ -1695,6 +2462,7 @@ export class Graph2D {
   public dispose(): void {
     this.clearPointCloud();
     this.clearAxisVisualization();
+    this.clearOverlapLabels();
 
     if (this.renderer) {
       this.renderer.dispose();

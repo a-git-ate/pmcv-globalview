@@ -36,11 +36,7 @@
         <button id="btn-500k">500K Nodes</button>
         <button id="btn-1m">1M Nodes</button>
         <br>
-        <button id="btn-force" class="layout-btn">Force Layout</button>
-        <button id="btn-force-directed" class="layout-btn">Force-Directed</button>
-        <br>
-        <button id="btn-grid" class="layout-btn">Grid Layout</button>
-        <button id="btn-circular" class="layout-btn">Circular Layout</button>
+        <button id="btn-force-directed" class="layout-btn">Force-Directed Layout</button>
         <br>
         <button id="btn-lod">Toggle LOD</button>
         <button id="btn-edges">Toggle Edges</button>
@@ -96,6 +92,8 @@
             </select>
           </div>
           <button id="btn-apply-params">Apply Parameters</button>
+          <br>
+          <button id="btn-apply-color">Apply Color Only</button>
           <button id="btn-reset-layout">Reset Layout</button>
         </div>
       </div>
@@ -103,6 +101,8 @@
       <div id="progress" class="hidden">
         <div id="progress-bar"></div>
       </div>
+
+      <div id="node-tooltip" class="hidden"></div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

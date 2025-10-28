@@ -16,9 +16,9 @@ export class UIManager {
     const elementIds = [
       'btn-load-api', 'btn-load-prism', 'btn-api-health', 'project-id', 'view-ids',
       'btn-1k', 'btn-10k', 'btn-100k', 'btn-500k', 'btn-1m',
-      'btn-force', 'btn-force-directed', 'btn-grid', 'btn-circular',
+      'btn-force-directed',
       'btn-lod', 'btn-edges', 'btn-reset', 'btn-clusters', 'btn-gridlines', 'btn-export',
-      'param-x-select', 'param-y-select', 'param-color-select', 'btn-apply-params', 'btn-reset-layout',
+      'param-x-select', 'param-y-select', 'param-color-select', 'btn-apply-params', 'btn-apply-color', 'btn-reset-layout',
       'stats', 'progress', 'progress-bar'
     ];
 
@@ -54,11 +54,8 @@ export class UIManager {
     this.addClickListener('btn-500k', () => this.graph.generateNodes(500000));
     this.addClickListener('btn-1m', () => this.graph.generateNodes(1000000));
 
-    // Layout buttons
-    this.addClickListener('btn-force', () => this.graph.applyLayout('force'));
+    // Layout button
     this.addClickListener('btn-force-directed', () => this.graph.applyLayout('force_directed'));
-    this.addClickListener('btn-grid', () => this.graph.applyLayout('grid'));
-    this.addClickListener('btn-circular', () => this.graph.applyLayout('circular'));
 
     // Control buttons
     this.addClickListener('btn-lod', () => this.graph.toggleLOD());
@@ -70,6 +67,7 @@ export class UIManager {
 
     // Parameter view controls
     this.addClickListener('btn-apply-params', () => this.handleApplyParameters());
+    this.addClickListener('btn-apply-color', () => this.handleApplyColor());
     this.addClickListener('btn-reset-layout', () => this.graph.resetToLayoutMode());
   }
 
@@ -213,6 +211,29 @@ export class UIManager {
     }
 
     this.graph.rearrangeByParameters(xParamIndex, yParamIndex, colorParamIndex);
+  }
+
+  private handleApplyColor(): void {
+    const colorSelect = this.getElement('param-color-select') as HTMLSelectElement;
+
+    if (!colorSelect) {
+      console.warn('Color selection element not found');
+      return;
+    }
+
+    const colorParamIndex = parseInt(colorSelect.value);
+
+    if (isNaN(colorParamIndex)) {
+      console.warn('Invalid color parameter index');
+      return;
+    }
+
+    if (colorParamIndex < 0) {
+      this.updateStatus('Please select a color parameter (not "None")');
+      return;
+    }
+
+    this.graph.applyColorParameter(colorParamIndex);
   }
 
   private async handleAPIHealthCheck(): Promise<void> {

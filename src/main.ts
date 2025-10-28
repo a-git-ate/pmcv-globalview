@@ -9,7 +9,7 @@ let graph: Graph2D | null = null;
 const graphConfig: Partial<GraphConfig> = {
   maxVisibleNodes: 50000,
   renderDistance: 800,
-  minZoom: 0.05,
+  minZoom: 0.001, // Allow zooming out much further (was 0.05)
   maxZoom: 100.0,
   lodEnabled: true,
   edgesVisible: false,
