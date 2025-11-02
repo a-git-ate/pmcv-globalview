@@ -20,6 +20,7 @@ body {
   padding: 0 15px;
   z-index: 200;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  margin: 0;
 }
 
 #project-tabs {
@@ -202,6 +203,8 @@ body {
   z-index: 150;
   overflow-y: auto;
   border-right: 1px solid #ddd;
+  margin-top: 0;
+  padding-top: 0;
 }
 
 #debug-content {

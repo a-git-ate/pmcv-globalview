@@ -14,7 +14,6 @@ export class UIManager {
 
   private cacheElements(): void {
     const elementIds = [
-      'btn-load-api', 'btn-load-prism', 'btn-api-health', 'project-id', 'view-ids',
       'btn-1k', 'btn-10k', 'btn-100k', 'btn-500k', 'btn-1m',
       'btn-force-directed',
       'btn-lod', 'btn-edges', 'btn-reset', 'btn-clusters', 'btn-gridlines', 'btn-export',
@@ -51,11 +50,6 @@ export class UIManager {
   }
 
   private setupEventListeners(): void {
-    // API load buttons
-    this.addClickListener('btn-load-api', () => this.graph.loadGraphFromAPI());
-    this.addClickListener('btn-load-prism', () => this.handleLoadPrismProject());
-    this.addClickListener('btn-api-health', () => this.handleAPIHealthCheck());
-
     // Node generation buttons
     this.addClickListener('btn-1k', () => this.graph.generateNodes(1000));
     this.addClickListener('btn-10k', () => this.graph.generateNodes(10000));
@@ -168,43 +162,6 @@ export class UIManager {
     this.updateZoomDisplay(zoom);
   }
 
-  private async handleLoadPrismProject(): Promise<void> {
-    const projectIdInput = this.getElement('project-id') as HTMLInputElement;
-    const viewIdsInput = this.getElement('view-ids') as HTMLInputElement;
-    
-    if (!projectIdInput) {
-      this.showError('Project ID input not found');
-      return;
-    }
-    
-    const projectId = projectIdInput.value.trim();
-    if (!projectId) {
-      this.showError('Please enter a PRISM project ID');
-      return;
-    }
-    
-    let viewIds: number[] | undefined;
-    if (viewIdsInput && viewIdsInput.value.trim()) {
-      const viewIdsStr = viewIdsInput.value.trim();
-      viewIds = viewIdsStr
-        .split(',')
-        .map(id => parseInt(id.trim()))
-        .filter(id => !isNaN(id));
-        
-      if (viewIds.length === 0) {
-        this.showError('Invalid view IDs format. Use comma-separated numbers (e.g., 1,2,3)');
-        return;
-      }
-    }
-    
-    try {
-      await this.graph.loadPrismProject(projectId, viewIds);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to load PRISM project';
-      this.showError(message);
-    }
-  }
-  
   private handleApplyParameters(): void {
     const xSelect = this.getElement('param-x-select') as HTMLSelectElement;
     const ySelect = this.getElement('param-y-select') as HTMLSelectElement;
@@ -248,21 +205,6 @@ export class UIManager {
     }
 
     this.graph.applyColorParameter(colorParamIndex);
-  }
-
-  private async handleAPIHealthCheck(): Promise<void> {
-    this.updateStatus('Checking API health...');
-    this.updateAPIStatus('Checking...');
-
-    try {
-      const isHealthy = await this.graph.checkAPIHealth();
-      const statusMessage = isHealthy ? 'API is healthy ✓' : 'API is not responding ✗';
-      this.updateStatus(statusMessage);
-      this.updateAPIStatus(isHealthy ? 'Connected ✓' : 'Disconnected ✗', isHealthy ? '#4a4' : '#a44');
-    } catch (error) {
-      this.updateStatus('API health check failed ✗');
-      this.updateAPIStatus('Failed ✗', '#a44');
-    }
   }
 
   /**

@@ -549,7 +549,8 @@ export class PrismAPI {
    */
   async checkModel(projectId: string): Promise<any> {
     try {
-      const url = `${this.baseUrl}/${encodeURIComponent(projectId)}/check`;
+      var url = `${this.baseUrl}/${encodeURIComponent(projectId)}/check`;
+      var params = this.parameterMetadata;
       console.log(`[PrismAPI] Triggering model check: ${url}`);
 
       const controller = new AbortController();
@@ -585,7 +586,7 @@ export class PrismAPI {
    */
   async resetModel(projectId: string): Promise<any> {
     try {
-      const url = `${this.baseUrl}/${encodeURIComponent(projectId)}/reset`;
+      const url = `${this.baseUrl}/${encodeURIComponent(projectId)}/clear`;
       console.log(`[PrismAPI] Resetting model: ${url}`);
 
       const controller = new AbortController();
