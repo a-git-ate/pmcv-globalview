@@ -455,16 +455,199 @@ export class PrismAPI {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
+
       const response = await fetch(this.baseUrl, {
         method: 'HEAD',
         signal: controller.signal
       });
-      
+
       clearTimeout(timeoutId);
       return response.ok;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Fetch list of available projects
+   */
+  async fetchProjects(): Promise<string[]> {
+    try {
+      const url = `${this.baseUrl}/0/projects`;
+      console.log(`[PrismAPI] Fetching projects from: ${url}`);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const projects = await response.json();
+
+      if (!Array.isArray(projects)) {
+        throw new Error('Invalid response: expected array of project IDs');
+      }
+
+      console.log(`[PrismAPI] Found ${projects.length} projects`);
+      return projects;
+
+    } catch (error) {
+      console.error('[PrismAPI] Failed to fetch projects:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch project status including parameter states
+   */
+  async fetchProjectStatus(projectId: string): Promise<any> {
+    try {
+      const url = `${this.baseUrl}/${encodeURIComponent(projectId)}/status`;
+      console.log(`[PrismAPI] Fetching status from: ${url}`);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const status = await response.json();
+      return status;
+
+    } catch (error) {
+      console.error('[PrismAPI] Failed to fetch project status:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Trigger model checking for a project
+   */
+  async checkModel(projectId: string): Promise<any> {
+    try {
+      const url = `${this.baseUrl}/${encodeURIComponent(projectId)}/check`;
+      console.log(`[PrismAPI] Triggering model check: ${url}`);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // Longer timeout for model checking
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      console.log(`[PrismAPI] Model check initiated for project: ${projectId}`);
+      return result;
+
+    } catch (error) {
+      console.error('[PrismAPI] Model check failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Reset model for a project
+   */
+  async resetModel(projectId: string): Promise<any> {
+    try {
+      const url = `${this.baseUrl}/${encodeURIComponent(projectId)}/reset`;
+      console.log(`[PrismAPI] Resetting model: ${url}`);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      console.log(`[PrismAPI] Model reset for project: ${projectId}`);
+      return result;
+
+    } catch (error) {
+      console.error('[PrismAPI] Model reset failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if any parameters are still missing in the status
+   */
+  hasMinsingParameters(status: any): boolean {
+    if (!status?.info) return false;
+
+    // Check scheduler section
+    if (status.info.scheduler) {
+      const schedulerValues = Object.values(status.info.scheduler);
+      if (schedulerValues.some(v => v === 'missing')) {
+        return true;
+      }
+    }
+
+    // Check node type sections (s and t)
+    for (const nodeType of ['s', 't']) {
+      const nodeInfo = status.info[nodeType];
+      if (!nodeInfo) continue;
+
+      // Check all parameter categories
+      for (const category of Object.keys(nodeInfo)) {
+        const params = nodeInfo[category];
+        if (typeof params === 'object') {
+          for (const param of Object.values(params)) {
+            if (typeof param === 'object' && (param as any).status === 'missing') {
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    return false;
   }
 }

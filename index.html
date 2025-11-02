@@ -7,17 +7,63 @@
     <title>2D Million Node Graph - TypeScript</title>
   </head>
   <body>
-    <div id="container">
-      <div id="info">
-        <div><strong>2D Million Node Graph (TypeScript)</strong></div>
-        <div id="stats">Initializing...</div>
-        <div style="margin-top: 10px; font-size: 12px;">
+    <!-- Project Task Bar -->
+    <div id="project-taskbar">
+      <div id="project-tabs"></div>
+      <button id="btn-check-model" class="check-button" disabled>Check Model</button>
+      <button id="btn-reset-model" class="reset-button" disabled>Reset Model</button>
+    </div>
+
+    <!-- Debug Menu -->
+    <div id="debug-menu" class="hidden">
+      <div class="panel-header">
+        <strong>Debug Information</strong>
+        <button id="btn-close-debug" class="close-btn">×</button>
+      </div>
+      <div id="debug-content">
+        <div class="debug-section">
+          <div class="debug-section-title">Status</div>
+          <div id="debug-status">Initializing...</div>
+          <div id="debug-api-status">API: Not checked</div>
+          <div id="debug-model-info">Model: None loaded</div>
+        </div>
+
+        <div class="debug-section">
+          <div class="debug-section-title">Graph Info</div>
+          <div id="debug-node-count">Nodes: 0</div>
+          <div id="debug-edge-count">Edges: 0</div>
+          <div id="debug-layout">Layout: None</div>
+        </div>
+
+        <div class="debug-section">
+          <div class="debug-section-title">Three.js Renderer</div>
+          <div id="debug-renderer-info">Loading...</div>
+          <div id="debug-memory-info">Memory: N/A</div>
+        </div>
+
+        <div class="debug-section">
+          <div class="debug-section-title">Performance</div>
+          <div id="debug-render-time">Render Time: 0ms</div>
+          <div id="debug-fps">FPS: 0</div>
+        </div>
+
+        <div class="debug-section">
+          <div class="debug-section-title">Camera</div>
+          <div id="debug-zoom">Zoom: 1.0x</div>
+          <div id="debug-pan">Pan: (0, 0)</div>
+        </div>
+
+        <div class="debug-section">
+          <div class="debug-section-title">Controls</div>
           <div>Mouse: Orbit camera</div>
           <div>Wheel: Zoom</div>
           <div>Click: Select node</div>
         </div>
       </div>
-      
+    </div>
+
+    <div id="container">
+
       <div id="controls">
         <div><strong>Controls</strong></div>
         <button id="btn-load-api">Load Graph (ID: 0)</button>
@@ -95,6 +141,19 @@
           <br>
           <button id="btn-apply-color">Apply Color Only</button>
           <button id="btn-reset-layout">Reset Layout</button>
+        </div>
+
+        <!-- Parameter Status Section (Collapsible) -->
+        <div style="border-top: 1px solid #666; margin-top: 15px; padding-top: 10px;">
+          <button id="btn-toggle-param-status" style="width: 100%; background: #3498db;">
+            <strong>▼ Parameter Status</strong>
+          </button>
+          <div id="param-status-content" class="hidden" style="margin-top: 10px; max-height: 300px; overflow-y: auto;"></div>
+        </div>
+
+        <!-- Debug & Utility Buttons -->
+        <div style="border-top: 1px solid #666; margin-top: 15px; padding-top: 10px;">
+          <button id="btn-toggle-debug" class="debug-button" style="width: 100%;">Debug Info</button>
         </div>
       </div>
       

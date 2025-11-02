@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { UIManager } from './UIManager';
 import { PrismAPI } from './PrismAPI';
+import { ProjectManager } from './ProjectManager';
 import type {
   NodeData,
   EdgeData,
@@ -61,6 +62,9 @@ export class Graph2D {
   // PRISM API Integration
   private prismAPI: PrismAPI;
 
+  // Project Manager
+  public projectManager: ProjectManager;
+
   // Performance tracking
   private lastRenderTime: number = 0;
 
@@ -101,6 +105,9 @@ export class Graph2D {
 
     // Initialize PRISM API
     this.prismAPI = new PrismAPI('http://localhost:8080');
+
+    // Initialize Project Manager
+    this.projectManager = new ProjectManager(this, this.prismAPI);
 
     this.init();
   }
@@ -354,10 +361,14 @@ export class Graph2D {
       // Update overlap labels
       this.updateOverlapLabels();
 
+      // Update model info display
+      this.ui.updateModelInfo(graphId, nodeCount, this.edges.length);
+
       this.ui.updateStatus(`Loaded ${nodeCount.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load graph from API';
       this.ui.showError(message);
+      this.ui.clearModelInfo();
       throw error; // Re-throw to allow fallback in main.ts
     } finally {
       this.ui.enableButtons();
@@ -607,7 +618,7 @@ export class Graph2D {
     return new THREE.Vector2((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread);
   }
 
-  private calculateNodePosition(index: number, count: number, spread: number): THREE.Vector2 {
+  private calculateNodePosition(index: number, _count: number, spread: number): THREE.Vector2 {
     let x: number, y: number;
 
     if (this.currentLayout === 'force_directed') {
@@ -680,7 +691,9 @@ export class Graph2D {
     });
   }
 
-  private calculateForceDirectedPosition(index: number, spread: number): THREE.Vector2 {
+  // Currently unused but kept for potential future use
+  // @ts-expect-error - Unused method kept for future use
+  private _calculateForceDirectedPosition(index: number, spread: number): THREE.Vector2 {
     if (this.nodes.length === 0) {
       return new THREE.Vector2((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread);
     }
@@ -1586,6 +1599,8 @@ export class Graph2D {
 
   // Calculate nice round intervals for axis labels
   // Only uses whole and half powers of 10: 0.5, 1, 2.5, 5, 10, 25, 50, 100, etc.
+  // Currently unused but kept for potential future use
+  // @ts-expect-error - Unused method kept for future use
   private calculateNiceInterval(min: number, max: number, targetDivisions: number = 15): number[] {
     const range = max - min;
     if (range === 0) return [min];
@@ -1599,7 +1614,7 @@ export class Graph2D {
 
     // Allowed multipliers: 0.5, 1, 2.5, 5 (repeating pattern)
     // These correspond to: 0.5×10^n, 1×10^n, 2.5×10^n, 5×10^n, 10×10^n (which is 1×10^(n+1))
-    const allowedMultipliers = [0.5, 1, 2.5, 5];
+    // const allowedMultipliers = [0.5, 1, 2.5, 5];
 
     // Normalize the rough interval to be between 0.5 and 5
     const normalized = roughInterval / Math.pow(10, baseMagnitude);
@@ -1922,7 +1937,7 @@ export class Graph2D {
     // Create labels along X-axis
     // Calculate label scale based on viewport size to maintain constant screen size
     const viewHeight = viewTop - viewBottom;
-    const viewWidth = viewRight - viewLeft;
+    // const viewWidth = viewRight - viewLeft;
     const labelScale = viewHeight * 0.08; // 8% of viewport height for larger labels
 
     // Calculate visible X range in parameter space
@@ -1959,7 +1974,7 @@ export class Graph2D {
     // Generate X-axis ticks starting from 0 (or nearest multiple below visible range)
     const xTicks: number[] = [];
     // Find the world position of parameter value 0
-    const zeroWorldX = -spread + (xRange > 0 ? (0 - minValues.x) / xRange : 0.5) * (2 * spread);
+    // const zeroWorldX = -spread + (xRange > 0 ? (0 - minValues.x) / xRange : 0.5) * (2 * spread);
 
     // Find starting tick that's a multiple of xParamInterval and at or before visible range
     // Start from 0 and go in both directions
@@ -2437,11 +2452,15 @@ export class Graph2D {
       // Update overlap labels
       this.updateOverlapLabels();
 
+      // Update model info display
+      this.ui.updateModelInfo(projectId, nodeCount, this.edges.length, viewIds);
+
       const viewInfo = viewIds ? ` (views: ${viewIds.join(', ')})` : '';
       this.ui.updateStatus(`Loaded PRISM project "${projectId}"${viewInfo}: ${nodeCount.toLocaleString()} nodes, ${this.edges.length.toLocaleString()} edges`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load PRISM project';
       this.ui.showError(message);
+      this.ui.clearModelInfo();
     } finally {
       this.ui.enableButtons();
     }
@@ -2471,6 +2490,7 @@ export class Graph2D {
 
     this.prismAPI.clearCache();
     this.ui.dispose();
+    this.projectManager.dispose();
     this.nodes = [];
   }
 

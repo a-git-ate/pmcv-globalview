@@ -19,7 +19,16 @@ export class UIManager {
       'btn-force-directed',
       'btn-lod', 'btn-edges', 'btn-reset', 'btn-clusters', 'btn-gridlines', 'btn-export',
       'param-x-select', 'param-y-select', 'param-color-select', 'btn-apply-params', 'btn-apply-color', 'btn-reset-layout',
-      'stats', 'progress', 'progress-bar'
+      'progress', 'progress-bar',
+      // Debug menu elements
+      'btn-toggle-debug', 'debug-menu', 'btn-close-debug',
+      'debug-status', 'debug-api-status', 'debug-model-info',
+      'debug-node-count', 'debug-edge-count', 'debug-layout',
+      'debug-renderer-info', 'debug-memory-info',
+      'debug-render-time', 'debug-fps',
+      'debug-zoom', 'debug-pan',
+      // Parameter status (now in controls)
+      'btn-toggle-param-status', 'param-status-content'
     ];
 
     elementIds.forEach(id => {
@@ -46,7 +55,7 @@ export class UIManager {
     this.addClickListener('btn-load-api', () => this.graph.loadGraphFromAPI());
     this.addClickListener('btn-load-prism', () => this.handleLoadPrismProject());
     this.addClickListener('btn-api-health', () => this.handleAPIHealthCheck());
-    
+
     // Node generation buttons
     this.addClickListener('btn-1k', () => this.graph.generateNodes(1000));
     this.addClickListener('btn-10k', () => this.graph.generateNodes(10000));
@@ -69,6 +78,10 @@ export class UIManager {
     this.addClickListener('btn-apply-params', () => this.handleApplyParameters());
     this.addClickListener('btn-apply-color', () => this.handleApplyColor());
     this.addClickListener('btn-reset-layout', () => this.graph.resetToLayoutMode());
+
+    // Debug menu controls
+    this.addClickListener('btn-toggle-debug', () => this.toggleDebugMenu());
+    this.addClickListener('btn-close-debug', () => this.closeDebugMenu());
   }
 
   private addClickListener(elementId: string, handler: () => void): void {
@@ -81,9 +94,10 @@ export class UIManager {
   }
 
   public updateStatus(message: string): void {
-    const statusElement = this.getElement('stats');
-    if (statusElement) {
-      statusElement.textContent = message;
+    // Update debug menu status
+    const debugStatusElement = this.getElement('debug-status');
+    if (debugStatusElement) {
+      debugStatusElement.textContent = message;
     }
     console.log(`[Graph] ${message}`);
   }
@@ -238,12 +252,132 @@ export class UIManager {
 
   private async handleAPIHealthCheck(): Promise<void> {
     this.updateStatus('Checking API health...');
-    
+    this.updateAPIStatus('Checking...');
+
     try {
       const isHealthy = await this.graph.checkAPIHealth();
-      this.updateStatus(isHealthy ? 'API is healthy ✓' : 'API is not responding ✗');
+      const statusMessage = isHealthy ? 'API is healthy ✓' : 'API is not responding ✗';
+      this.updateStatus(statusMessage);
+      this.updateAPIStatus(isHealthy ? 'Connected ✓' : 'Disconnected ✗', isHealthy ? '#4a4' : '#a44');
     } catch (error) {
       this.updateStatus('API health check failed ✗');
+      this.updateAPIStatus('Failed ✗', '#a44');
+    }
+  }
+
+  /**
+   * Update API status display (in debug menu)
+   */
+  public updateAPIStatus(message: string, color: string = '#888'): void {
+    const apiStatusElement = this.getElement('debug-api-status');
+    if (apiStatusElement) {
+      apiStatusElement.textContent = `API: ${message}`;
+      apiStatusElement.style.color = color;
+    }
+  }
+
+  /**
+   * Update model info display (in debug menu)
+   */
+  public updateModelInfo(projectId: string, nodeCount: number, edgeCount: number, viewIds?: number[]): void {
+    const modelInfoElement = this.getElement('debug-model-info');
+    if (modelInfoElement) {
+      const viewInfo = viewIds && viewIds.length > 0 ? ` (Views: ${viewIds.join(',')})` : '';
+      modelInfoElement.textContent = `Model: ${projectId}${viewInfo} | ${nodeCount.toLocaleString()} nodes, ${edgeCount.toLocaleString()} edges`;
+      modelInfoElement.style.color = '#4a4';
+    }
+
+    // Also update debug graph info
+    const nodeCountElement = this.getElement('debug-node-count');
+    if (nodeCountElement) {
+      nodeCountElement.textContent = `Nodes: ${nodeCount.toLocaleString()}`;
+    }
+
+    const edgeCountElement = this.getElement('debug-edge-count');
+    if (edgeCountElement) {
+      edgeCountElement.textContent = `Edges: ${edgeCount.toLocaleString()}`;
+    }
+  }
+
+  /**
+   * Clear model info display
+   */
+  public clearModelInfo(): void {
+    const modelInfoElement = this.getElement('debug-model-info');
+    if (modelInfoElement) {
+      modelInfoElement.textContent = 'Model: None loaded';
+      modelInfoElement.style.color = '#888';
+    }
+  }
+
+  /**
+   * Toggle debug menu visibility
+   */
+  public toggleDebugMenu(): void {
+    const debugMenu = this.getElement('debug-menu');
+    if (debugMenu) {
+      debugMenu.classList.toggle('hidden');
+
+      // Update debug info when opening
+      if (!debugMenu.classList.contains('hidden')) {
+        this.updateDebugInfo();
+      }
+    }
+  }
+
+  /**
+   * Close debug menu
+   */
+  public closeDebugMenu(): void {
+    const debugMenu = this.getElement('debug-menu');
+    if (debugMenu) {
+      debugMenu.classList.add('hidden');
+    }
+  }
+
+  /**
+   * Update all debug information
+   */
+  public updateDebugInfo(): void {
+    // Update renderer info
+    const renderer = (this.graph as any).renderer;
+    if (renderer) {
+      const info = renderer.info;
+      const rendererInfoElement = this.getElement('debug-renderer-info');
+      if (rendererInfoElement && info) {
+        rendererInfoElement.textContent = `Geometries: ${info.memory?.geometries || 0}, Textures: ${info.memory?.textures || 0}`;
+      }
+
+      const memoryInfoElement = this.getElement('debug-memory-info');
+      if (memoryInfoElement && info) {
+        memoryInfoElement.textContent = `Calls: ${info.render?.calls || 0}, Triangles: ${info.render?.triangles || 0}, Points: ${info.render?.points || 0}`;
+      }
+    }
+
+    // Update performance info
+    const renderTimeElement = this.getElement('debug-render-time');
+    if (renderTimeElement) {
+      const renderTime = this.graph.getLastRenderTime();
+      renderTimeElement.textContent = `Render Time: ${renderTime.toFixed(2)}ms`;
+    }
+
+    // Update zoom and pan
+    const zoomElement = this.getElement('debug-zoom');
+    const panElement = this.getElement('debug-pan');
+    if (zoomElement) {
+      const zoom = (this.graph as any).zoomLevel || 1.0;
+      zoomElement.textContent = `Zoom: ${zoom.toFixed(2)}x`;
+    }
+    if (panElement) {
+      const pan = (this.graph as any).panOffset || { x: 0, y: 0 };
+      panElement.textContent = `Pan: (${pan.x.toFixed(2)}, ${pan.y.toFixed(2)})`;
+    }
+
+    // Update layout info
+    const layoutElement = this.getElement('debug-layout');
+    if (layoutElement) {
+      const layout = (this.graph as any).currentLayout || 'none';
+      layoutElement.textContent = `Layout: ${layout}`;
     }
   }
 
