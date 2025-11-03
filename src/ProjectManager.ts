@@ -101,6 +101,10 @@ export class ProjectManager {
   public async selectProject(projectId: string): Promise<void> {
     this.currentProjectId = projectId;
 
+    // Clear cached parameter structure and metadata from previous model
+    this.cachedParameterStructure = null;
+    this.prismAPI.clearParameterMetadata();
+
     // Update active tab
     const tabs = this.projectTabsContainer?.querySelectorAll('.project-tab');
     tabs?.forEach(tab => {
@@ -182,8 +186,23 @@ export class ProjectManager {
    * This ensures all parameters are shown even after reset
    */
   private mergeParameterStructure(status: any): any {
-    if (!this.cachedParameterStructure || !status?.info) {
+    if (!this.cachedParameterStructure) {
       return status;
+    }
+
+    // If status has no info, create one from cached structure
+    if (!status?.info) {
+      const mergedStatus = {
+        ...status,
+        info: this.deepCloneParameterStructure(this.cachedParameterStructure)
+      };
+      // Mark all as missing since there's no info in the status
+      for (const key of ['s', 't', 'scheduler']) {
+        if (mergedStatus.info[key]) {
+          this.markAllAsMissing(mergedStatus.info[key], key === 'scheduler');
+        }
+      }
+      return mergedStatus;
     }
 
     const mergedStatus = { ...status, info: { ...status.info } };

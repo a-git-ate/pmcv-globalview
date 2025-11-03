@@ -84,6 +84,13 @@ export class PrismAPI {
   }
 
   /**
+   * Clear parameter metadata (used when switching projects)
+   */
+  clearParameterMetadata(): void {
+    this.parameterMetadata = null;
+  }
+
+  /**
    * Get ordered list of parameter labels for UI display
    * Returns array of {index: number, label: string, fullPath: string}
    */

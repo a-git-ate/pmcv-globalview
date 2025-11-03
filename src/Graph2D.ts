@@ -347,6 +347,8 @@ export class Graph2D {
       // Create edge lines if edges are visible
       if (this.config.edgesVisible) {
         this.createEdgeLines();
+        // Initialize arrow scales and positions immediately after creation
+        this.updateArrowScales();
       }
 
       // Create point cloud
@@ -945,7 +947,7 @@ export class Graph2D {
     const viewHeight = this.camera.top - this.camera.bottom;
     const screenHeight = window.innerHeight;
     const worldUnitsPerPixel = viewHeight / screenHeight;
-    const arrowPixelSize = 1; // Arrow size in pixels (half of previous 2 pixels)
+    const arrowPixelSize = 1.3; // Arrow size in pixels (1.5x larger than previous 2 pixels)
     const arrowSize = arrowPixelSize * worldUnitsPerPixel;
 
     // Create triangle geometry pointing upward (will be rotated per edge)
@@ -1349,6 +1351,7 @@ export class Graph2D {
     if (this.config.edgesVisible && this.edges.length > 0) {
       this.clearEdgeLines();
       this.createEdgeLines();
+      this.updateArrowScales();
     } else {
       console.log(`[relayoutExistingNodes] Skipping edge creation (edgesVisible=${this.config.edgesVisible}, edges.length=${this.edges.length})`);
     }
@@ -1640,6 +1643,7 @@ export class Graph2D {
         this.clearEdgeLines();
       }
       this.createEdgeLines();
+      this.updateArrowScales();
       this.ui.updateStatus('Edges visible');
     } else {
       this.clearEdgeLines();
@@ -1738,7 +1742,7 @@ export class Graph2D {
 
   // Calculate a single nice world-space interval
   // Only uses 1, 2.5, 5 × 10^n (e.g., 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, etc.)
-  private calculateNiceWorldInterval(visibleRange: number): number {
+  private calculateNiceParameterInterval(visibleRange: number): number {
     // Target approximately 10-20 grid squares across the visible range
     const targetDivisions = 15;
     const roughInterval = visibleRange / targetDivisions;
@@ -1999,7 +2003,7 @@ export class Graph2D {
   }
 
   // Create a canvas-based texture for text labels
-  private createTextTexture(text: string, fontSize: number = 48): THREE.CanvasTexture {
+  private createTextTexture(text: string, fontSize: number = 48): { texture: THREE.CanvasTexture; aspectRatio: number } {
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d')!;
 
@@ -2012,6 +2016,9 @@ export class Graph2D {
     const padding = 20;
     canvas.width = Math.max(256, textWidth + padding * 2);
     canvas.height = 128;
+
+    // Calculate aspect ratio (width / height)
+    const aspectRatio = canvas.width / canvas.height;
 
     // Configure text rendering (need to set font again after resizing canvas)
     context.fillStyle = 'rgba(0, 0, 0, 0)';
@@ -2026,7 +2033,7 @@ export class Graph2D {
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.needsUpdate = true;
-    return texture;
+    return { texture, aspectRatio };
   }
 
   // Create axis labels in the 3D scene
@@ -2076,9 +2083,15 @@ export class Graph2D {
     const viewBottom = this.camera.bottom;
     const viewTop = this.camera.top;
 
-    // SCREEN-EDGE-FIXED AXES: Always at the edges of the viewport
-    const xAxisY = viewBottom; // X-axis fixed to bottom of screen
-    const yAxisX = viewLeft;   // Y-axis fixed to left of screen
+    // Calculate label size to position axis with enough space for labels
+    const viewHeight = viewTop - viewBottom;
+    const labelHeight = viewHeight * 0.08; // 8% of viewport height
+
+    // SCREEN-EDGE-FIXED AXES: Position axis slightly inside viewport for visibility
+    // Offset by small amount (1% of viewport height) to ensure tick marks are visible
+    const axisOffset = viewHeight * 0.01;
+    const xAxisY = viewBottom + axisOffset; // X-axis slightly above bottom edge
+    const yAxisX = viewLeft;   // Y-axis at left edge
 
     // X-axis: horizontal line spanning the entire screen width
     const xAxisGeometry = new THREE.BufferGeometry().setFromPoints([
@@ -2106,9 +2119,8 @@ export class Graph2D {
 
     // Create labels along X-axis
     // Calculate label scale based on viewport size to maintain constant screen size
-    const viewHeight = viewTop - viewBottom;
-    // const viewWidth = viewRight - viewLeft;
-    const labelScale = viewHeight * 0.08; // 8% of viewport height for larger labels
+    // viewHeight already calculated above
+    const labelScale = labelHeight; // Use the same label height calculated above
 
     // Calculate visible X range in parameter space
     // Map viewport coordinates to parameter values
@@ -2121,25 +2133,21 @@ export class Graph2D {
     const visibleMinY = yRange > 0 ? minValues.y + ((viewBottom + spread) / (2 * spread)) * yRange : minValues.y;
     const visibleMaxY = yRange > 0 ? minValues.y + ((viewTop + spread) / (2 * spread)) * yRange : maxValues.y;
 
-    // To make square grids, we need the same WORLD-SPACE interval on both axes
-    // Calculate visible world space ranges
-    const visibleWorldWidth = viewRight - viewLeft;
-    const visibleWorldHeight = viewTop - viewBottom;
+    // Use UNIFIED PARAMETER INTERVAL for both X and Y axes
+    // Calculate the visible parameter ranges
+    const visibleXParamRange = visibleMaxX - visibleMinX;
+    const visibleYParamRange = visibleMaxY - visibleMinY;
 
-    // Use the larger dimension to determine a nice world-space interval
-    const maxWorldDimension = Math.max(visibleWorldWidth, visibleWorldHeight);
+    // Use the larger parameter range to determine interval
+    const maxParamRange = Math.max(visibleXParamRange, visibleYParamRange);
 
-    // Calculate nice world-space interval using only 1, 2.5, 5 × 10^n
-    const worldInterval = this.calculateNiceWorldInterval(maxWorldDimension);
+    // Calculate a nice interval in parameter space using only 1, 2.5, 5 × 10^n
+    // This ensures both axes use the same increments
+    const paramInterval = this.calculateNiceParameterInterval(maxParamRange);
 
-    // Now convert world interval to parameter intervals (different for X and Y if ranges differ)
-    // worldInterval units in world space = how many parameter units?
-    // World space spans 2*spread = entire parameter range
-    const xParamPerWorld = xRange / (2 * spread);
-    const yParamPerWorld = yRange / (2 * spread);
-
-    const xParamInterval = worldInterval * xParamPerWorld;
-    const yParamInterval = worldInterval * yParamPerWorld;
+    // Both axes use the same parameter interval
+    const xParamInterval = paramInterval;
+    const yParamInterval = paramInterval;
 
     // Generate X-axis ticks starting from 0 (or nearest multiple below visible range)
     const xTicks: number[] = [];
@@ -2171,7 +2179,7 @@ export class Graph2D {
       const decimals = this.getDecimalPlaces(xParamInterval);
 
       // Create text sprite for label
-      const texture = this.createTextTexture(value.toFixed(decimals), 64);
+      const { texture, aspectRatio } = this.createTextTexture(value.toFixed(decimals), 64);
       const spriteMaterial = new THREE.SpriteMaterial({
         map: texture,
         transparent: true,
@@ -2179,14 +2187,18 @@ export class Graph2D {
         sizeAttenuation: false
       });
       const sprite = new THREE.Sprite(spriteMaterial);
-      sprite.position.set(xPos, xAxisY + labelScale * 0.6, 0); // Position above the axis line
-      sprite.scale.set(labelScale * 1.2, labelScale * 0.6, 1);
+      // Position label above viewport bottom edge to ensure visibility
+      // labelScale * 1.0 positions the label center 8% above bottom edge
+      sprite.position.set(xPos, viewBottom + labelScale * 1.0, 0);
+      // Scale proportionally to aspect ratio to avoid distortion
+      const baseHeight = labelScale * 0.6;
+      sprite.scale.set(baseHeight * aspectRatio, baseHeight, 1);
       this.axisGroup.add(sprite);
 
-      // Add tick mark on the x-axis line
+      // Add tick mark on the x-axis line (taller for better visibility)
       const tickGeometry = new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(xPos, xAxisY, 0),
-        new THREE.Vector3(xPos, xAxisY + labelScale * 0.3, 0)
+        new THREE.Vector3(xPos, xAxisY + labelScale * 0.6, 0)
       ]);
       const tickLine = new THREE.Line(tickGeometry, axisLinesMaterial);
       this.axisGroup.add(tickLine);
@@ -2227,7 +2239,7 @@ export class Graph2D {
       const decimals = this.getDecimalPlaces(yParamInterval);
 
       // Create text sprite for label
-      const texture = this.createTextTexture(value.toFixed(decimals), 64);
+      const { texture, aspectRatio } = this.createTextTexture(value.toFixed(decimals), 64);
       const spriteMaterial = new THREE.SpriteMaterial({
         map: texture,
         transparent: true,
@@ -2236,7 +2248,9 @@ export class Graph2D {
       });
       const sprite = new THREE.Sprite(spriteMaterial);
       sprite.position.set(yAxisX + labelScale * 0.8, yPos, 0); // Position to the right of the axis line
-      sprite.scale.set(labelScale * 1.2, labelScale * 0.6, 1);
+      // Scale proportionally to aspect ratio to avoid distortion
+      const baseHeight = labelScale * 0.6;
+      sprite.scale.set(baseHeight * aspectRatio, baseHeight, 1);
       this.axisGroup.add(sprite);
 
       // Add tick mark on the y-axis line
@@ -2265,7 +2279,7 @@ export class Graph2D {
     const yParamLabel = paramLabels[yParamIndex]?.label || `P${yParamIndex}`;
 
     // X-axis title: centered horizontally at bottom of screen
-    const xTitleTexture = this.createTextTexture(xParamLabel, 64);
+    const { texture: xTitleTexture, aspectRatio: xTitleAspect } = this.createTextTexture(xParamLabel, 64);
     const xTitleMaterial = new THREE.SpriteMaterial({
       map: xTitleTexture,
       transparent: true,
@@ -2275,11 +2289,13 @@ export class Graph2D {
     const xTitle = new THREE.Sprite(xTitleMaterial);
     const xTitleX = (viewLeft + viewRight) / 2; // Center of screen
     xTitle.position.set(xTitleX, xAxisY + labelScale * 1.5, 0);
-    xTitle.scale.set(labelScale * 2.0, labelScale * 0.7, 1);
+    // Scale proportionally to aspect ratio
+    const xTitleHeight = labelScale * 0.7;
+    xTitle.scale.set(xTitleHeight * xTitleAspect, xTitleHeight, 1);
     this.axisGroup.add(xTitle);
 
     // Y-axis title: centered vertically at left of screen
-    const yTitleTexture = this.createTextTexture(yParamLabel, 64);
+    const { texture: yTitleTexture, aspectRatio: yTitleAspect } = this.createTextTexture(yParamLabel, 64);
     const yTitleMaterial = new THREE.SpriteMaterial({
       map: yTitleTexture,
       transparent: true,
@@ -2289,7 +2305,9 @@ export class Graph2D {
     const yTitle = new THREE.Sprite(yTitleMaterial);
     const yTitleY = (viewBottom + viewTop) / 2; // Center of screen
     yTitle.position.set(yAxisX + labelScale * 2.0, yTitleY, 0);
-    yTitle.scale.set(labelScale * 2.0, labelScale * 0.7, 1);
+    // Scale proportionally to aspect ratio
+    const yTitleHeight = labelScale * 0.7;
+    yTitle.scale.set(yTitleHeight * yTitleAspect, yTitleHeight, 1);
     this.axisGroup.add(yTitle);
 
     // Add the axis group to the scene
@@ -2436,6 +2454,7 @@ export class Graph2D {
       console.log(`[Parameter View] Redrawing ${this.edges.length} edge lines`);
       this.clearEdgeLines();
       this.createEdgeLines();
+      this.updateArrowScales();
     }
 
     // Create axis visualization in Three.js scene
@@ -2605,6 +2624,7 @@ export class Graph2D {
       // Create edge lines if edges are visible
       if (this.config.edgesVisible) {
         this.createEdgeLines();
+        this.updateArrowScales();
       }
 
       // Create point cloud
