@@ -21,8 +21,8 @@ export class Graph2D {
   private nodes: NodeData[] = [];
   private edges: EdgeData[] = [];
   private nodeCount: number = 0;
-  private currentLayout: LayoutType = 'random';
-  private edgeLines: THREE.LineSegments | null = null;
+  private currentLayout: LayoutType = 'force_directed';
+  private edgeLines: THREE.Group | THREE.LineSegments | null = null;
 
   // Axis visualization
   private axisGroup: THREE.Group | null = null;
@@ -76,7 +76,7 @@ export class Graph2D {
       minZoom: 0.001, // Allow zooming out much further (was 0.1)
       maxZoom: 100.0, // Increased max zoom as well (was 50.0)
       lodEnabled: true,
-      edgesVisible: false,
+      edgesVisible: true, // Show edges by default
       clusterMode: false,
       edgeCount: 2000,
       forceStrength: 0.1,
@@ -121,6 +121,9 @@ export class Graph2D {
       this.setupControls();
       this.setupTooltip();
       this.startAnimationLoop();
+
+      // Notify UI of initial layout state
+      this.ui.onLayoutChange(this.currentLayout);
 
       this.ui.updateStatus("2D system ready");
     } catch (error) {
@@ -889,7 +892,13 @@ export class Graph2D {
   }
 
   private createEdgeLines(): void {
-    if (!this.edges.length || !this.nodes.length) return;
+    console.log(`[createEdgeLines] CALLED - edges.length: ${this.edges.length}, nodes.length: ${this.nodes.length}, edgesVisible: ${this.config.edgesVisible}`);
+    console.trace('[createEdgeLines] Call stack');
+
+    if (!this.edges.length || !this.nodes.length) {
+      console.warn('[createEdgeLines] EARLY EXIT - no edges or nodes');
+      return;
+    }
 
     // Filter out invalid edges (edges pointing to non-existent nodes)
     const validEdges = this.edges.filter(edge => {
@@ -907,7 +916,7 @@ export class Graph2D {
       console.warn(`[createEdgeLines] Filtered out ${this.edges.length - validEdges.length} invalid edges`);
     }
 
-    console.log(`[createEdgeLines] Rendering ${validEdges.length} valid edges out of ${this.edges.length} total`);
+    console.log(`[createEdgeLines] STARTING - Rendering ${validEdges.length} valid edges`);
 
     // Calculate edge extent for debugging
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -922,59 +931,213 @@ export class Graph2D {
     console.log(`[createEdgeLines] Edge extent: X[${minX.toFixed(1)}, ${maxX.toFixed(1)}], Y[${minY.toFixed(1)}, ${maxY.toFixed(1)}]`);
     console.log(`[createEdgeLines] Camera bounds: X[${this.camera.left.toFixed(1)}, ${this.camera.right.toFixed(1)}], Y[${this.camera.bottom.toFixed(1)}, ${this.camera.top.toFixed(1)}]`);
 
-    const geometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(validEdges.length * 6); // 2 points per edge, 3 coords per point
-    const colors = new Float32Array(validEdges.length * 6); // 2 points per edge, 3 colors per point
+    // Create a group to hold both lines and arrows
+    const edgeGroup = new THREE.Group();
+    // Note: renderOrder is set individually for lines and arrows below
+
+    // Create line segments for edges
+    const lineGeometry = new THREE.BufferGeometry();
+    const linePositions = new Float32Array(validEdges.length * 6); // 2 points per edge, 3 coords per point
+    const lineColors = new Float32Array(validEdges.length * 6); // 2 points per edge, 3 colors per point
+
+    // Arrow geometry - create a flat triangular arrow geometry
+    // Calculate arrow size in world units to match screen-space node size
+    const viewHeight = this.camera.top - this.camera.bottom;
+    const screenHeight = window.innerHeight;
+    const worldUnitsPerPixel = viewHeight / screenHeight;
+    const arrowPixelSize = 1; // Arrow size in pixels (half of previous 2 pixels)
+    const arrowSize = arrowPixelSize * worldUnitsPerPixel;
+
+    // Create triangle geometry pointing upward (will be rotated per edge)
+    const baseArrowGeometry = new THREE.BufferGeometry();
+    const arrowVertices = new Float32Array([
+      0, arrowSize * 0.8, 0,           // Tip of arrow
+      -arrowSize * 0.5, -arrowSize * 0.4, 0,  // Bottom left
+      arrowSize * 0.5, -arrowSize * 0.4, 0    // Bottom right
+    ]);
+    baseArrowGeometry.setAttribute('position', new THREE.BufferAttribute(arrowVertices, 3));
+    baseArrowGeometry.setIndex([0, 1, 2]); // Triangle face
 
     validEdges.forEach((edge, i) => {
       const fromNode = this.nodes[edge.from];
       const toNode = this.nodes[edge.to];
 
-      // Start point
-      positions[i * 6] = fromNode.x;
-      positions[i * 6 + 1] = fromNode.y;
-      positions[i * 6 + 2] = 0;
+      // Calculate direction vector
+      const dx = toNode.x - fromNode.x;
+      const dy = toNode.y - fromNode.y;
+      const length = Math.sqrt(dx * dx + dy * dy);
 
-      // End point
-      positions[i * 6 + 3] = toNode.x;
-      positions[i * 6 + 4] = toNode.y;
-      positions[i * 6 + 5] = 0;
+      if (length === 0) return; // Skip zero-length edges
 
-      // Edge color (brighter white for better visibility)
+      // Line segment goes all the way from source to target node
+      linePositions[i * 6] = fromNode.x;
+      linePositions[i * 6 + 1] = fromNode.y;
+      linePositions[i * 6 + 2] = 0;
+      linePositions[i * 6 + 3] = toNode.x;
+      linePositions[i * 6 + 4] = toNode.y;
+      linePositions[i * 6 + 5] = 0;
+
+      // Edge color
       const color = new THREE.Color(0xaaaaaa);
-      colors[i * 6] = color.r;
-      colors[i * 6 + 1] = color.g;
-      colors[i * 6 + 2] = color.b;
-      colors[i * 6 + 3] = color.r;
-      colors[i * 6 + 4] = color.g;
-      colors[i * 6 + 5] = color.b;
+      lineColors[i * 6] = color.r;
+      lineColors[i * 6 + 1] = color.g;
+      lineColors[i * 6 + 2] = color.b;
+      lineColors[i * 6 + 3] = color.r;
+      lineColors[i * 6 + 4] = color.g;
+      lineColors[i * 6 + 5] = color.b;
+
+      // Create arrow at the target node pointing toward it
+      // Clone geometry for each arrow to avoid disposal issues
+      const arrowGeometry = baseArrowGeometry.clone();
+      const arrowMaterial = new THREE.MeshBasicMaterial({
+        color: 0x666666, // Darker gray for better visibility
+        transparent: false,
+        opacity: 1.0,
+        side: THREE.DoubleSide // Render both sides to ensure visibility
+      });
+      const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial);
+
+      // Store edge data on the arrow for dynamic repositioning during zoom
+      // Using userData to attach custom data to the mesh
+      (arrow as any).userData = {
+        fromX: fromNode.x,
+        fromY: fromNode.y,
+        toX: toNode.x,
+        toY: toNode.y,
+        dirX: dx / length,
+        dirY: dy / length,
+        baseArrowSize: arrowSize // Store the initial arrow size
+      };
+
+      // Initial position (will be updated by updateArrowScales)
+      arrow.position.set(toNode.x, toNode.y, 0.1);
+
+      // Rotate arrow to point toward target
+      // Triangle points upward (+Y), so rotate to align with edge direction
+      const angle = Math.atan2(dy, dx);
+      arrow.rotation.z = angle - Math.PI / 2; // Rotate so tip points along edge direction
+
+      // Set renderOrder to ensure arrows render above lines but behind/alongside nodes
+      arrow.renderOrder = 0;
+
+      edgeGroup.add(arrow);
     });
 
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    // Dispose of the base geometry after creating all clones
+    baseArrowGeometry.dispose();
 
-    const material = new THREE.LineBasicMaterial({
+    lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+    lineGeometry.setAttribute('color', new THREE.BufferAttribute(lineColors, 3));
+
+    const lineMaterial = new THREE.LineBasicMaterial({
       vertexColors: true,
       transparent: true,
       opacity: 0.8,
-      linewidth: 2
+      linewidth: 1
     });
 
-    this.edgeLines = new THREE.LineSegments(geometry, material);
-    // Ensure edges render behind nodes by setting renderOrder
-    this.edgeLines.renderOrder = -1;
+    const lineSegments = new THREE.LineSegments(lineGeometry, lineMaterial);
+    lineSegments.renderOrder = -1; // Render lines behind arrows
+    edgeGroup.add(lineSegments);
+
+    this.edgeLines = edgeGroup;
     this.scene.add(this.edgeLines);
-    console.log('[createEdgeLines] Edge lines added to scene with renderOrder = -1');
+    console.log(`[createEdgeLines] COMPLETED - Added group to scene with ${edgeGroup.children.length} children (${validEdges.length} arrows + 1 line segments)`);
+    console.log(`[createEdgeLines] edgeLines is now:`, this.edgeLines);
+    console.log(`[createEdgeLines] Scene now has ${this.scene.children.length} children`);
+  }
+
+  /**
+   * Update arrow scales and positions to maintain constant screen-space size during zoom
+   */
+  private updateArrowScales(): void {
+    if (!this.edgeLines || !(this.edgeLines instanceof THREE.Group)) return;
+
+    // For screen-space sizing, arrows should scale INVERSELY with zoom
+    // When zooming in (zoomLevel increases), world-space objects appear larger, so we scale DOWN
+    // When zooming out (zoomLevel decreases), world-space objects appear smaller, so we scale UP
+    // This matches how PointsMaterial with sizeAttenuation: false works
+    const scale = 1 / this.zoomLevel;
+
+    // Calculate current world units per pixel for positioning
+    const viewHeight = this.camera.top - this.camera.bottom;
+    const screenHeight = window.innerHeight;
+    const worldUnitsPerPixel = viewHeight / screenHeight;
+
+    // Node size in pixels
+    const nodePixelSize = 9.0;
+    const offsetDistance = (nodePixelSize * 0.5) * worldUnitsPerPixel;
+
+    // Scale and reposition all arrow meshes in the edge group
+    this.edgeLines.children.forEach(child => {
+      if (child instanceof THREE.Mesh && child.geometry.index && child.userData) {
+        // This is an arrow (has indexed geometry for triangle)
+        const userData = child.userData as {
+          fromX: number;
+          fromY: number;
+          toX: number;
+          toY: number;
+          dirX: number;
+          dirY: number;
+          baseArrowSize: number;
+        };
+
+        // Apply uniform scale to maintain constant screen-space size
+        child.scale.set(scale, scale, scale);
+
+        // Update position so arrow tip is exactly half-node-size away from target
+        //
+        // Logic:
+        // 1. We want the tip to be at: targetNode - direction * offsetDistance
+        // 2. The arrow's tip is at (0, baseArrowSize * 0.8, 0) in local space
+        // 3. After rotation, this becomes: direction * (baseArrowSize * 0.8 * scale) in world space
+        // 4. Arrow origin = desired tip position - rotated tip offset
+        // 5. Arrow origin = (targetNode - dir * offsetDistance) - (dir * scaledArrowTipOffset)
+        // 6. Arrow origin = targetNode - dir * (offsetDistance + scaledArrowTipOffset)
+        const scaledArrowTipOffset = userData.baseArrowSize * 0.8 * scale;
+        const arrowX = userData.toX - userData.dirX * (offsetDistance + scaledArrowTipOffset);
+        const arrowY = userData.toY - userData.dirY * (offsetDistance + scaledArrowTipOffset);
+        child.position.set(arrowX, arrowY, 0.1);
+      }
+    });
   }
 
   private clearEdgeLines(): void {
+    console.log(`[clearEdgeLines] CALLED - edgeLines exists: ${!!this.edgeLines}`);
     if (this.edgeLines) {
+      console.log(`[clearEdgeLines] Removing edgeLines with ${this.edgeLines.children ? this.edgeLines.children.length : 0} children`);
       this.scene.remove(this.edgeLines);
-      this.edgeLines.geometry.dispose();
-      if (this.edgeLines.material instanceof THREE.Material) {
-        this.edgeLines.material.dispose();
+
+      // Handle both Group (with arrows) and LineSegments (legacy)
+      if (this.edgeLines instanceof THREE.Group) {
+        // Dispose all children in the group
+        this.edgeLines.traverse((child) => {
+          if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments) {
+            if (child.geometry) {
+              child.geometry.dispose();
+            }
+            if (child.material) {
+              if (Array.isArray(child.material)) {
+                child.material.forEach(mat => mat.dispose());
+              } else {
+                child.material.dispose();
+              }
+            }
+          }
+        });
+        this.edgeLines.clear();
+      } else if (this.edgeLines instanceof THREE.LineSegments) {
+        // Legacy LineSegments disposal
+        this.edgeLines.geometry.dispose();
+        if (this.edgeLines.material instanceof THREE.Material) {
+          this.edgeLines.material.dispose();
+        }
       }
+
       this.edgeLines = null;
+      console.log(`[clearEdgeLines] COMPLETED - edgeLines set to null`);
+    } else {
+      console.log(`[clearEdgeLines] Nothing to clear - edgeLines was already null`);
     }
   }
 
@@ -1237,6 +1400,9 @@ export class Graph2D {
       material.size = scale;
     }
 
+    // Update arrow scales to maintain constant screen-space size
+    this.updateArrowScales();
+
     // Render scene
     if (this.renderer) {
       try {
@@ -1467,8 +1633,12 @@ export class Graph2D {
 
   public toggleEdges(): void {
     this.config.edgesVisible = !this.config.edgesVisible;
-    
+
     if (this.config.edgesVisible && this.edges.length > 0) {
+      // Clear existing edges first to avoid duplicates
+      if (this.edgeLines) {
+        this.clearEdgeLines();
+      }
       this.createEdgeLines();
       this.ui.updateStatus('Edges visible');
     } else {

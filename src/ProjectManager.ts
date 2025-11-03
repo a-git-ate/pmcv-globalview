@@ -8,6 +8,7 @@ export class ProjectManager {
   private availableProjects: string[] = [];
   private statusPollInterval: number | null = null;
   private readonly POLL_INTERVAL_MS = 2000; // Poll every 2 seconds
+  private cachedParameterStructure: any = null; // Cache the initial parameter structure
 
   // DOM Elements
   private projectTabsContainer: HTMLElement | null = null;
@@ -118,6 +119,9 @@ export class ProjectManager {
       this.resetButton.disabled = false;
     }
 
+    // Load the graph data for the selected project
+    await this.graph.loadGraphFromAPI(projectId);
+
     // Fetch and display project status
     await this.updateProjectStatus();
   }
@@ -129,20 +133,117 @@ export class ProjectManager {
     if (!this.currentProjectId) return;
 
     try {
+      // Get parameter labels before fetching new status
+      const previousParamLabels = this.prismAPI.getParameterLabels('s');
+
+      // Fetch new status (this will update parameterMetadata in PrismAPI)
       const status = await this.prismAPI.fetchProjectStatus(this.currentProjectId);
-      this.displayParameterStatus(status);
+
+      // Cache the parameter structure on first load (to preserve it after reset)
+      if (!this.cachedParameterStructure && status?.info) {
+        this.cachedParameterStructure = this.deepCloneParameterStructure(status.info);
+      }
+
+      // Merge cached structure with current status to ensure all parameters are shown
+      const mergedStatus = this.mergeParameterStructure(status);
+
+      this.displayParameterStatus(mergedStatus);
 
       // Show parameter status section when selecting a project
       this.showParameterStatus();
 
+      // Check if parameters have changed and update dropdowns if needed
+      const currentParamLabels = this.prismAPI.getParameterLabels('s');
+      if (this.hasParameterDelta(previousParamLabels, currentParamLabels)) {
+        console.log('[ProjectManager] Parameter delta detected, updating dropdowns');
+        this.graph.ui.updateParameterSelections(currentParamLabels);
+      }
+
       // Start polling if there are missing parameters
-      if (this.prismAPI.hasMinsingParameters(status)) {
+      if (this.prismAPI.hasMinsingParameters(mergedStatus)) {
         this.startStatusPolling();
       } else {
         this.stopStatusPolling();
       }
     } catch (error) {
       console.error('[ProjectManager] Failed to fetch project status:', error);
+    }
+  }
+
+  /**
+   * Deep clone the parameter structure to preserve it
+   */
+  private deepCloneParameterStructure(info: any): any {
+    return JSON.parse(JSON.stringify(info));
+  }
+
+  /**
+   * Merge cached parameter structure with current status
+   * This ensures all parameters are shown even after reset
+   */
+  private mergeParameterStructure(status: any): any {
+    if (!this.cachedParameterStructure || !status?.info) {
+      return status;
+    }
+
+    const mergedStatus = { ...status, info: { ...status.info } };
+
+    // Merge each node type (s, t) and scheduler
+    for (const key of ['s', 't', 'scheduler']) {
+      if (this.cachedParameterStructure[key]) {
+        if (!mergedStatus.info[key]) {
+          // If the key is completely missing in status, use cached structure
+          mergedStatus.info[key] = this.deepCloneParameterStructure(this.cachedParameterStructure[key]);
+
+          // Mark all parameters as missing
+          this.markAllAsMissing(mergedStatus.info[key], key === 'scheduler');
+        } else {
+          // Merge categories within node types
+          if (key !== 'scheduler') {
+            for (const category of Object.keys(this.cachedParameterStructure[key])) {
+              if (!mergedStatus.info[key][category]) {
+                // Category missing in status, add from cache with missing status
+                mergedStatus.info[key][category] = this.deepCloneParameterStructure(
+                  this.cachedParameterStructure[key][category]
+                );
+                this.markAllAsMissing(mergedStatus.info[key][category], false);
+              } else {
+                // Merge individual parameters within category
+                for (const paramName of Object.keys(this.cachedParameterStructure[key][category])) {
+                  if (!mergedStatus.info[key][category][paramName]) {
+                    // Parameter missing, add from cache with missing status
+                    mergedStatus.info[key][category][paramName] = {
+                      ...this.cachedParameterStructure[key][category][paramName],
+                      status: 'missing'
+                    };
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return mergedStatus;
+  }
+
+  /**
+   * Mark all parameters in an object as missing
+   */
+  private markAllAsMissing(obj: any, isSimple: boolean): void {
+    if (isSimple) {
+      // For scheduler, values are direct
+      for (const key of Object.keys(obj)) {
+        obj[key] = 'missing';
+      }
+    } else {
+      // For node types, values are objects with status
+      for (const key of Object.keys(obj)) {
+        if (typeof obj[key] === 'object' && obj[key] !== null) {
+          obj[key].status = 'missing';
+        }
+      }
     }
   }
 
@@ -432,6 +533,29 @@ export class ProjectManager {
    */
   public getCurrentProjectId(): string | null {
     return this.currentProjectId;
+  }
+
+  /**
+   * Check if there's a delta between two parameter label arrays
+   */
+  private hasParameterDelta(
+    previous: Array<{ index: number; label: string; fullPath: string }>,
+    current: Array<{ index: number; label: string; fullPath: string }>
+  ): boolean {
+    // Check if lengths differ
+    if (previous.length !== current.length) {
+      return true;
+    }
+
+    // Check if any labels have changed
+    for (let i = 0; i < previous.length; i++) {
+      if (previous[i].label !== current[i].label ||
+          previous[i].fullPath !== current[i].fullPath) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**

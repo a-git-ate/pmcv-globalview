@@ -12,7 +12,7 @@ const graphConfig: Partial<GraphConfig> = {
   minZoom: 0.001, // Allow zooming out much further (was 0.05)
   maxZoom: 100.0,
   lodEnabled: true,
-  edgesVisible: false,
+  edgesVisible: true, // Show edges by default
   clusterMode: false,
 };
 
@@ -32,33 +32,15 @@ function initializeApp(): void {
     setTimeout(() => {
       if (graph) {
         // First try loading simple graph data
-        graph.loadGraphFromAPI('0').then(() => {
-          // Switch to force-directed layout after nodes are loaded
-          setTimeout(() => {
-            if (graph) {
-              graph.applyLayout('force_directed' as any);
-            }
-          }, 1000);
-        }).catch(() => {
+        graph.loadGraphFromAPI('0').catch(() => {
           console.warn('Failed to load from simple API, trying PRISM format...');
           // Try PRISM API format as fallback
           if (graph) {
-            graph.loadPrismProject('0').then(() => {
-              setTimeout(() => {
-                if (graph) {
-                  graph.applyLayout('force_directed' as any);
-                }
-              }, 1000);
-            }).catch(() => {
+            graph.loadPrismProject('0').catch(() => {
               // Final fallback to generating demo nodes
               console.warn('Failed to load from PRISM API, falling back to demo nodes');
               if (graph) {
                 graph.generateNodes(500);
-                setTimeout(() => {
-                  if (graph) {
-                    graph.applyLayout('force_directed' as any);
-                  }
-                }, 2000);
               }
             });
           }

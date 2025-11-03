@@ -536,6 +536,12 @@ export class PrismAPI {
       }
 
       const status = await response.json();
+
+      // Update parameter metadata if status contains info
+      if (status?.info) {
+        this.parameterMetadata = status.info;
+      }
+
       return status;
 
     } catch (error) {
@@ -550,7 +556,12 @@ export class PrismAPI {
   async checkModel(projectId: string): Promise<any> {
     try {
       var url = `${this.baseUrl}/${encodeURIComponent(projectId)}/check`;
-      var params = this.parameterMetadata;
+      var params = Object.keys(this.parameterMetadata?.s?.['Model Checking Results'] ?? {});
+      if (params.length > 0) {
+        const query = new URLSearchParams();
+        params.forEach((p: string) => query.append('property', p));
+        url += `?${query.toString()}`;
+      }
       console.log(`[PrismAPI] Triggering model check: ${url}`);
 
       const controller = new AbortController();
