@@ -314,6 +314,7 @@ export class Graph2D {
   }
 
   public async loadGraphFromAPI(graphId: string = '0'): Promise<void> {
+    const startTime = performance.now();
     this.ui.updateStatus('Fetching graph data from API...');
     this.ui.disableButtons();
 
@@ -325,13 +326,12 @@ export class Graph2D {
       this.edges = [];
 
       // Fetch graph data using PrismAPI
+      const fetchStart = performance.now();
       const graphData = await this.prismAPI.fetchSimpleGraph(graphId);
+      console.log(`[Performance] API fetch: ${(performance.now() - fetchStart).toFixed(2)}ms`);
 
       this.nodes = graphData.nodes;
       this.edges = graphData.edges;
-
-      // Parameters are now extracted from PRISM API data in PrismAPI.convertNewFormatToInternal
-      // No need to generate random parameters anymore
 
       const nodeCount = this.nodes.length;
 
@@ -341,35 +341,50 @@ export class Graph2D {
       const colors = new Float32Array(nodeCount * 3);
       const sizes = new Float32Array(nodeCount);
 
-      // Generate layout using existing method
-      await this.generateLayout(nodeCount, positions, colors, sizes);
+      // Populate geometry arrays directly from loaded nodes (no recreation)
+      const layoutStart = performance.now();
+      await this.populateGeometryFromNodes(positions, colors, sizes);
+      console.log(`[Performance] Layout population: ${(performance.now() - layoutStart).toFixed(2)}ms`);
 
-      // Create edge lines if edges are visible
-      if (this.config.edgesVisible) {
-        this.createEdgeLines();
-        // Initialize arrow scales and positions immediately after creation
-        this.updateArrowScales();
-      }
-
-      // Create point cloud
+      // Create point cloud first for visual feedback
+      const cloudStart = performance.now();
       this.createPointCloud(geometry, positions, colors, sizes);
-
-      // Update state
       this.nodeCount = nodeCount;
       this.ui.updateNodeCount(nodeCount);
       this.resetView();
+      console.log(`[Performance] Point cloud creation: ${(performance.now() - cloudStart).toFixed(2)}ms`);
 
-      // Update parameter selection dropdowns with actual parameter names
+      // Update UI with basic info
       const paramLabels = this.prismAPI.getParameterLabels('s');
       this.ui.updateParameterSelections(paramLabels);
-
-      // Update overlap labels
-      this.updateOverlapLabels();
-
-      // Update model info display
       this.ui.updateModelInfo(graphId, nodeCount, this.edges.length);
 
-      this.ui.updateStatus(`Loaded ${nodeCount.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API`);
+      // Create edge lines if edges are visible (deferred rendering for large graphs)
+      if (this.config.edgesVisible && this.edges.length > 0) {
+        const edgeStart = performance.now();
+
+        if (this.edges.length > 10000) {
+          // For large graphs, defer edge rendering
+          this.ui.updateStatus(`Loaded ${nodeCount.toLocaleString()} nodes, rendering ${this.edges.length.toLocaleString()} edges...`);
+          await new Promise(resolve => setTimeout(resolve, 16)); // Let browser render nodes first
+        }
+
+        this.createEdgeLines();
+        this.updateArrowScales();
+        console.log(`[Performance] Edge rendering: ${(performance.now() - edgeStart).toFixed(2)}ms`);
+      }
+
+      // Update overlap labels (deferred for large graphs)
+      if (nodeCount < 50000) {
+        this.updateOverlapLabels();
+      } else {
+        // Defer overlap calculation for large graphs
+        setTimeout(() => this.updateOverlapLabels(), 100);
+      }
+
+      const totalTime = (performance.now() - startTime).toFixed(2);
+      console.log(`[Performance] Total load time: ${totalTime}ms`);
+      this.ui.updateStatus(`Loaded ${nodeCount.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API (${totalTime}ms)`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load graph from API';
       this.ui.showError(message);
@@ -377,6 +392,121 @@ export class Graph2D {
       throw error; // Re-throw to allow fallback in main.ts
     } finally {
       this.ui.enableButtons();
+    }
+  }
+
+  /**
+   * Populate geometry arrays from already-loaded nodes (optimized path)
+   * This avoids recreating nodes that were already created by PrismAPI
+   */
+  private async populateGeometryFromNodes(
+    positions: Float32Array,
+    colors: Float32Array,
+    sizes: Float32Array
+  ): Promise<void> {
+    const count = this.nodes.length;
+    const spread = Math.sqrt(count) * 0.5;
+
+    // Calculate min/max parameter values if using parameter positioning
+    let minX = 0, maxX = 100;
+    let minY = 0, maxY = 100;
+
+    if (this.config.useParameterPositioning) {
+      const xParamIndex = this.config.parameterXAxis ?? 0;
+      const yParamIndex = this.config.parameterYAxis ?? 1;
+
+      minX = Infinity;
+      maxX = -Infinity;
+      minY = Infinity;
+      maxY = -Infinity;
+
+      for (let i = 0; i < count; i++) {
+        const node = this.nodes[i];
+        minX = Math.min(minX, node.parameters[xParamIndex]);
+        maxX = Math.max(maxX, node.parameters[xParamIndex]);
+        minY = Math.min(minY, node.parameters[yParamIndex]);
+        maxY = Math.max(maxY, node.parameters[yParamIndex]);
+      }
+    }
+
+    // Position nodes and populate geometry arrays in a single pass
+    const batchSize = 50000;
+    for (let batch = 0; batch < count; batch += batchSize) {
+      const end = Math.min(batch + batchSize, count);
+
+      for (let i = batch; i < end; i++) {
+        const nodeData = this.nodes[i];
+
+        // Calculate position based on parameters or use existing position
+        let position: THREE.Vector2;
+        if (this.config.useParameterPositioning) {
+          position = this.calculateParameterPosition(
+            nodeData,
+            spread,
+            { x: minX, y: minY },
+            { x: maxX, y: maxY }
+          );
+          nodeData.x = position.x;
+          nodeData.y = position.y;
+        } else if (nodeData.x === 0 && nodeData.y === 0) {
+          // Only calculate position if node doesn't have one
+          position = this.calculateNodePosition(i, count, spread);
+          nodeData.x = position.x;
+          nodeData.y = position.y;
+        } else {
+          // Use existing position from API
+          position = new THREE.Vector2(nodeData.x, nodeData.y);
+        }
+
+        // Set positions array
+        positions[i * 3] = position.x;
+        positions[i * 3 + 1] = position.y;
+        positions[i * 3 + 2] = 0;
+      }
+
+      // Yield control for large graphs to keep UI responsive
+      if (count > 50000 && end < count) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    // Apply force-directed layout if selected
+    if (this.currentLayout === 'force_directed' && count > 0) {
+      this.ui.updateStatus('Computing force-directed layout...');
+      this.applyForceDirectedLayout(count, positions, spread);
+    }
+
+    // Pre-calculate color cache
+    const colorCache = new Map<number, { r: number; g: number; b: number }>();
+    const getColorForDegree = (degree: number): { r: number; g: number; b: number } => {
+      const key = Math.min(degree, 20);
+      if (!colorCache.has(key)) {
+        const hue = key > 0 ? Math.min(0.3, key * 0.05) : 0.6;
+        const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
+        colorCache.set(key, { r: color.r, g: color.g, b: color.b });
+      }
+      return colorCache.get(key)!;
+    };
+
+    // Calculate node degrees for coloring (batch process)
+    const nodeDegrees = new Int32Array(count);
+    for (let i = 0; i < this.edges.length; i++) {
+      const edge = this.edges[i];
+      if (edge.from < count) nodeDegrees[edge.from]++;
+      if (edge.to < count) nodeDegrees[edge.to]++;
+    }
+
+    // Populate colors and sizes in a single pass
+    for (let i = 0; i < count; i++) {
+      const nodeData = this.nodes[i];
+      const degree = nodeDegrees[i];
+      const colorData = getColorForDegree(degree);
+
+      colors[i * 3] = colorData.r;
+      colors[i * 3 + 1] = colorData.g;
+      colors[i * 3 + 2] = colorData.b;
+
+      sizes[i] = nodeData.type === 'important' ? 2.0 : 1.0;
     }
   }
 
@@ -942,94 +1072,106 @@ export class Graph2D {
     const linePositions = new Float32Array(validEdges.length * 6); // 2 points per edge, 3 coords per point
     const lineColors = new Float32Array(validEdges.length * 6); // 2 points per edge, 3 colors per point
 
-    // Arrow geometry - create a flat triangular arrow geometry
-    // Calculate arrow size in world units to match screen-space node size
-    const viewHeight = this.camera.top - this.camera.bottom;
-    const screenHeight = window.innerHeight;
-    const worldUnitsPerPixel = viewHeight / screenHeight;
-    const arrowPixelSize = 1.3; // Arrow size in pixels (1.5x larger than previous 2 pixels)
-    const arrowSize = arrowPixelSize * worldUnitsPerPixel;
+    // Pre-calculate edge color (reuse for all edges)
+    const edgeColor = new THREE.Color(0xaaaaaa);
 
-    // Create triangle geometry pointing upward (will be rotated per edge)
-    const baseArrowGeometry = new THREE.BufferGeometry();
-    const arrowVertices = new Float32Array([
-      0, arrowSize * 0.8, 0,           // Tip of arrow
-      -arrowSize * 0.5, -arrowSize * 0.4, 0,  // Bottom left
-      arrowSize * 0.5, -arrowSize * 0.4, 0    // Bottom right
-    ]);
-    baseArrowGeometry.setAttribute('position', new THREE.BufferAttribute(arrowVertices, 3));
-    baseArrowGeometry.setIndex([0, 1, 2]); // Triangle face
+    // Populate line positions and colors in optimized loop
+    let validEdgeCount = 0;
+    const edgeData: Array<{fromX: number, fromY: number, toX: number, toY: number, angle: number}> = [];
 
-    validEdges.forEach((edge, i) => {
+    for (let i = 0; i < validEdges.length; i++) {
+      const edge = validEdges[i];
       const fromNode = this.nodes[edge.from];
       const toNode = this.nodes[edge.to];
 
       // Calculate direction vector
       const dx = toNode.x - fromNode.x;
       const dy = toNode.y - fromNode.y;
-      const length = Math.sqrt(dx * dx + dy * dy);
+      const lengthSq = dx * dx + dy * dy;
 
-      if (length === 0) return; // Skip zero-length edges
+      if (lengthSq < 0.0001) continue; // Skip zero-length edges
 
       // Line segment goes all the way from source to target node
-      linePositions[i * 6] = fromNode.x;
-      linePositions[i * 6 + 1] = fromNode.y;
-      linePositions[i * 6 + 2] = 0;
-      linePositions[i * 6 + 3] = toNode.x;
-      linePositions[i * 6 + 4] = toNode.y;
-      linePositions[i * 6 + 5] = 0;
+      const idx = validEdgeCount * 6;
+      linePositions[idx] = fromNode.x;
+      linePositions[idx + 1] = fromNode.y;
+      linePositions[idx + 2] = 0;
+      linePositions[idx + 3] = toNode.x;
+      linePositions[idx + 4] = toNode.y;
+      linePositions[idx + 5] = 0;
 
-      // Edge color
-      const color = new THREE.Color(0xaaaaaa);
-      lineColors[i * 6] = color.r;
-      lineColors[i * 6 + 1] = color.g;
-      lineColors[i * 6 + 2] = color.b;
-      lineColors[i * 6 + 3] = color.r;
-      lineColors[i * 6 + 4] = color.g;
-      lineColors[i * 6 + 5] = color.b;
+      // Reuse edge color (avoid creating Color objects in loop)
+      lineColors[idx] = edgeColor.r;
+      lineColors[idx + 1] = edgeColor.g;
+      lineColors[idx + 2] = edgeColor.b;
+      lineColors[idx + 3] = edgeColor.r;
+      lineColors[idx + 4] = edgeColor.g;
+      lineColors[idx + 5] = edgeColor.b;
 
-      // Create arrow at the target node pointing toward it
-      // Clone geometry for each arrow to avoid disposal issues
-      const arrowGeometry = baseArrowGeometry.clone();
-      const arrowMaterial = new THREE.MeshBasicMaterial({
-        color: 0x666666, // Darker gray for better visibility
-        transparent: false,
-        opacity: 1.0,
-        side: THREE.DoubleSide // Render both sides to ensure visibility
-      });
-      const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial);
-
-      // Store edge data on the arrow for dynamic repositioning during zoom
-      // Using userData to attach custom data to the mesh
-      (arrow as any).userData = {
+      // Store edge data for arrow creation
+      edgeData.push({
         fromX: fromNode.x,
         fromY: fromNode.y,
         toX: toNode.x,
         toY: toNode.y,
-        dirX: dx / length,
-        dirY: dy / length,
-        baseArrowSize: arrowSize // Store the initial arrow size
-      };
+        angle: Math.atan2(dy, dx)
+      });
 
-      // Initial position (will be updated by updateArrowScales)
-      arrow.position.set(toNode.x, toNode.y, 0.1);
+      validEdgeCount++;
+    }
 
-      // Rotate arrow to point toward target
-      // Triangle points upward (+Y), so rotate to align with edge direction
-      const angle = Math.atan2(dy, dx);
-      arrow.rotation.z = angle - Math.PI / 2; // Rotate so tip points along edge direction
+    // Arrow geometry - create using instanced mesh for better performance
+    const viewHeight = this.camera.top - this.camera.bottom;
+    const screenHeight = window.innerHeight;
+    const worldUnitsPerPixel = viewHeight / screenHeight;
+    const arrowPixelSize = 1.3;
+    const arrowSize = arrowPixelSize * worldUnitsPerPixel;
 
-      // Set renderOrder to ensure arrows render above lines but behind/alongside nodes
-      arrow.renderOrder = 0;
+    // Create single triangle geometry for all arrows
+    const arrowGeometry = new THREE.BufferGeometry();
+    const arrowVertices = new Float32Array([
+      0, arrowSize * 0.8, 0,           // Tip of arrow
+      -arrowSize * 0.5, -arrowSize * 0.4, 0,  // Bottom left
+      arrowSize * 0.5, -arrowSize * 0.4, 0    // Bottom right
+    ]);
+    arrowGeometry.setAttribute('position', new THREE.BufferAttribute(arrowVertices, 3));
+    arrowGeometry.setIndex([0, 1, 2]);
 
-      edgeGroup.add(arrow);
+    // Use InstancedMesh for arrows (much more efficient than individual meshes)
+    const arrowMaterial = new THREE.MeshBasicMaterial({
+      color: 0x666666,
+      transparent: false,
+      opacity: 1.0,
+      side: THREE.DoubleSide
     });
 
-    // Dispose of the base geometry after creating all clones
-    baseArrowGeometry.dispose();
+    const instancedArrows = new THREE.InstancedMesh(arrowGeometry, arrowMaterial, validEdgeCount);
+    instancedArrows.renderOrder = 0;
 
-    lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
-    lineGeometry.setAttribute('color', new THREE.BufferAttribute(lineColors, 3));
+    // Store edge data for dynamic updates
+    (instancedArrows as any).userData = {
+      edgeData: edgeData,
+      baseArrowSize: arrowSize
+    };
+
+    // Set up transformation matrix for each arrow instance
+    const matrix = new THREE.Matrix4();
+    for (let i = 0; i < edgeData.length; i++) {
+      const data = edgeData[i];
+      matrix.makeRotationZ(data.angle - Math.PI / 2);
+      matrix.setPosition(data.toX, data.toY, 0.1);
+      instancedArrows.setMatrixAt(i, matrix);
+    }
+    instancedArrows.instanceMatrix.needsUpdate = true;
+
+    edgeGroup.add(instancedArrows);
+
+    // Trim line buffers to actual valid edge count
+    const trimmedPositions = linePositions.slice(0, validEdgeCount * 6);
+    const trimmedColors = lineColors.slice(0, validEdgeCount * 6);
+
+    lineGeometry.setAttribute('position', new THREE.BufferAttribute(trimmedPositions, 3));
+    lineGeometry.setAttribute('color', new THREE.BufferAttribute(trimmedColors, 3));
 
     const lineMaterial = new THREE.LineBasicMaterial({
       vertexColors: true,
@@ -1056,9 +1198,6 @@ export class Graph2D {
     if (!this.edgeLines || !(this.edgeLines instanceof THREE.Group)) return;
 
     // For screen-space sizing, arrows should scale INVERSELY with zoom
-    // When zooming in (zoomLevel increases), world-space objects appear larger, so we scale DOWN
-    // When zooming out (zoomLevel decreases), world-space objects appear smaller, so we scale UP
-    // This matches how PointsMaterial with sizeAttenuation: false works
     const scale = 1 / this.zoomLevel;
 
     // Calculate current world units per pixel for positioning
@@ -1070,10 +1209,42 @@ export class Graph2D {
     const nodePixelSize = 9.0;
     const offsetDistance = (nodePixelSize * 0.5) * worldUnitsPerPixel;
 
-    // Scale and reposition all arrow meshes in the edge group
+    // Update arrow instances in the edge group
     this.edgeLines.children.forEach(child => {
-      if (child instanceof THREE.Mesh && child.geometry.index && child.userData) {
-        // This is an arrow (has indexed geometry for triangle)
+      if (child instanceof THREE.InstancedMesh) {
+        // Handle instanced mesh (optimized path)
+        const userData = child.userData as {
+          edgeData: Array<{fromX: number, fromY: number, toX: number, toY: number, angle: number}>;
+          baseArrowSize: number;
+        };
+
+        if (!userData || !userData.edgeData) return;
+
+        const matrix = new THREE.Matrix4();
+        const scaledArrowTipOffset = userData.baseArrowSize * 0.8 * scale;
+
+        for (let i = 0; i < userData.edgeData.length; i++) {
+          const data = userData.edgeData[i];
+
+          // Calculate direction from angle
+          const dirX = Math.cos(data.angle);
+          const dirY = Math.sin(data.angle);
+
+          // Position arrow tip offset from target node
+          const arrowX = data.toX - dirX * (offsetDistance + scaledArrowTipOffset);
+          const arrowY = data.toY - dirY * (offsetDistance + scaledArrowTipOffset);
+
+          // Build transformation matrix with rotation and scale
+          matrix.makeRotationZ(data.angle - Math.PI / 2);
+          matrix.scale(new THREE.Vector3(scale, scale, scale));
+          matrix.setPosition(arrowX, arrowY, 0.1);
+
+          child.setMatrixAt(i, matrix);
+        }
+
+        child.instanceMatrix.needsUpdate = true;
+      } else if (child instanceof THREE.Mesh && child.geometry.index && child.userData) {
+        // Legacy path: individual arrow meshes (for backwards compatibility)
         const userData = child.userData as {
           fromX: number;
           fromY: number;
@@ -1084,18 +1255,7 @@ export class Graph2D {
           baseArrowSize: number;
         };
 
-        // Apply uniform scale to maintain constant screen-space size
         child.scale.set(scale, scale, scale);
-
-        // Update position so arrow tip is exactly half-node-size away from target
-        //
-        // Logic:
-        // 1. We want the tip to be at: targetNode - direction * offsetDistance
-        // 2. The arrow's tip is at (0, baseArrowSize * 0.8, 0) in local space
-        // 3. After rotation, this becomes: direction * (baseArrowSize * 0.8 * scale) in world space
-        // 4. Arrow origin = desired tip position - rotated tip offset
-        // 5. Arrow origin = (targetNode - dir * offsetDistance) - (dir * scaledArrowTipOffset)
-        // 6. Arrow origin = targetNode - dir * (offsetDistance + scaledArrowTipOffset)
         const scaledArrowTipOffset = userData.baseArrowSize * 0.8 * scale;
         const arrowX = userData.toX - userData.dirX * (offsetDistance + scaledArrowTipOffset);
         const arrowY = userData.toY - userData.dirY * (offsetDistance + scaledArrowTipOffset);
@@ -1114,7 +1274,7 @@ export class Graph2D {
       if (this.edgeLines instanceof THREE.Group) {
         // Dispose all children in the group
         this.edgeLines.traverse((child) => {
-          if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments) {
+          if (child instanceof THREE.InstancedMesh || child instanceof THREE.Mesh || child instanceof THREE.LineSegments) {
             if (child.geometry) {
               child.geometry.dispose();
             }

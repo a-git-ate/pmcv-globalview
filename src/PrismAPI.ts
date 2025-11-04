@@ -255,22 +255,24 @@ export class PrismAPI {
       };
     });
 
-    // Convert edges, mapping string IDs to indices
-    const edges: EdgeData[] = data.edges
-      .filter((edge: any) => {
-        const sourceId = String(edge.source);
-        const targetId = String(edge.target);
-        return idToIndex.has(sourceId) && idToIndex.has(targetId);
-      })
-      .map((edge: any) => {
-        const sourceId = String(edge.source);
-        const targetId = String(edge.target);
-        return {
-          from: idToIndex.get(sourceId)!,
-          to: idToIndex.get(targetId)!,
+    // Convert edges, mapping string IDs to indices (optimized single-pass)
+    const edges: EdgeData[] = [];
+    for (let i = 0; i < data.edges.length; i++) {
+      const edge = data.edges[i];
+      const sourceId = String(edge.source);
+      const targetId = String(edge.target);
+
+      const fromIndex = idToIndex.get(sourceId);
+      const toIndex = idToIndex.get(targetId);
+
+      if (fromIndex !== undefined && toIndex !== undefined) {
+        edges.push({
+          from: fromIndex,
+          to: toIndex,
           weight: edge.weight || edge.probability || 1
-        };
-      });
+        });
+      }
+    }
 
     console.log(`[PrismAPI] Converted: ${nodes.length} nodes, ${edges.length} edges`);
     return { nodes, edges };
