@@ -9,6 +9,7 @@ import type {
   LayoutType,
   NodeClickEvent
 } from './types';
+import { min } from 'three/examples/jsm/nodes/Nodes.js';
 
 export class Graph2D {
   // Three.js core
@@ -21,7 +22,7 @@ export class Graph2D {
   private nodes: NodeData[] = [];
   private edges: EdgeData[] = [];
   private nodeCount: number = 0;
-  private currentLayout: LayoutType = 'force_directed';
+  private currentLayout: LayoutType = 'force';
   private edgeLines: THREE.Group | THREE.LineSegments | null = null;
 
   // Axis visualization
@@ -37,8 +38,8 @@ export class Graph2D {
 
   // Store current parameter axes info for dynamic updates
   private currentAxisInfo: {
-    xParamIndex: number;
-    yParamIndex: number;
+    xParamIndex: string;
+    yParamIndex: string;
     minValues: { x: number; y: number };
     maxValues: { x: number; y: number };
     spread: number;
@@ -78,7 +79,6 @@ export class Graph2D {
       lodEnabled: true,
       edgesVisible: true, // Show edges by default
       clusterMode: false,
-      edgeCount: 2000,
       forceStrength: 0.1,
       springLength: 30,
       iterations: 100,
@@ -412,8 +412,8 @@ export class Graph2D {
     let minY = 0, maxY = 100;
 
     if (this.config.useParameterPositioning) {
-      const xParamIndex = this.config.parameterXAxis ?? 0;
-      const yParamIndex = this.config.parameterYAxis ?? 1;
+      const xParamIndex = this.config.parameterXAxis ?? "";
+      const yParamIndex = this.config.parameterYAxis ?? "";
 
       minX = Infinity;
       maxX = -Infinity;
@@ -422,10 +422,10 @@ export class Graph2D {
 
       for (let i = 0; i < count; i++) {
         const node = this.nodes[i];
-        minX = Math.min(minX, node.parameters[xParamIndex]);
-        maxX = Math.max(maxX, node.parameters[xParamIndex]);
-        minY = Math.min(minY, node.parameters[yParamIndex]);
-        maxY = Math.max(maxY, node.parameters[yParamIndex]);
+        minX = Math.min(minX, PrismAPI.getParameterValue(node, xParamIndex));
+        maxX = Math.max(maxX, PrismAPI.getParameterValue(node, xParamIndex));
+        minY = Math.min(minY, PrismAPI.getParameterValue(node, yParamIndex));
+        maxY = Math.max(maxY, PrismAPI.getParameterValue(node, yParamIndex));
       }
     }
 
@@ -471,7 +471,7 @@ export class Graph2D {
     }
 
     // Apply force-directed layout if selected
-    if (this.currentLayout === 'force_directed' && count > 0) {
+    if (this.currentLayout === 'force' && count > 0) {
       this.ui.updateStatus('Computing force-directed layout...');
       this.applyForceDirectedLayout(count, positions, spread);
     }
@@ -506,10 +506,12 @@ export class Graph2D {
       colors[i * 3 + 1] = colorData.g;
       colors[i * 3 + 2] = colorData.b;
 
-      sizes[i] = nodeData.type === 'important' ? 2.0 : 1.0;
+      sizes[i] = 1.0;
     }
   }
 
+
+  //random layout
   private async generateLayout(
     count: number,
     positions: Float32Array,
@@ -531,11 +533,9 @@ export class Graph2D {
           id: i,
           x: 0, // Will be set below
           y: 0, // Will be set below
-          z: 0,
           radius: 0,
           cluster: Math.floor(i / Math.max(1, count / 10)) % 10,
-          value: Math.random(),
-          type: Math.random() > 0.95 ? 'important' : 'normal',
+          type: 's', // Todo: s/t typing
           parameters: this.generateNodeParameters()
         };
       }
@@ -551,8 +551,8 @@ export class Graph2D {
     let minY = 0, maxY = 100;
 
     if (this.config.useParameterPositioning) {
-      const xParamIndex = this.config.parameterXAxis ?? 0;
-      const yParamIndex = this.config.parameterYAxis ?? 1;
+      const xParamIndex = this.config.parameterXAxis ?? "";
+      const yParamIndex = this.config.parameterYAxis ?? "";
 
       minX = Infinity;
       maxX = -Infinity;
@@ -561,10 +561,10 @@ export class Graph2D {
 
       for (let i = 0; i < count; i++) {
         const node = this.nodes[i];
-        minX = Math.min(minX, node.parameters[xParamIndex]);
-        maxX = Math.max(maxX, node.parameters[xParamIndex]);
-        minY = Math.min(minY, node.parameters[yParamIndex]);
-        maxY = Math.max(maxY, node.parameters[yParamIndex]);
+        minX = Math.min(minX, PrismAPI.getParameterValue(node, xParamIndex));
+        maxX = Math.max(maxX, PrismAPI.getParameterValue(node, xParamIndex));
+        minY = Math.min(minY, PrismAPI.getParameterValue(node, yParamIndex));
+        maxY = Math.max(maxY, PrismAPI.getParameterValue(node, yParamIndex));
       }
     }
 
@@ -596,45 +596,45 @@ export class Graph2D {
     }
     
     // Apply force-directed layout if selected
-    if (this.currentLayout === 'force_directed') {
+    if (this.currentLayout === 'force') {
       this.ui.updateStatus('Computing force-directed layout...');
       this.applyForceDirectedLayout(count, positions, spread);
     }
     
-    // Pre-calculate color table for common degree values to avoid creating Color objects
-    const colorCache = new Map<number, { r: number; g: number; b: number }>();
-    const getColorForDegree = (degree: number): { r: number; g: number; b: number } => {
-      const key = Math.min(degree, 20); // Cap at 20 for cache efficiency
-      if (!colorCache.has(key)) {
-        const hue = key > 0 ? Math.min(0.3, key * 0.05) : 0.6;
-        const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
-        colorCache.set(key, { r: color.r, g: color.g, b: color.b });
-      }
-      return colorCache.get(key)!;
-    };
+    // // Pre-calculate color table for common degree values to avoid creating Color objects
+    // const colorCache = new Map<number, { r: number; g: number; b: number }>();
+    // const getColorForDegree = (degree: number): { r: number; g: number; b: number } => {
+    //   const key = Math.min(degree, 20); // Cap at 20 for cache efficiency
+    //   if (!colorCache.has(key)) {
+    //     const hue = key > 0 ? Math.min(0.3, key * 0.05) : 0.6;
+    //     const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
+    //     colorCache.set(key, { r: color.r, g: color.g, b: color.b });
+    //   }
+    //   return colorCache.get(key)!;
+    // };
 
-    // Update colors and sizes based on final positions and connectivity
-    for (let i = 0; i < count; i++) {
-      const x = positions[i * 3];
-      const y = positions[i * 3 + 1];
+    // // Update colors and sizes based on final positions and connectivity
+    // for (let i = 0; i < count; i++) {
+    //   const x = positions[i * 3];
+    //   const y = positions[i * 3 + 1];
 
-      const size = this.calculateNodeSize(x, y, spread);
+    //   const size = this.calculateNodeSize(x, y, spread);
 
-      // Adjust size based on node degree (connectivity)
-      const degree = (this.nodes[i] as any).degree || 0;
-      const adjustedSize = size + (degree * 0.2);
+    //   // Adjust size based on node degree (connectivity)
+    //   const degree = (this.nodes[i] as any).degree || 0;
+    //   const adjustedSize = size + (degree * 0.2);
 
-      this.nodes[i].radius = adjustedSize;
+    //   this.nodes[i].radius = adjustedSize;
 
-      // Set colors array - color based on connectivity (using cache)
-      const color = getColorForDegree(degree);
-      colors[i * 3] = color.r;
-      colors[i * 3 + 1] = color.g;
-      colors[i * 3 + 2] = color.b;
+    //   // Set colors array - color based on connectivity (using cache)
+    //   const color = getColorForDegree(degree);
+    //   colors[i * 3] = color.r;
+    //   colors[i * 3 + 1] = color.g;
+    //   colors[i * 3 + 2] = color.b;
 
-      // Set sizes array
-      sizes[i] = adjustedSize;
-    }
+    //   // Set sizes array
+    //   sizes[i] = adjustedSize;
+    // }
   }
 
   // Gaussian distribution generator using Box-Muller transform
@@ -651,7 +651,7 @@ export class Graph2D {
   }
 
   // Random center points for each parameter (shared across all nodes)
-  private parameterCenters: [number, number, number, number, number, number, number, number, number, number] | null = null;
+  private parameterCenters: number[] | null = null;
 
   // Viridis color scale - excellent for ordinal/sequential data
   // 6 distinct colors with larger perceptual differences
@@ -705,7 +705,7 @@ export class Graph2D {
     };
   }
 
-  // Generate 10 parameters with Gaussian distribution for a node
+  // Random Generation: Generate 10 parameters with Gaussian distribution for a node
   private generateNodeParameters(): [number, number, number, number, number, number, number, number, number, number] {
     // Initialize centers if not already done
     if (!this.parameterCenters) {
@@ -723,6 +723,54 @@ export class Graph2D {
     return parameters;
   }
 
+  /**
+   * Convert parameter value to Three.js world coordinate
+   * @param paramValue - The parameter value to convert
+   * @param minParam - Minimum parameter value in the dataset
+   * @param maxParam - Maximum parameter value in the dataset
+   * @param spread - The world space extent (world coordinates go from -spread to +spread)
+   * @returns World coordinate in Three.js space
+   */
+  private paramToWorld(
+    paramValue: number,
+    minParam: number,
+    maxParam: number,
+    spread: number
+  ): number {
+    const range = maxParam - minParam;
+    if (range === 0) return 0; // If no range, center at origin
+
+    // Normalize to [0, 1]
+    const normalized = (paramValue - minParam) / range;
+
+    // Map from [0, 1] to [-spread, spread]
+    return (normalized - 0.5) * 2 * spread;
+  }
+
+  /**
+   * Convert Three.js world coordinate to parameter value
+   * @param worldPos - The world position to convert
+   * @param minParam - Minimum parameter value in the dataset
+   * @param maxParam - Maximum parameter value in the dataset
+   * @param spread - The world space extent (world coordinates go from -spread to +spread)
+   * @returns Parameter value
+   */
+  private worldToParam(
+    worldPos: number,
+    minParam: number,
+    maxParam: number,
+    spread: number
+  ): number {
+    if (spread === 0) return minParam;
+
+    // Normalize world position to [0, 1]
+    const normalized = (worldPos + spread) / (2 * spread);
+
+    // Map to parameter range
+    const range = maxParam - minParam;
+    return minParam + normalized * range;
+  }
+
   // Calculate position based on parameter values
   // Note: minValues and maxValues need to be passed in for correct mapping
   private calculateParameterPosition(
@@ -732,31 +780,28 @@ export class Graph2D {
     maxValues: { x: number; y: number }
   ): THREE.Vector2 {
     if (this.config.useParameterPositioning) {
-      const xParam = this.config.parameterXAxis ?? 0;
-      const yParam = this.config.parameterYAxis ?? 1;
+      const xParam = this.config.parameterXAxis ?? "";
+      const yParam = this.config.parameterYAxis ?? "";
 
-      // Map parameter values to position coordinates based on actual data range
-      const xRange = maxValues.x - minValues.x;
-      const yRange = maxValues.y - minValues.y;
+      // Get parameter values and convert to world coordinates
+      const paramX = PrismAPI.getParameterValue(node, xParam);
+      const paramY = PrismAPI.getParameterValue(node, yParam);
 
-      const xNormalized = xRange > 0 ? (node.parameters[xParam] - minValues.x) / xRange : 0.5;
-      const yNormalized = yRange > 0 ? (node.parameters[yParam] - minValues.y) / yRange : 0.5;
-
-      // Map from [0, 1] to [-spread, spread]
-      const x = (xNormalized - 0.5) * 2 * spread;
-      const y = (yNormalized - 0.5) * 2 * spread;
+      const x = this.paramToWorld(paramX, minValues.x, maxValues.x, spread);
+      const y = this.paramToWorld(paramY, minValues.y, maxValues.y, spread);
 
       return new THREE.Vector2(x, y);
     }
 
     // Fallback to random position
+    console.log('[calculateParameterPosition] Random position for node ' + node.id.toString());
     return new THREE.Vector2((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread);
   }
 
   private calculateNodePosition(index: number, _count: number, spread: number): THREE.Vector2 {
     let x: number, y: number;
 
-    if (this.currentLayout === 'force_directed') {
+    if (this.currentLayout === 'force') {
       // Force layout starts with a distributed initial position
       const hash = (index * 2654435761) % 2147483647;
       const initAngle = (hash / 2147483647) * Math.PI * 2;
@@ -809,7 +854,7 @@ export class Graph2D {
       if (edgeSet.has(edgeKey)) continue;
 
       // Add the edge
-      this.edges.push({ from, to, weight: Math.random() });
+      this.edges.push({ from, to});
       edgeSet.add(edgeKey);
       connectionSets[from].add(to);
       connectionSets[to].add(from);
@@ -824,22 +869,6 @@ export class Graph2D {
       (node as any).connections = connectionsArray;
       (node as any).degree = connectionsArray.length;
     });
-  }
-
-  // Currently unused but kept for potential future use
-  // @ts-expect-error - Unused method kept for future use
-  private _calculateForceDirectedPosition(index: number, spread: number): THREE.Vector2 {
-    if (this.nodes.length === 0) {
-      return new THREE.Vector2((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread);
-    }
-    
-    const node = this.nodes[index];
-    if (!node || !(node as any).connections) {
-      return new THREE.Vector2((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread);
-    }
-    
-    // Use existing position if available, otherwise random
-    return new THREE.Vector2(node.x || (Math.random() - 0.5) * spread, node.y || (Math.random() - 0.5) * spread);
   }
 
   private applyForceDirectedLayout(_nodeCount: number, positions: Float32Array, spread: number): void {
@@ -1303,95 +1332,6 @@ export class Graph2D {
     }
   }
 
-  // Note: This method is currently unused but kept for potential future use
-  // private updateNodeConnectivity(): void {
-  //   // Initialize connections array for all nodes
-  //   const connections: number[][] = Array(this.nodes.length).fill(null).map(() => []);
-  //
-  //   // Build connections from edges
-  //   this.edges.forEach(edge => {
-  //     if (edge.from < this.nodes.length && edge.to < this.nodes.length) {
-  //       connections[edge.from].push(edge.to);
-  //       connections[edge.to].push(edge.from); // Undirected graph
-  //     }
-  //   });
-  //
-  //   // Update node data with connections
-  //   this.nodes.forEach((node, index) => {
-  //     (node as any).connections = connections[index];
-  //     (node as any).degree = connections[index].length;
-  //   });
-  // }
-
-  // Note: This method is currently unused but kept for potential future use
-  // private async generateLayoutFromNodes(
-  //   positions: Float32Array,
-  //   colors: Float32Array,
-  //   sizes: Float32Array
-  // ): Promise<void> {
-  //   const nodeCount = this.nodes.length;
-  //   const spread = Math.sqrt(nodeCount) * 0.5;
-  //
-  //   // Initialize positions from node data or random
-  //   for (let i = 0; i < nodeCount; i++) {
-  //     const node = this.nodes[i];
-  //     let x = node.x;
-  //     let y = node.y;
-  //
-  //     // If no position provided, use random or layout algorithm
-  //     if (x === 0 && y === 0) {
-  //       const position = this.calculateNodePosition(i, nodeCount, spread);
-  //       x = position.x;
-  //       y = position.y;
-  //
-  //       // Update node data
-  //       this.nodes[i].x = x;
-  //       this.nodes[i].y = y;
-  //     }
-  //
-  //     // Set initial positions array
-  //     positions[i * 3] = x;
-  //     positions[i * 3 + 1] = y;
-  //     positions[i * 3 + 2] = 0;
-  //   }
-  //
-  //   // Apply force-directed layout if selected
-  //   if (this.currentLayout === ('force_directed' as any)) {
-  //     this.ui.updateStatus('Computing force-directed layout...');
-  //     this.applyForceDirectedLayout(nodeCount, positions, spread);
-  //   }
-  //
-  //   // Update colors and sizes based on final positions and connectivity
-  //   for (let i = 0; i < nodeCount; i++) {
-  //     const x = positions[i * 3];
-  //     const y = positions[i * 3 + 1];
-  //
-  //     const size = this.calculateNodeSize(x, y, spread);
-  //
-  //     // Adjust size based on node degree (connectivity)
-  //     const degree = (this.nodes[i] as any).degree || 0;
-  //     const adjustedSize = size + (degree * 0.2); // Nodes with more connections are larger
-  //
-  //     this.nodes[i].radius = adjustedSize;
-  //
-  //     // Set colors array - color based on connectivity
-  //     const connectivityHue = degree > 0 ? Math.min(0.3, degree * 0.05) : 0.6; // Connected = warmer, isolated = cooler
-  //     const connectivityColor = new THREE.Color().setHSL(connectivityHue, 0.8, 0.6);
-  //     colors[i * 3] = connectivityColor.r;
-  //     colors[i * 3 + 1] = connectivityColor.g;
-  //     colors[i * 3 + 2] = connectivityColor.b;
-  //
-  //     // Set sizes array
-  //     sizes[i] = adjustedSize;
-  //
-  //     // Yield control occasionally
-  //     if (i % 10000 === 0 && i > 0) {
-  //       this.ui.updateNodeCount(i);
-  //       await new Promise<void>(resolve => setTimeout(resolve, 1));
-  //     }
-  //   }
-  // }
-
   private createPointCloud(
     geometry: THREE.BufferGeometry,
     positions: Float32Array,
@@ -1403,7 +1343,7 @@ export class Graph2D {
     geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
     const material = new THREE.PointsMaterial({
-      size: 9.0, // Increased from 6.0 to 9.0 (1.5x)
+      size: 9.0,
       vertexColors: true,
       sizeAttenuation: false, // Disable size attenuation so nodes don't disappear when zooming
       transparent: true,
@@ -1470,7 +1410,7 @@ export class Graph2D {
     }
 
     // Apply force-directed layout if selected (both 'force' and 'force_directed' use physics simulation)
-    if (this.currentLayout === 'force_directed' || this.currentLayout === 'force') {
+    if (this.currentLayout === 'force') {
       this.ui.updateStatus('Computing force-directed layout...');
       await this.applyForceDirectedLayoutToBuffer(positions, spread);
     }
@@ -1493,8 +1433,6 @@ export class Graph2D {
       const size = this.calculateNodeSize(x, y, spread);
       const degree = (this.nodes[i] as any).degree || 0;
       const adjustedSize = size + (degree * 0.2);
-
-      this.nodes[i].radius = adjustedSize;
 
       const color = getColorForDegree(degree);
       colors.setXYZ(i, color.r, color.g, color.b);
@@ -1686,9 +1624,13 @@ export class Graph2D {
 
         // Show parameters
         html += `<div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #bbb;">`;
-        stackedNode.parameters.forEach((value, index) => {
-          const label = paramLabels[index]?.label || `P${index}`;
-          html += `<div class="property">${label}: ${value.toFixed(3)}</div>`;
+        Object.keys(stackedNode.parameters).forEach((category: string) => {
+          html += `<div class = "property-category">${category}`;
+          Object.keys(stackedNode.parameters[category]).forEach((parameter: string) => {
+            const value = stackedNode.parameters[category][parameter];
+            html += `<div class="property">${parameter}: ${value.toString()}</div>`;
+          });
+          html += `</div>`;
         });
         html += `</div>`;
         html += `</div>`;
@@ -1709,9 +1651,13 @@ export class Graph2D {
 
       // Show parameters
       html += `<div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #ddd;">`;
-      node.parameters.forEach((value, index) => {
-        const label = paramLabels[index]?.label || `P${index}`;
-        html += `<div class="property">${label}: ${value.toFixed(3)}</div>`;
+      Object.keys(node.parameters).forEach((category: string) => {
+        html += `<div class = "property-category">${category}`;
+        Object.keys(node.parameters[category]).forEach((parameter: string) => {
+          const value = node.parameters[category][parameter];
+          html += `<div class="property">${parameter}: ${value.toString()}</div>`;
+        });
+        html += `</div>`;
       });
       html += `</div>`;
     }
@@ -2198,8 +2144,8 @@ export class Graph2D {
 
   // Create axis labels in the 3D scene
   private createAxisVisualization(
-    xParamIndex: number,
-    yParamIndex: number,
+    yParamIndex: string,
+    xParamIndex: string,
     minValues: { x: number; y: number },
     maxValues: { x: number; y: number },
     spread: number
@@ -2247,28 +2193,56 @@ export class Graph2D {
     const viewHeight = viewTop - viewBottom;
     const labelHeight = viewHeight * 0.08; // 8% of viewport height
 
-    // SCREEN-EDGE-FIXED AXES: Position axis slightly inside viewport for visibility
-    // Offset by small amount (1% of viewport height) to ensure tick marks are visible
+    // AXIS POSITIONING: Position axes at minimum parameter values when visible,
+    // otherwise snap to screen edges for visibility
     const axisOffset = viewHeight * 0.01;
-    const xAxisY = viewBottom + axisOffset; // X-axis slightly above bottom edge
-    const yAxisX = viewLeft;   // Y-axis at left edge
 
-    // X-axis: horizontal line spanning the entire screen width
+    // Calculate world positions of minimum parameter values
+    const minXWorldPos = this.paramToWorld(minValues.x, minValues.x, maxValues.x, spread);
+    const minYWorldPos = this.paramToWorld(minValues.y, minValues.y, maxValues.y, spread);
+    const maxXWorldPos = this.paramToWorld(maxValues.x, minValues.x, maxValues.x, spread);
+    const maxYWorldPos = this.paramToWorld(maxValues.y, minValues.y, maxValues.y, spread);
+
+    // Y-axis positioning: Use minValues.x position if visible, otherwise snap to viewLeft
+    let yAxisX: number;
+    if (minXWorldPos >= viewLeft && minXWorldPos <= viewRight) {
+      // Minimum X value is visible on screen, position Y-axis there
+      yAxisX = minXWorldPos;
+      console.log("Y-axis at min parameter value:", minValues.x, "world pos:", yAxisX);
+    } else {
+      // Minimum X value is off-screen, snap Y-axis to left edge
+      yAxisX = viewLeft;
+      console.log("Y-axis at screen edge (left):", yAxisX);
+    }
+
+    // X-axis positioning: Use minValues.y position if visible, otherwise snap to viewBottom
+    let xAxisY: number;
+    if (minYWorldPos >= viewBottom && minYWorldPos <= viewTop) {
+      // Minimum Y value is visible on screen, position X-axis there
+      xAxisY = minYWorldPos;
+      console.log("X-axis at min parameter value:", minValues.y, "world pos:", xAxisY);
+    } else {
+      // Minimum Y value is off-screen, snap X-axis to bottom edge
+      xAxisY = viewBottom;
+      console.log("X-axis at screen edge (bottom):", xAxisY);
+    }
+    // X-axis: horizontal line starting from Y-axis position (minValues.x) extending right
     const xAxisGeometry = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(viewLeft, xAxisY, 0),
-      new THREE.Vector3(viewRight, xAxisY, 0)
+      new THREE.Vector3(yAxisX, xAxisY, 0),  // Start at Y-axis
+      new THREE.Vector3(maxXWorldPos, xAxisY, 0)
     ]);
     const xAxisLine = new THREE.Line(xAxisGeometry, axisLinesMaterial);
     this.axisGroup.add(xAxisLine);
 
-    // Y-axis: vertical line spanning the entire screen height
+    // Y-axis: vertical line starting from X-axis position (minValues.y) extending up
     const yAxisGeometry = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(yAxisX, viewBottom, 0),
-      new THREE.Vector3(yAxisX, viewTop, 0)
+      new THREE.Vector3(yAxisX, xAxisY, 0),  // Start at X-axis
+      new THREE.Vector3(yAxisX, maxYWorldPos, 0)
     ]);
     const yAxisLine = new THREE.Line(yAxisGeometry, axisLinesMaterial);
     this.axisGroup.add(yAxisLine);
 
+    console.log("yAxisX 3:", yAxisX);
     // Create grid lines material (more visible)
     const gridLinesMaterial = new THREE.LineBasicMaterial({
       color: 0x666666,
@@ -2283,15 +2257,11 @@ export class Graph2D {
     const labelScale = labelHeight; // Use the same label height calculated above
 
     // Calculate visible X range in parameter space
-    // Map viewport coordinates to parameter values
-    const xRange = maxValues.x - minValues.x;
-    const yRange = maxValues.y - minValues.y;
-
-    // Convert viewport left/right to parameter values
-    const visibleMinX = xRange > 0 ? minValues.x + ((viewLeft + spread) / (2 * spread)) * xRange : minValues.x;
-    const visibleMaxX = xRange > 0 ? minValues.x + ((viewRight + spread) / (2 * spread)) * xRange : maxValues.x;
-    const visibleMinY = yRange > 0 ? minValues.y + ((viewBottom + spread) / (2 * spread)) * yRange : minValues.y;
-    const visibleMaxY = yRange > 0 ? minValues.y + ((viewTop + spread) / (2 * spread)) * yRange : maxValues.y;
+    // Convert viewport bounds to parameter values using helper functions
+    const visibleMinX = this.worldToParam(viewLeft, minValues.x, maxValues.x, spread);
+    const visibleMaxX = this.worldToParam(viewRight, minValues.x, maxValues.x, spread);
+    const visibleMinY = this.worldToParam(viewBottom, minValues.y, maxValues.y, spread);
+    const visibleMaxY = this.worldToParam(viewTop, minValues.y, maxValues.y, spread);
 
     // Use UNIFIED PARAMETER INTERVAL for both X and Y axes
     // Calculate the visible parameter ranges
@@ -2312,7 +2282,7 @@ export class Graph2D {
     // Generate X-axis ticks starting from 0 (or nearest multiple below visible range)
     const xTicks: number[] = [];
     // Find the world position of parameter value 0
-    // const zeroWorldX = -spread + (xRange > 0 ? (0 - minValues.x) / xRange : 0.5) * (2 * spread);
+    // const zeroWorldX = this.paramToWorld(0, minValues.x, maxValues.x, spread);
 
     // Find starting tick that's a multiple of xParamInterval and at or before visible range
     // Start from 0 and go in both directions
@@ -2321,18 +2291,18 @@ export class Graph2D {
 
     for (let mult = xStartMultiplier; mult <= xEndMultiplier; mult++) {
       const val = mult * xParamInterval;
-      if (val >= visibleMinX - xParamInterval * 0.01 && val <= visibleMaxX + xParamInterval * 0.01) {
+      // Only include ticks >= minValues.x (where Y-axis is positioned)
+      if (val >= minValues.x && val <= maxValues.x + xParamInterval * 0.01) {
         xTicks.push(val);
       }
     }
 
     for (const value of xTicks) {
-      // Calculate world position based on parameter value
-      const normalizedX = xRange > 0 ? (value - minValues.x) / xRange : 0.5;
-      const xPos = -spread + normalizedX * (spread * 2);
+      // Calculate world position based on parameter value using helper function
+      const xPos = this.paramToWorld(value, minValues.x, maxValues.x, spread);
 
-      // Only show labels that are within viewport
-      if (xPos < viewLeft || xPos > viewRight) continue;
+      // Only show labels that are within viewport and at/right of Y-axis
+      if (xPos < yAxisX || xPos > viewRight) continue;
 
       // Determine decimal places based on interval size
       // For intervals like 0.25, 2.5, we need appropriate decimal places
@@ -2349,7 +2319,7 @@ export class Graph2D {
       const sprite = new THREE.Sprite(spriteMaterial);
       // Position label above viewport bottom edge to ensure visibility
       // labelScale * 1.0 positions the label center 8% above bottom edge
-      sprite.position.set(xPos, viewBottom + labelScale * 1.0, 0);
+      sprite.position.set(xPos, xAxisY + labelScale * 0.3, 0);
       // Scale proportionally to aspect ratio to avoid distortion
       const baseHeight = labelScale * 0.6;
       sprite.scale.set(baseHeight * aspectRatio, baseHeight, 1);
@@ -2358,15 +2328,15 @@ export class Graph2D {
       // Add tick mark on the x-axis line (taller for better visibility)
       const tickGeometry = new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(xPos, xAxisY, 0),
-        new THREE.Vector3(xPos, xAxisY + labelScale * 0.6, 0)
+        new THREE.Vector3(xPos, xAxisY + labelScale * 0.2, 0)
       ]);
       const tickLine = new THREE.Line(tickGeometry, axisLinesMaterial);
       this.axisGroup.add(tickLine);
 
-      // Add vertical grid line if enabled
+      // Add vertical grid line if enabled (from X-axis upward)
       if (this.gridLinesVisible) {
         const gridGeometry = new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(xPos, viewBottom, 0),
+          new THREE.Vector3(xPos, xAxisY, 0),  // Start at X-axis
           new THREE.Vector3(xPos, viewTop, 0)
         ]);
         const gridLine = new THREE.Line(gridGeometry, gridLinesMaterial);
@@ -2382,18 +2352,18 @@ export class Graph2D {
 
     for (let mult = yStartMultiplier; mult <= yEndMultiplier; mult++) {
       const val = mult * yParamInterval;
-      if (val >= visibleMinY - yParamInterval * 0.01 && val <= visibleMaxY + yParamInterval * 0.01) {
+      // Only include ticks >= minValues.y (where X-axis is positioned)
+      if (val >= minValues.y && val <= maxValues.y + yParamInterval * 0.01) {
         yTicks.push(val);
       }
     }
 
     for (const value of yTicks) {
-      // Calculate world position based on parameter value
-      const normalizedY = yRange > 0 ? (value - minValues.y) / yRange : 0.5;
-      const yPos = -spread + normalizedY * (spread * 2);
+      // Calculate world position based on parameter value using helper function
+      const yPos = this.paramToWorld(value, minValues.y, maxValues.y, spread);
 
-      // Only show labels that are within viewport
-      if (yPos < viewBottom || yPos > viewTop) continue;
+      // Only show labels that are within viewport and at/above X-axis
+      if (yPos < xAxisY || yPos > viewTop) continue;
 
       // Determine decimal places based on interval size
       const decimals = this.getDecimalPlaces(yParamInterval);
@@ -2407,7 +2377,7 @@ export class Graph2D {
         sizeAttenuation: false
       });
       const sprite = new THREE.Sprite(spriteMaterial);
-      sprite.position.set(yAxisX + labelScale * 0.8, yPos, 0); // Position to the right of the axis line
+      sprite.position.set(yAxisX + labelScale * 0.4, yPos, 0); // Position to the right of the axis line
       // Scale proportionally to aspect ratio to avoid distortion
       const baseHeight = labelScale * 0.6;
       sprite.scale.set(baseHeight * aspectRatio, baseHeight, 1);
@@ -2416,7 +2386,7 @@ export class Graph2D {
       // Add tick mark on the y-axis line
       const tickGeometry = new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(yAxisX, yPos, 0),
-        new THREE.Vector3(yAxisX + labelScale * 0.3, yPos, 0)
+        new THREE.Vector3(yAxisX + labelScale * 0.2, yPos, 0)
       ]);
       const tickLine = new THREE.Line(tickGeometry, axisLinesMaterial);
       this.axisGroup.add(tickLine);
@@ -2435,8 +2405,8 @@ export class Graph2D {
     // Add axis titles positioned at screen edges
     // Get parameter names from API metadata
     const paramLabels = this.prismAPI.getParameterLabels('s');
-    const xParamLabel = paramLabels[xParamIndex]?.label || `P${xParamIndex}`;
-    const yParamLabel = paramLabels[yParamIndex]?.label || `P${yParamIndex}`;
+    const xParamLabel = `P${xParamIndex}`;
+    const yParamLabel = `P${yParamIndex}`;
 
     // X-axis title: centered horizontally at bottom of screen
     const { texture: xTitleTexture, aspectRatio: xTitleAspect } = this.createTextTexture(xParamLabel, 64);
@@ -2501,10 +2471,10 @@ export class Graph2D {
   /**
    * Apply color parameter to nodes without changing their positions
    */
-  public applyColorParameter(colorParamIndex: number): void {
+  public applyColorParameter(colorParamIndex: string): void {
     if (!this.pointCloud || this.nodes.length === 0) return;
 
-    if (colorParamIndex < 0 || colorParamIndex >= 10) {
+    if (colorParamIndex === "") {
       this.ui.updateStatus('Invalid color parameter index');
       return;
     }
@@ -2517,14 +2487,14 @@ export class Graph2D {
     let minColor = Infinity, maxColor = -Infinity;
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
-      minColor = Math.min(minColor, node.parameters[colorParamIndex]);
-      maxColor = Math.max(maxColor, node.parameters[colorParamIndex]);
+      minColor = Math.min(minColor, PrismAPI.getParameterValue(node, colorParamIndex));
+      maxColor = Math.max(maxColor, PrismAPI.getParameterValue(node, colorParamIndex));
     }
 
     // Apply colors
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
-      const colorValue = node.parameters[colorParamIndex];
+      const colorValue = PrismAPI.getParameterValue(node, colorParamIndex);
       const color = this.getColorFromParameter(colorValue, minColor, maxColor);
       colors.setXYZ(i, color.r, color.g, color.b);
     }
@@ -2533,15 +2503,15 @@ export class Graph2D {
     this.ui.updateStatus(`Colored by parameter ${colorParamIndex}`);
   }
 
-  public rearrangeByParameters(xParamIndex: number, yParamIndex: number, colorParamIndex: number = -1): void {
+  public rearrangeByParameters(xParam: string, yParam: string, colorParamIndex: string = ""): void {
     if (!this.pointCloud || this.nodes.length === 0) return;
 
     console.log(`[Parameter View] Starting with ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
-    this.ui.updateStatus(`Rearranging nodes by parameters ${xParamIndex} and ${yParamIndex}...`);
+    this.ui.updateStatus(`Rearranging nodes by parameters ${xParam} and ${yParam}...`);
 
     // Update configuration
-    this.config.parameterXAxis = xParamIndex;
-    this.config.parameterYAxis = yParamIndex;
+    this.config.parameterXAxis = xParam;
+    this.config.parameterYAxis = yParam;
     this.config.useParameterPositioning = true;
 
     const positions = this.pointCloud.geometry.attributes.position as THREE.BufferAttribute;
@@ -2555,14 +2525,14 @@ export class Graph2D {
     // First pass: find min/max values for all parameters
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
-      minX = Math.min(minX, node.parameters[xParamIndex]);
-      maxX = Math.max(maxX, node.parameters[xParamIndex]);
-      minY = Math.min(minY, node.parameters[yParamIndex]);
-      maxY = Math.max(maxY, node.parameters[yParamIndex]);
+      minX = Math.min(minX, PrismAPI.getParameterValue(node, xParam));
+      maxX = Math.max(maxX, PrismAPI.getParameterValue(node, xParam));
+      minY = Math.min(minY, PrismAPI.getParameterValue(node, yParam));
+      maxY = Math.max(maxY, PrismAPI.getParameterValue(node, yParam));
 
-      if (colorParamIndex >= 0 && colorParamIndex < 10) {
-        minColor = Math.min(minColor, node.parameters[colorParamIndex]);
-        maxColor = Math.max(maxColor, node.parameters[colorParamIndex]);
+      if (colorParamIndex) {
+        minColor = Math.min(minColor, PrismAPI.getParameterValue(node, colorParamIndex));
+        maxColor = Math.max(maxColor, PrismAPI.getParameterValue(node, colorParamIndex));
       }
     }
 
@@ -2596,15 +2566,15 @@ export class Graph2D {
       positions.setXYZ(i, newPosition.x, newPosition.y, 0);
 
       // Update colors if color parameter is specified
-      if (colorParamIndex >= 0 && colorParamIndex < 10) {
-        const colorValue = node.parameters[colorParamIndex];
+      if (colorParamIndex != "") {
+        const colorValue = PrismAPI.getParameterValue(node, colorParamIndex);
         const color = this.getColorFromParameter(colorValue, minColor, maxColor);
         colors.setXYZ(i, color.r, color.g, color.b);
       }
     }
 
     positions.needsUpdate = true;
-    if (colorParamIndex >= 0) {
+    if (colorParamIndex != "") {
       colors.needsUpdate = true;
     }
 
@@ -2619,8 +2589,8 @@ export class Graph2D {
 
     // Create axis visualization in Three.js scene
     this.createAxisVisualization(
-      xParamIndex,
-      yParamIndex,
+      xParam,
+      yParam,
       { x: minX, y: minY },
       { x: maxX, y: maxY },
       spread
@@ -2632,8 +2602,8 @@ export class Graph2D {
     // Update overlap labels after rearrangement
     this.updateOverlapLabels();
 
-    const colorMsg = colorParamIndex >= 0 ? `, colored by P${colorParamIndex}` : '';
-    this.ui.updateStatus(`Nodes rearranged by parameters ${xParamIndex} (X) and ${yParamIndex} (Y)${colorMsg}`);
+    const colorMsg = colorParamIndex != "" ? `, colored by P${colorParamIndex}` : '';
+    this.ui.updateStatus(`Nodes rearranged by parameters ${xParam} (X) and ${yParam} (Y)${colorMsg}`);
   }
 
   /**
@@ -2749,7 +2719,7 @@ export class Graph2D {
 
 
   // New method for loading PRISM projects
-  public async loadPrismProject(projectId: string, viewIds?: number[]): Promise<void> {
+  public async loadPrismProject(projectId: string): Promise<void> {
     this.ui.updateStatus(`Loading PRISM project: ${projectId}...`);
     this.ui.disableButtons();
 
@@ -2761,8 +2731,7 @@ export class Graph2D {
       this.edges = [];
 
       // Fetch PRISM project data
-      const prismData = await this.prismAPI.fetchProject(projectId, viewIds);
-      const graphData = this.prismAPI.convertPrismToInternal(prismData);
+      const graphData = await this.prismAPI.fetchSimpleGraph(projectId);
 
       this.nodes = graphData.nodes;
       this.edges = graphData.edges;
@@ -2803,10 +2772,9 @@ export class Graph2D {
       this.updateOverlapLabels();
 
       // Update model info display
-      this.ui.updateModelInfo(projectId, nodeCount, this.edges.length, viewIds);
+      this.ui.updateModelInfo(projectId, nodeCount, this.edges.length);
 
-      const viewInfo = viewIds ? ` (views: ${viewIds.join(', ')})` : '';
-      this.ui.updateStatus(`Loaded PRISM project "${projectId}"${viewInfo}: ${nodeCount.toLocaleString()} nodes, ${this.edges.length.toLocaleString()} edges`);
+      this.ui.updateStatus(`Loaded PRISM project "${projectId}": ${nodeCount.toLocaleString()} nodes, ${this.edges.length.toLocaleString()} edges`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load PRISM project';
       this.ui.showError(message);
@@ -2838,7 +2806,6 @@ export class Graph2D {
       this.renderer = null;
     }
 
-    this.prismAPI.clearCache();
     this.ui.dispose();
     this.projectManager.dispose();
     this.nodes = [];

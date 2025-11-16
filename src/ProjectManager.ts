@@ -164,7 +164,7 @@ export class ProjectManager {
       }
 
       // Start polling if there are missing parameters
-      if (this.prismAPI.hasMinsingParameters(mergedStatus)) {
+      if (this.prismAPI.hasMissingParameters(mergedStatus)) {
         this.startStatusPolling();
       } else {
         this.stopStatusPolling();
@@ -433,7 +433,7 @@ export class ProjectManager {
         this.displayParameterStatus(status);
 
         // Stop polling if no more missing parameters
-        if (!this.prismAPI.hasMinsingParameters(status)) {
+        if (!this.prismAPI.hasMissingParameters(status)) {
           console.log('[ProjectManager] All parameters ready, stopping poll');
           this.stopStatusPolling();
         }
@@ -508,7 +508,7 @@ export class ProjectManager {
       this.graph.ui.updateStatus(`Model reset for: ${this.currentProjectId}`);
 
       // Immediately update status after reset
-      await this.updateProjectStatus();
+      await this.selectProject(this.currentProjectId);
 
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Model reset failed';
@@ -555,23 +555,35 @@ export class ProjectManager {
   }
 
   /**
-   * Check if there's a delta between two parameter label arrays
+   * Check if there's a delta between two parameter label objects
    */
   private hasParameterDelta(
-    previous: Array<{ index: number; label: string; fullPath: string }>,
-    current: Array<{ index: number; label: string; fullPath: string }>
+    previous: Record<string, string[]>,
+    current: Record<string, string[]>
   ): boolean {
     // Check if lengths differ
-    if (previous.length !== current.length) {
+    if (Object.keys(previous).length !== Object.keys(current).length) {
       return true;
     }
 
     // Check if any labels have changed
-    for (let i = 0; i < previous.length; i++) {
-      if (previous[i].label !== current[i].label ||
-          previous[i].fullPath !== current[i].fullPath) {
+    for (const key of Object.keys(previous)) {
+      const prevLabels = previous[key] || [];
+      const currLabels = current[key] || [];
+      if (prevLabels.length !== currLabels.length || currLabels.length != prevLabels.length) {
         return true;
       }
+      for (let i = 0; i < prevLabels.length; i++) {
+        if (prevLabels[i] !== currLabels[i]) {
+          return true;
+        }
+        Object.keys(previous[key]).forEach((paramName: string) => {
+          if (!current[key].includes(paramName)) {
+            return true;
+          }
+        });
+      }
+      
     }
 
     return false;

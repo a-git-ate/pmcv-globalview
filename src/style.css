@@ -335,4 +335,10 @@ button:disabled {
   margin: 2px 0;
   font-family: monospace;
   font-size: 10px;
+  font-weight: normal;
+}
+
+#node-tooltip .property-category {
+  font-weight: bold;
+  margin-top: 6px;
 }

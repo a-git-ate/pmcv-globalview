@@ -1,3 +1,4 @@
+import { getRandomValues } from 'crypto';
 import type { Graph2D } from './Graph2D.ts';
 import type { LayoutType } from './types';
 
@@ -58,7 +59,7 @@ export class UIManager {
     this.addClickListener('btn-1m', () => this.graph.generateNodes(1000000));
 
     // Layout button
-    this.addClickListener('btn-force-directed', () => this.graph.applyLayout('force_directed'));
+    this.addClickListener('btn-force-directed', () => this.graph.applyLayout('force'));
 
     // Control buttons
     this.addClickListener('btn-lod', () => this.graph.toggleLOD());
@@ -140,7 +141,7 @@ export class UIManager {
   public showError(message: string): void {
     this.updateStatus(`Error: ${message}`);
     console.error(`[Graph Error] ${message}`);
-    
+
     // Could implement a proper error modal here
     alert(`Graph Error: ${message}`);
   }
@@ -172,14 +173,9 @@ export class UIManager {
       return;
     }
 
-    const xParamIndex = parseInt(xSelect.value);
-    const yParamIndex = parseInt(ySelect.value);
-    const colorParamIndex = parseInt(colorSelect.value);
-
-    if (isNaN(xParamIndex) || isNaN(yParamIndex) || isNaN(colorParamIndex)) {
-      console.warn('Invalid parameter indices');
-      return;
-    }
+    const xParamIndex = xSelect.value;
+    const yParamIndex = ySelect.value;
+    const colorParamIndex = colorSelect.value;
 
     this.graph.rearrangeByParameters(xParamIndex, yParamIndex, colorParamIndex);
   }
@@ -326,7 +322,7 @@ export class UIManager {
   /**
    * Update parameter selection dropdowns with actual parameter names
    */
-  public updateParameterSelections(paramLabels: Array<{ index: number; label: string; fullPath: string }>): void {
+  public updateParameterSelections(paramLabels: Record<string, string[]>): void {
     const xSelect = this.getElement('param-x-select') as HTMLSelectElement;
     const ySelect = this.getElement('param-y-select') as HTMLSelectElement;
     const colorSelect = this.getElement('param-color-select') as HTMLSelectElement;
@@ -351,12 +347,14 @@ export class UIManager {
 
     // Update Color dropdown (includes "None" option)
     colorSelect.innerHTML = '<option value="-1">None</option>';
-    paramLabels.forEach(param => {
-      const option = document.createElement('option');
-      option.value = param.index.toString();
-      option.textContent = param.label;
-      option.title = param.fullPath;
-      colorSelect.appendChild(option);
+    Object.values(paramLabels).forEach(value => {
+      value.forEach(param => {
+        const option = document.createElement('option');
+        option.value = param;
+        option.textContent = param;
+        option.title = param;
+        colorSelect.appendChild(option);
+      });
     });
     colorSelect.value = currentColor;
 
@@ -368,15 +366,17 @@ export class UIManager {
    */
   private populateParameterDropdown(
     select: HTMLSelectElement,
-    paramLabels: Array<{ index: number; label: string; fullPath: string }>
+    paramLabels: Record<string, string[]>
   ): void {
     select.innerHTML = '';
-    paramLabels.forEach(param => {
-      const option = document.createElement('option');
-      option.value = param.index.toString();
-      option.textContent = param.label;
-      option.title = param.fullPath; // Tooltip shows full path
-      select.appendChild(option);
+    Object.values(paramLabels).forEach(value => {
+      value.forEach(param => {
+        const option = document.createElement('option');
+        option.value = param;
+        option.textContent = param;
+        option.title = param;
+        select.appendChild(option);
+      });
     });
   }
 

@@ -1,43 +1,41 @@
 export interface NodeData {
-  id: number;
+  id: number | string; // Original ID from the API (can be string)
+  index?: number; // Sequential index in the nodes array (used for positioning/rendering)
+  name?: string;
   x: number;
   y: number;
-  z: number;
-  radius: number;
-  cluster: number;
-  value: number;
-  type: 'normal' | 'important';
   connections?: number[];
   degree?: number;
-  // 10 float parameters ranging from 0 to 100
-  parameters: [number, number, number, number, number, number, number, number, number, number];
+  parameters: Record<string, any>;
+  type: 's' | 't';
+  cluster: number;
+  radius?: number;
+
 }
 
 export interface EdgeData {
   from: number;
   to: number;
-  weight?: number;
+  label?: string;
 }
 
 export interface GraphConfig {
   maxVisibleNodes: number;
-  renderDistance: number;
   minZoom: number;
   maxZoom: number;
   lodEnabled: boolean;
   edgesVisible: boolean;
   clusterMode: boolean;
-  edgeCount?: number;
   forceStrength?: number;
   springLength?: number;
   iterations?: number;
-  // Parameter-based positioning
-  parameterXAxis?: number; // Which parameter (0-9) to use for X axis
-  parameterYAxis?: number; // Which parameter (0-9) to use for Y axis
+  parameterXAxis?: string;
+  parameterYAxis?: string;
   useParameterPositioning?: boolean;
+  renderDistance: number;
 }
 
-export type LayoutType = 'random' | 'grid' | 'circular' | 'force' | 'force_directed';
+export type LayoutType = 'random' | 'grid' | 'force';
 
 export interface ViewportBounds {
   left: number;

@@ -1,176 +1,52 @@
 import type { NodeData, EdgeData } from './types';
 
-export interface PrismNode {
-  id: string | number;
-  name?: string;
-  x?: number;
-  y?: number;
-  type?: 's' | 't' | 'initial' | 'target' | 'deadlock' | 'normal';
-  properties?: Record<string, any>;
-  details?: {
-    'Variable Values'?: Record<string, number>;
-    'Atomic Propositions'?: Record<string, boolean>;
-    'Model Checking Results'?: Record<string, number>;
-    'Reward Structures'?: Record<string, number>;
-    [key: string]: any;
-  };
-}
-
-export interface PrismEdge {
-  source: string | number;
-  target: string | number;
-  probability?: number;
-  action?: string;
-  label?: string;
-  weight?: number;
-}
-
 export interface ParameterMetadata {
   type: 'number' | 'boolean' | 'nominal';
   status: string;
   min: number | string;
   max: number | string;
   identifier?: string;
-  icon?: boolean;
 }
 
 export interface NodeTypeInfo {
+  'Variable Values'?: Record<string, ParameterMetadata>;
   'Atomic Propositions'?: Record<string, ParameterMetadata>;
   'Model Checking Results'?: Record<string, ParameterMetadata>;
   'Reward Structures'?: Record<string, ParameterMetadata>;
-  'Variable Values'?: Record<string, ParameterMetadata>;
-  'Action Parameter'?: Record<string, ParameterMetadata>;
   [key: string]: any;
 }
 
 export interface GraphInfo {
   id: string;
   scheduler?: Record<string, string>;
-  s?: NodeTypeInfo;  // State node metadata
-  t?: NodeTypeInfo;  // Transition node metadata
+  s?: NodeTypeInfo; // State nodes
+  t?: NodeTypeInfo; // Transition nodes
 }
 
-export interface PrismResponse {
-  states?: PrismNode[];
-  nodes?: PrismNode[];
-  edges?: PrismEdge[];
-  transitions?: PrismEdge[];
-  info?: GraphInfo;
-  graph?: {
-    vertices: PrismNode[];
-    transitions: PrismEdge[];
-    metadata?: {
-      stateCount: number;
-      transitionCount: number;
-    };
-  };
-}
+
 
 export class PrismAPI {
   private baseUrl: string;
-  private cache = new Map<string, { data: PrismResponse; timestamp: number }>();
-  private readonly CACHE_TTL = 30000; // 30 seconds
+  private readonly CACHE_TTL = 30000;
   private parameterMetadata: GraphInfo | null = null;
+  private parameterOrder: Record<string, string[]> ={};
 
   constructor(baseUrl: string = 'http://localhost:8080') {
-    this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
+    this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
-  /**
-   * Get the current parameter metadata from the most recent graph load
-   */
   getParameterMetadata(): GraphInfo | null {
     return this.parameterMetadata;
   }
 
-  /**
-   * Clear parameter metadata (used when switching projects)
-   */
   clearParameterMetadata(): void {
     this.parameterMetadata = null;
   }
 
-  /**
-   * Get ordered list of parameter labels for UI display
-   * Returns array of {index: number, label: string, fullPath: string}
-   */
-  getParameterLabels(nodeType: string = 's'): Array<{ index: number; label: string; fullPath: string }> {
-    if (!this.parameterMetadata) {
-      // Return default labels if no metadata available
-      return Array.from({ length: 10 }, (_, i) => ({
-        index: i,
-        label: `P${i}`,
-        fullPath: `Parameter ${i}`
-      }));
-    }
 
-    const parameterOrder = this.extractParameterOrder(this.parameterMetadata, nodeType);
-
-    return parameterOrder.slice(0, 10).map((param, index) => ({
-      index,
-      label: param.key,
-      fullPath: `${param.category}: ${param.key}`
-    }));
-  }
-
-  async fetchProject(projectId: string, viewIds?: number[]): Promise<PrismResponse> {
-    const cacheKey = `${projectId}_${viewIds?.join(',') || 'all'}`;
-    
-    // Check cache
-    const cached = this.cache.get(cacheKey);
-    if (cached && (Date.now() - cached.timestamp) < this.CACHE_TTL) {
-      return cached.data;
-    }
-
-    // Build URL
-    let url = `${this.baseUrl}/${encodeURIComponent(projectId)}`;
-    
-    if (viewIds && viewIds.length > 0) {
-      const params = new URLSearchParams();
-      viewIds.forEach(id => params.append('view', id.toString()));
-      url += `?${params.toString()}`;
-    }
-
-    console.log(`[PrismAPI] Fetching from: ${url}`);
-
+  async fetchSimpleGraph(projectId: string = '0'): Promise<{ nodes: NodeData[]; edges: EdgeData[] }> {
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-      
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      
-      // Cache the result
-      this.cache.set(cacheKey, {
-        data,
-        timestamp: Date.now()
-      });
-
-      return data;
-
-    } catch (error) {
-      console.error('[PrismAPI] Fetch failed:', error);
-      throw error;
-    }
-  }
-
-  async fetchSimpleGraph(graphId: string = '0'): Promise<{ nodes: NodeData[]; edges: EdgeData[] }> {
-    try {
-      const url = `${this.baseUrl}/${graphId}`;
+      const url = `${this.baseUrl}/${projectId}`;
       console.log(`[PrismAPI] Fetching simple graph from: ${url}`);
 
       const controller = new AbortController();
@@ -186,11 +62,9 @@ export class PrismAPI {
       });
 
       clearTimeout(timeoutId);
-
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
-
       const data = await response.json();
 
       if (!data.nodes || !Array.isArray(data.nodes)) {
@@ -201,61 +75,75 @@ export class PrismAPI {
         throw new Error('Invalid response: missing edges array');
       }
 
-      // Convert nodes from new format to internal format
       return this.convertNewFormatToInternal(data);
-
     } catch (error) {
-      console.error('[PrismAPI] Simple graph fetch failed:', error);
+      console.error('[PrismAPI] Simple Graph fetch failed: ', error);
       throw error;
     }
   }
-
-  /**
-   * Convert new JSON format to internal NodeData/EdgeData format
-   * Handles nodes with details structure containing Variable Values, Atomic Propositions, etc.
-   */
-  private convertNewFormatToInternal(data: any): { nodes: NodeData[]; edges: EdgeData[] } {
-    // Store parameter metadata from info section
+  private populateParameterOrder(info: any): void {
+    const s_types = this.getParameterLabels('s');
+    const t_types = this.getParameterLabels('t');
+    const result = {...s_types, ...t_types };
+    Object.keys(result).forEach((key) => {
+      if (!(key in Object.keys(this.parameterOrder))) {
+        this.parameterOrder[key] = result[key];
+      }
+    });
+  }
+  private convertNewFormatToInternalST(data: any): { s_nodes: NodeData[]; t_nodes: NodeData[]; edges: EdgeData[] } {
     if (data.info) {
       this.parameterMetadata = data.info;
+      this.populateParameterOrder(data.info);
     }
 
-    // Get the parameter order from info metadata
-    const parameterOrder = this.extractParameterOrder(data.info, data.nodes[0]?.type || 's');
 
-    // Create ID to index mapping (IDs might be strings like "244")
     const idToIndex = new Map<string, number>();
 
-    const nodes: NodeData[] = data.nodes.map((node: any, index: number) => {
+    // Filter s_nodes and t_nodes first
+    const s_nodes_raw = data.nodes.filter((node: any) => node.type === 's');
+    const t_nodes_raw = data.nodes.filter((node: any) => node.type === 't');
+
+    // Create s_nodes with their global indices
+    const s_nodes: NodeData[] = s_nodes_raw.map((node: any, arrayIndex: number) => {
       const nodeId = String(node.id);
-      idToIndex.set(nodeId, index);
+      const globalIndex = arrayIndex; // Global index in the final combined array
 
-      // Extract parameters from node details using the defined order
-      const parameters = this.extractParametersFromNode(node, parameterOrder);
-
-      // Determine node type based on Atomic Propositions
-      let nodeType: 'normal' | 'important' = 'normal';
-      if (node.details?.['Atomic Propositions']) {
-        const props = node.details['Atomic Propositions'];
-        if (props.init === true || props.deadlock === true) {
-          nodeType = 'important';
-        }
-      }
+      // Map original ID to global index for edge resolution
+      idToIndex.set(nodeId, globalIndex);
 
       return {
-        id: index,
-        x: node.x || 0,
-        y: node.y || 0,
-        z: 0,
-        radius: nodeType === 'important' ? 4 : 2,
-        cluster: node.cluster || 0,
-        value: node.value || Math.random(),
-        type: nodeType,
-        parameters
+        id: node.id, // Keep original ID
+        index: globalIndex, // Add sequential index for positioning
+        type: 's',
+        name: node.name || '',
+        x: 0,
+        y: 0,
+        cluster: 0,
+        parameters: node.details || {}
       };
     });
 
-    // Convert edges, mapping string IDs to indices (optimized single-pass)
+    // Create t_nodes with their global indices (offset by s_nodes length)
+    const t_nodes: NodeData[] = t_nodes_raw.map((node: any, arrayIndex: number) => {
+      const nodeId = String(node.id);
+      const globalIndex = s_nodes.length + arrayIndex; // Offset by s_nodes length
+
+      // Map original ID to global index for edge resolution
+      idToIndex.set(nodeId, globalIndex);
+
+      return {
+        id: node.id, // Keep original ID
+        index: globalIndex, // Add sequential index for positioning
+        x: 0,
+        y: 0,
+        type: 't',
+        cluster: 0,
+        parameters: node.details || {},
+        name: node.name || String(node.id)
+      };
+    });
+
     const edges: EdgeData[] = [];
     for (let i = 0; i < data.edges.length; i++) {
       const edge = data.edges[i];
@@ -269,195 +157,37 @@ export class PrismAPI {
         edges.push({
           from: fromIndex,
           to: toIndex,
-          weight: edge.weight || edge.probability || 1
+          label: edge.label || ''
         });
       }
     }
 
-    console.log(`[PrismAPI] Converted: ${nodes.length} nodes, ${edges.length} edges`);
+    console.log(`[PrismAPI] Converted graph with ${s_nodes.length} s_nodes, ${t_nodes.length} t_nodes, ${edges.length} edges.`);
+    return { s_nodes, t_nodes, edges };
+  }
+
+
+  convertNewFormatToInternal(data: any): { nodes: NodeData[]; edges: EdgeData[] } {
+    const { s_nodes, t_nodes, edges } = this.convertNewFormatToInternalST(data);
+    const nodes = [...s_nodes, ...t_nodes];
+    console.log(`[PrismAPI] Fetched Graph with ${nodes.length} nodes`);
     return { nodes, edges };
   }
 
-  /**
-   * Extract parameter order from info metadata
-   * Returns an ordered list of parameter paths to extract from node details
-   */
-  private extractParameterOrder(info: GraphInfo | undefined, nodeType: string): Array<{ category: string; key: string }> {
-    const parameterOrder: Array<{ category: string; key: string }> = [];
-
-    if (!info) {
-      return parameterOrder;
-    }
-
-    // Get the appropriate node type info (s for states, t for transitions)
-    const nodeTypeInfo = nodeType === 't' ? info.t : info.s;
-    if (!nodeTypeInfo) {
-      return parameterOrder;
-    }
-
-    // Define priority order for parameter categories
-    const categoryOrder = [
-      'Variable Values',
-      'Model Checking Results',
-      'Reward Structures',
-      'Atomic Propositions'
-    ];
-
-    // Extract parameters in priority order
-    for (const category of categoryOrder) {
-      const categoryData = nodeTypeInfo[category];
-      if (categoryData) {
-        for (const key of Object.keys(categoryData)) {
-          const metadata = categoryData[key];
-          // Only include numeric types for visualization parameters
-          if (metadata.type === 'number') {
-            parameterOrder.push({ category, key });
-          }
-        }
-      }
-    }
-
-    return parameterOrder;
-  }
-
-  /**
-   * Extract 10 parameters from node details using the defined parameter order
-   * If parameterOrder is provided, use it; otherwise fall back to default extraction
-   */
-  private extractParametersFromNode(
-    node: any,
-    parameterOrder?: Array<{ category: string; key: string }>
-  ): [number, number, number, number, number, number, number, number, number, number] {
-    const params: number[] = [];
-
-    if (parameterOrder && parameterOrder.length > 0) {
-      // Use the defined parameter order from metadata
-      for (const { category, key } of parameterOrder) {
-        if (params.length >= 10) break;
-
-        const value = node.details?.[category]?.[key];
-        if (typeof value === 'number' && !isNaN(value)) {
-          params.push(value);
-        }
-      }
-    } else {
-      // Fallback to default extraction if no metadata available
-      // Extract from Variable Values first
-      if (node.details?.['Variable Values']) {
-        const varValues = node.details['Variable Values'];
-        for (const key of Object.keys(varValues)) {
-          const value = varValues[key];
-          if (typeof value === 'number' && !isNaN(value)) {
-            params.push(value);
-          }
-        }
-      }
-
-      // Extract from Model Checking Results
-      if (params.length < 10 && node.details?.['Model Checking Results']) {
-        const mcResults = node.details['Model Checking Results'];
-        for (const key of Object.keys(mcResults)) {
-          const value = mcResults[key];
-          if (typeof value === 'number' && !isNaN(value)) {
-            params.push(value);
-          }
-          if (params.length >= 10) break;
-        }
-      }
-
-      // Extract from Reward Structures
-      if (params.length < 10 && node.details?.['Reward Structures']) {
-        const rewards = node.details['Reward Structures'];
-        for (const key of Object.keys(rewards)) {
-          const value = rewards[key];
-          if (typeof value === 'number' && !isNaN(value)) {
-            params.push(value);
-          }
-          if (params.length >= 10) break;
-        }
-      }
-    }
-
-    // Pad with zeros if we don't have enough parameters
-    while (params.length < 10) {
-      params.push(0);
-    }
-
-    // Truncate to exactly 10 parameters
-    return params.slice(0, 10) as [number, number, number, number, number, number, number, number, number, number];
-  }
-
-  convertPrismToInternal(prismData: PrismResponse): { nodes: NodeData[]; edges: EdgeData[] } {
-    let prismNodes: PrismNode[] = [];
-    let prismEdges: PrismEdge[] = [];
-
-    // Extract nodes from various possible formats
-    if (prismData.states) {
-      prismNodes = prismData.states;
-    } else if (prismData.nodes) {
-      prismNodes = prismData.nodes;
-    } else if (prismData.graph?.vertices) {
-      prismNodes = prismData.graph.vertices;
-    }
-
-    // Extract edges from various possible formats
-    if (prismData.edges) {
-      prismEdges = prismData.edges;
-    } else if (prismData.transitions) {
-      prismEdges = prismData.transitions;
-    } else if (prismData.graph?.transitions) {
-      prismEdges = prismData.graph.transitions;
-    }
-
-    // Create ID to index mapping
-    const idToIndex = new Map();
-
-    // Get parameter order if info is available
-    const parameterOrder = prismData.info ? this.extractParameterOrder(prismData.info, 's') : undefined;
-
-    const nodes: NodeData[] = prismNodes.map((node, index) => {
-      const nodeId = node.id !== undefined ? node.id : index;
-      idToIndex.set(nodeId, index);
-
-      // Extract parameters from node (using details if available)
-      const parameters = this.extractParametersFromNode(node, parameterOrder);
-
-      return {
-        id: index,
-        x: node.x || 0,
-        y: node.y || 0,
-        z: 0,
-        radius: node.type === 'target' ? 4 : (node.type === 'initial' ? 3 : 2),
-        cluster: 0,
-        value: node.properties?.value || Math.random(),
-        type: (node.type === 'target' || node.type === 'initial') ? 'important' : 'normal',
-        parameters
-      };
-    });
-
-    const edges: EdgeData[] = prismEdges
-      .filter(edge => {
-        const fromIndex = idToIndex.get(edge.source);
-        const toIndex = idToIndex.get(edge.target);
-        return fromIndex !== undefined && toIndex !== undefined;
-      })
-      .map(edge => ({
-        from: idToIndex.get(edge.source),
-        to: idToIndex.get(edge.target),
-        weight: edge.probability || edge.weight || 1
-      }));
-
-    console.log(`[PrismAPI] Converted: ${nodes.length} nodes, ${edges.length} edges`);
-    return { nodes, edges };
-  }
-
-  clearCache(): void {
-    this.cache.clear();
+  public getParameterLabels(type: string): Record<string, string[]> {
+    if (!this.parameterMetadata) return {};
+    const originalObject = type === 's' ? this.parameterMetadata.s : this.parameterMetadata.t;
+    if (!originalObject) return {};
+    const test = Object.keys(originalObject);
+    const extractedKeys = Object.keys(originalObject).reduce((acc, key) => {
+      acc[key] = Object.keys(originalObject[key]);
+      return acc;
+    }, {} as Record<string, string[]>);
+    return extractedKeys;
   }
 
   updateBaseUrl(newBaseUrl: string): void {
-    this.baseUrl = newBaseUrl.replace(/\/$/, '');
-    this.clearCache();
+    this.baseUrl = newBaseUrl.replace(/\/$/, "");
   }
 
   async healthCheck(): Promise<boolean> {
@@ -466,29 +196,25 @@ export class PrismAPI {
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
       const response = await fetch(this.baseUrl, {
-        method: 'HEAD',
+        method: 'GET',
         signal: controller.signal
       });
 
       clearTimeout(timeoutId);
       return response.ok;
-    } catch {
+    } catch (error) {
+      console.error('[PrismAPI] Health check failed: ', error);
       return false;
     }
   }
 
-  /**
-   * Fetch list of available projects
-   */
   async fetchProjects(): Promise<string[]> {
     try {
-      const url = `${this.baseUrl}/0/projects`;
-      console.log(`[PrismAPI] Fetching projects from: ${url}`);
-
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      console.log(`[PrismAPI] Fetching projects from: ${this.baseUrl}/0/projects`);
 
-      const response = await fetch(url, {
+      const response = await fetch(this.baseUrl + '/0/projects', {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
@@ -498,23 +224,22 @@ export class PrismAPI {
       });
 
       clearTimeout(timeoutId);
-
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
 
       const projects = await response.json();
 
       if (!Array.isArray(projects)) {
-        throw new Error('Invalid response: expected array of project IDs');
+        throw new Error('Invalid response: expected an array of project IDs');
       }
 
-      console.log(`[PrismAPI] Found ${projects.length} projects`);
-      return projects;
+      console.log(`[PrismAPI] Fetched ${projects.length} projects.`);
 
+      return projects;
     } catch (error) {
-      console.error('[PrismAPI] Failed to fetch projects:', error);
-      throw error;
+      console.error('[PrismAPI] Fetch projects failed: ', error);
+      return [];
     }
   }
 
@@ -600,7 +325,14 @@ export class PrismAPI {
       throw error;
     }
   }
-
+  static getParameterValue(node: NodeData, param: string): any {
+    for (const category of Object.values(node.parameters || {})) {
+      if (category[param] !== undefined) {
+        return category[param];
+      }
+    }
+    return null;
+  }
   /**
    * Reset model for a project
    */
@@ -640,7 +372,7 @@ export class PrismAPI {
   /**
    * Check if any parameters are still missing in the status
    */
-  hasMinsingParameters(status: any): boolean {
+  public hasMissingParameters(status: any): boolean {
     if (!status?.info) return false;
 
     // Check scheduler section
