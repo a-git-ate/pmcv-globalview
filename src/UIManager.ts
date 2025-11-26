@@ -147,7 +147,7 @@ export class UIManager {
   }
 
   public logPerformance(nodeCount: number, renderTime: number): void {
-    console.log(`[Performance] ${nodeCount.toLocaleString()} nodes rendered in ${renderTime.toFixed(2)}ms`);
+    //console.log(`[Performance] ${nodeCount.toLocaleString()} nodes rendered in ${renderTime.toFixed(2)}ms`);
   }
 
   // Event handlers for future extensibility
@@ -188,17 +188,7 @@ export class UIManager {
       return;
     }
 
-    const colorParamIndex = parseInt(colorSelect.value);
-
-    if (isNaN(colorParamIndex)) {
-      console.warn('Invalid color parameter index');
-      return;
-    }
-
-    if (colorParamIndex < 0) {
-      this.updateStatus('Please select a color parameter (not "None")');
-      return;
-    }
+    const colorParamIndex = colorSelect.value;
 
     this.graph.applyColorParameter(colorParamIndex);
   }

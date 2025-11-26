@@ -9,7 +9,7 @@ export class ProjectManager {
   private statusPollInterval: number | null = null;
   private readonly POLL_INTERVAL_MS = 2000; // Poll every 2 seconds
   private cachedParameterStructure: any = null; // Cache the initial parameter structure
-
+  private cachedStatus: any = null;
   // DOM Elements
   private projectTabsContainer: HTMLElement | null = null;
   private checkButton: HTMLButtonElement | null = null;
@@ -124,7 +124,7 @@ export class ProjectManager {
     }
 
     // Load the graph data for the selected project
-    await this.graph.loadGraphFromAPI(projectId);
+    await this.graph.loadGraph(projectId);
 
     // Fetch and display project status
     await this.updateProjectStatus();
@@ -150,6 +150,8 @@ export class ProjectManager {
 
       // Merge cached structure with current status to ensure all parameters are shown
       const mergedStatus = this.mergeParameterStructure(status);
+
+      this.cachedStatus = mergedStatus;
 
       this.displayParameterStatus(mergedStatus);
 
@@ -274,18 +276,30 @@ export class ProjectManager {
 
     this.paramStatusContent.innerHTML = '';
 
-    // Display scheduler parameters
-    if (status.info.scheduler) {
-      this.renderParameterCategory('Scheduler', status.info.scheduler);
-    }
+    var resetFilterButton = document.createElement('button');
+    resetFilterButton.textContent = 'X';
+    resetFilterButton.className = 'param-reset-filter-button';
+    resetFilterButton.addEventListener('click', () => {
+      if(this.cachedParameterStructure) this.displayParameterStatus(status);
+      this.displayParameterRange();
+    });
+    this.paramStatusContent.appendChild(resetFilterButton);
 
+    var mcrDone = false;
     // Display state node parameters
     if (status.info.s) {
+
+      this.renderNodeTypeParameters('Model Checking Results', status.info.s);
+      mcrDone = true;
+    
       this.renderNodeTypeParameters('State Nodes (s)', status.info.s);
     }
 
     // Display transition node parameters
     if (status.info.t) {
+      if (!mcrDone) {
+        this.renderNodeTypeParameters('Model Checking Results', status.info.t);
+      }
       this.renderNodeTypeParameters('Transition Nodes (t)', status.info.t);
     }
 
@@ -305,49 +319,6 @@ export class ProjectManager {
     }
   }
 
-  /**
-   * Render a simple parameter category (like scheduler)
-   */
-  private renderParameterCategory(title: string, params: Record<string, any>): void {
-    if (!this.paramStatusContent) return;
-
-    const categoryDiv = document.createElement('div');
-    categoryDiv.className = 'param-category';
-
-    const titleDiv = document.createElement('div');
-    titleDiv.className = 'param-category-title';
-    titleDiv.textContent = title;
-    categoryDiv.appendChild(titleDiv);
-
-    for (const [key, value] of Object.entries(params)) {
-      const itemDiv = document.createElement('div');
-      itemDiv.className = 'param-item';
-
-      const nameSpan = document.createElement('span');
-      nameSpan.className = 'param-name';
-      nameSpan.textContent = key;
-      itemDiv.appendChild(nameSpan);
-
-      const statusSpan = document.createElement('span');
-      statusSpan.className = 'param-status-icon';
-
-      if (value === 'missing') {
-        statusSpan.textContent = '✗';
-        statusSpan.classList.add('missing');
-      } else if (value === 'ready') {
-        statusSpan.textContent = '✓';
-        statusSpan.classList.add('ready');
-      } else {
-        statusSpan.textContent = '✓';
-        statusSpan.classList.add('ready');
-      }
-
-      itemDiv.appendChild(statusSpan);
-      categoryDiv.appendChild(itemDiv);
-    }
-
-    this.paramStatusContent.appendChild(categoryDiv);
-  }
 
   /**
    * Render node type parameters (s or t)
@@ -358,7 +329,7 @@ export class ProjectManager {
     const categoryDiv = document.createElement('div');
     categoryDiv.className = 'param-category';
 
-    const titleDiv = document.createElement('div');
+    const titleDiv: HTMLDivElement = document.createElement('div');
     titleDiv.className = 'param-category-title';
     titleDiv.textContent = title;
     categoryDiv.appendChild(titleDiv);
@@ -366,20 +337,29 @@ export class ProjectManager {
     // Iterate through parameter categories
     for (const [categoryName, categoryParams] of Object.entries(nodeTypeInfo)) {
       if (typeof categoryParams !== 'object') continue;
+      if (!title.includes("Model Checking Results")){
+        if (categoryName == "Model Checking Results") continue;
+          // Add subcategory title
+          const subcategoryDiv = document.createElement('div');
+          subcategoryDiv.style.marginTop = '8px';
+          subcategoryDiv.style.marginBottom = '4px';
+          subcategoryDiv.style.fontSize = '11px';
+          subcategoryDiv.style.fontWeight = 'bold';
+          subcategoryDiv.style.color = '#7f8c8d';
+          subcategoryDiv.textContent = categoryName;
+          categoryDiv.appendChild(subcategoryDiv);
+      }else{
+        if (categoryName != "Model Checking Results") continue;
+      }
 
-      // Add subcategory title
-      const subcategoryDiv = document.createElement('div');
-      subcategoryDiv.style.marginTop = '8px';
-      subcategoryDiv.style.marginBottom = '4px';
-      subcategoryDiv.style.fontSize = '11px';
-      subcategoryDiv.style.fontWeight = 'bold';
-      subcategoryDiv.style.color = '#7f8c8d';
-      subcategoryDiv.textContent = categoryName;
-      categoryDiv.appendChild(subcategoryDiv);
+
+
 
       // Add parameters
       for (const [paramName, paramInfo] of Object.entries(categoryParams)) {
         if (typeof paramInfo !== 'object') continue;
+        const outerItemDiv = document.createElement('div');
+        outerItemDiv.className = 'param-item'; // evtl extra klasse nötig
 
         const itemDiv = document.createElement('div');
         itemDiv.className = 'param-item';
@@ -400,18 +380,130 @@ export class ProjectManager {
         } else if (status === 'ready' || status === 'number' || status === 'boolean' || status === 'nominal') {
           statusSpan.textContent = '✓';
           statusSpan.classList.add('ready');
+
+
+
         } else {
           statusSpan.textContent = '?';
           statusSpan.classList.add('loading');
         }
 
         itemDiv.appendChild(statusSpan);
-        categoryDiv.appendChild(itemDiv);
+        const rangeDiv = document.createElement('div');
+        rangeDiv.className = 'param-item'; //evtl extra klasse nötig
+
+        const minSpan = document.createElement('span');
+        minSpan.className = 'param-range-label';
+        minSpan.textContent = "Min:";
+        const minDisplayInput = document.createElement('input');
+        minDisplayInput.type = 'text';
+        minDisplayInput.className = 'param-min-input';
+        // todo: default werte sind aktuelle min/max werte der parameter
+        minDisplayInput.value = ((paramInfo as any).min !== undefined) && ((paramInfo as any).max !== "Infinity") ? String((paramInfo as any).min) : '';
+        minDisplayInput.dataset.paramName = paramName;
+        minDisplayInput.dataset.category = categoryName;
+        minDisplayInput.dataset.nodeType = title.includes('State') ? 's' : 't';
+        minDisplayInput.dataset.rangeType = 'min';
+        minDisplayInput.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') {
+            this.displayParameterRange();
+          }
+        });
+        rangeDiv.appendChild(minSpan);
+        rangeDiv.appendChild(minDisplayInput);
+        // same thing for maxSpan and maxDisplayInput
+        const maxSpan = document.createElement('span');
+        maxSpan.className = 'param-range-label';
+        maxSpan.textContent = " Max:";
+        const maxDisplayInput = document.createElement('input');
+        maxDisplayInput.type = 'text';
+        maxDisplayInput.className = 'param-max-input';
+        maxDisplayInput.value = ((paramInfo as any).max !== undefined) && ((paramInfo as any).max !== "Infinity") ? String((paramInfo as any).max) : '';
+        maxDisplayInput.dataset.paramName = paramName;
+        maxDisplayInput.dataset.category = categoryName;
+        maxDisplayInput.dataset.nodeType = title.includes('State') ? 's' : 't';
+        maxDisplayInput.dataset.rangeType = 'max';
+        maxDisplayInput.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') {
+            this.displayParameterRange();
+          }
+        });        
+
+
+        rangeDiv.appendChild(maxSpan);
+        rangeDiv.appendChild(maxDisplayInput);
+        
+        outerItemDiv.appendChild(itemDiv);
+        outerItemDiv.appendChild(rangeDiv);
+        categoryDiv.appendChild(outerItemDiv);
       }
     }
 
     this.paramStatusContent.appendChild(categoryDiv);
   }
+
+  /**
+   * Display parameter range set by user
+   */
+  private displayParameterRange(): void {
+    console.log("[ProjectManager] Filter anwenden")
+    // Retrieve values from all input fields
+    const minInputs = document.querySelectorAll('.param-min-input') as NodeListOf<HTMLInputElement>;
+    const maxInputs = document.querySelectorAll('.param-max-input') as NodeListOf<HTMLInputElement>;
+
+    let filteredNodes = this.graph.getFullNodes();
+    const filteredEdges = this.graph.getFullEdges();
+
+    var changesMade = 0;
+    var checksDone = 0;
+    // Process min inputs
+    minInputs.forEach(input => {
+      const paramName = input.dataset.paramName;
+      const category = input.dataset.category;
+      const nodeType = input.dataset.nodeType;
+      const minValue = input.value ? parseFloat(input.value) : null;
+      if (paramName && category && nodeType && minValue !== null){
+        console.log("0");
+        if (minValue !== null) {
+          console.log("1");
+          filteredNodes = filteredNodes.filter(node => {
+            checksDone++;
+            if (node.type !== nodeType) return true;
+            const paramValue = node.parameters?.[category]?.[paramName];
+            if (paramValue === undefined || paramValue === null) return false;
+            if (paramValue >= minValue) changesMade += 1;
+            return paramValue >= minValue;
+          });
+        }
+      }
+
+    });
+
+    // Process max inputs
+    maxInputs.forEach(input => {
+      const paramName = input.dataset.paramName;
+      const category = input.dataset.category;
+      const nodeType = input.dataset.nodeType;
+      const maxValue = input.value ? parseFloat(input.value) : null;
+
+      if (paramName && category && nodeType && maxValue !== null){
+        if (maxValue !== null) {
+          filteredNodes = filteredNodes.filter(node => {
+            checksDone++;
+            if ((node.type !== nodeType) && (category != 'Model Checking Results')) return true;
+            const paramValue = node.parameters?.[category]?.[paramName];
+            if (paramValue === undefined || paramValue === null) return false;
+            if (paramValue <= maxValue) changesMade += 1;
+            return paramValue <= maxValue;
+          });
+        }
+      }
+
+    });
+    console.log(`[ProjectManager] Applied parameter range filters, ${changesMade} nodes match criteria with ${checksDone} checks`);
+    this.graph.loadGraph(this.currentProjectId || '0', filteredNodes, filteredEdges);
+  }
+
 
   /**
    * Start polling for status updates

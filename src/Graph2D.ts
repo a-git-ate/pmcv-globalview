@@ -21,8 +21,10 @@ export class Graph2D {
   // Graph data
   private nodes: NodeData[] = [];
   private edges: EdgeData[] = [];
+  private fullNodes : NodeData[] = [];
+  private fullEdges : EdgeData[] = [];
   private nodeCount: number = 0;
-  private currentLayout: LayoutType = 'force';
+  private currentLayout: LayoutType = 'grid';
   private edgeLines: THREE.Group | THREE.LineSegments | null = null;
 
   // Axis visualization
@@ -155,6 +157,14 @@ export class Graph2D {
     }
 
     container.appendChild(this.renderer.domElement);
+  }
+
+  public getFullNodes(): NodeData[] {
+    return this.fullNodes;
+  }
+
+  public getFullEdges(): EdgeData[] {
+    return this.fullEdges;
   }
 
   private setupCamera(): void {
@@ -313,7 +323,8 @@ export class Graph2D {
     }
   }
 
-  public async loadGraphFromAPI(graphId: string = '0'): Promise<void> {
+
+  public async loadGraph(graphId: string = '0', filteredNodes?: NodeData[], filteredEdges?: EdgeData[]): Promise<void> {
     const startTime = performance.now();
     this.ui.updateStatus('Fetching graph data from API...');
     this.ui.disableButtons();
@@ -324,14 +335,21 @@ export class Graph2D {
       this.clearEdgeLines();
       this.nodes = [];
       this.edges = [];
+      if (!filteredNodes || !filteredEdges) {
+        // Fetch graph data using PrismAPI
+        const fetchStart = performance.now();
+        const graphData = await this.prismAPI.fetchSimpleGraph(graphId);
+        //console.log(`[Performance] API fetch: ${(performance.now() - fetchStart).toFixed(2)}ms`);
+        this.nodes = graphData.nodes;
+        this.edges = graphData.edges;
+        this.fullNodes = graphData.nodes;
+        this.fullEdges = graphData.edges;
+      } else {
+        this.nodes = filteredNodes;
+        this.edges = filteredEdges;
 
-      // Fetch graph data using PrismAPI
-      const fetchStart = performance.now();
-      const graphData = await this.prismAPI.fetchSimpleGraph(graphId);
-      console.log(`[Performance] API fetch: ${(performance.now() - fetchStart).toFixed(2)}ms`);
+      }
 
-      this.nodes = graphData.nodes;
-      this.edges = graphData.edges;
 
       const nodeCount = this.nodes.length;
 
@@ -344,7 +362,7 @@ export class Graph2D {
       // Populate geometry arrays directly from loaded nodes (no recreation)
       const layoutStart = performance.now();
       await this.populateGeometryFromNodes(positions, colors, sizes);
-      console.log(`[Performance] Layout population: ${(performance.now() - layoutStart).toFixed(2)}ms`);
+      //console.log(`[Performance] Layout population: ${(performance.now() - layoutStart).toFixed(2)}ms`);
 
       // Create point cloud first for visual feedback
       const cloudStart = performance.now();
@@ -358,6 +376,9 @@ export class Graph2D {
       const paramLabels = this.prismAPI.getParameterLabels('s');
       this.ui.updateParameterSelections(paramLabels);
       this.ui.updateModelInfo(graphId, nodeCount, this.edges.length);
+      this.config.parameterXAxis = "";
+      this.config.parameterYAxis = "";
+
 
       // Create edge lines if edges are visible (deferred rendering for large graphs)
       if (this.config.edgesVisible && this.edges.length > 0) {
@@ -383,7 +404,7 @@ export class Graph2D {
       }
 
       const totalTime = (performance.now() - startTime).toFixed(2);
-      console.log(`[Performance] Total load time: ${totalTime}ms`);
+      //console.log(`[Performance] Total load time: ${totalTime}ms`);
       this.ui.updateStatus(`Loaded ${nodeCount.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API (${totalTime}ms)`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load graph from API';
@@ -794,7 +815,6 @@ export class Graph2D {
     }
 
     // Fallback to random position
-    console.log('[calculateParameterPosition] Random position for node ' + node.id.toString());
     return new THREE.Vector2((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread);
   }
 
@@ -1016,7 +1036,6 @@ export class Graph2D {
 
         // Safety check: ensure positions are valid numbers
         if (!isFinite(simX[i]) || !isFinite(simY[i])) {
-          console.warn(`Invalid position at node ${i}, resetting`);
           simX[i] = (Math.random() - 0.5) * spread * 0.5;
           simY[i] = (Math.random() - 0.5) * spread * 0.5;
           simVX[i] = 0;
@@ -1034,15 +1053,10 @@ export class Graph2D {
 
       // Check for convergence - stop if nodes barely moving
       if (maxMovement < convergenceThreshold) {
-        console.log(`Force simulation converged after ${iter + 1} iterations`);
         this.ui.updateStatus(`Force simulation converged after ${iter + 1} iterations`);
         break;
       }
 
-      // Progress update every 50 iterations
-      if (iter % 50 === 0 && iter > 0) {
-        console.log(`Force simulation: iteration ${iter}, max movement: ${maxMovement.toFixed(4)}`);
-      }
     }
 
     // Update node data with final positions
@@ -1053,11 +1067,8 @@ export class Graph2D {
   }
 
   private createEdgeLines(): void {
-    console.log(`[createEdgeLines] CALLED - edges.length: ${this.edges.length}, nodes.length: ${this.nodes.length}, edgesVisible: ${this.config.edgesVisible}`);
-    console.trace('[createEdgeLines] Call stack');
 
     if (!this.edges.length || !this.nodes.length) {
-      console.warn('[createEdgeLines] EARLY EXIT - no edges or nodes');
       return;
     }
 
@@ -1069,15 +1080,12 @@ export class Graph2D {
     });
 
     if (validEdges.length === 0) {
-      console.warn('[createEdgeLines] No valid edges to render');
       return;
     }
 
     if (validEdges.length < this.edges.length) {
-      console.warn(`[createEdgeLines] Filtered out ${this.edges.length - validEdges.length} invalid edges`);
     }
 
-    console.log(`[createEdgeLines] STARTING - Rendering ${validEdges.length} valid edges`);
 
     // Calculate edge extent for debugging
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -1089,8 +1097,6 @@ export class Graph2D {
       minY = Math.min(minY, fromNode.y, toNode.y);
       maxY = Math.max(maxY, fromNode.y, toNode.y);
     });
-    console.log(`[createEdgeLines] Edge extent: X[${minX.toFixed(1)}, ${maxX.toFixed(1)}], Y[${minY.toFixed(1)}, ${maxY.toFixed(1)}]`);
-    console.log(`[createEdgeLines] Camera bounds: X[${this.camera.left.toFixed(1)}, ${this.camera.right.toFixed(1)}], Y[${this.camera.bottom.toFixed(1)}, ${this.camera.top.toFixed(1)}]`);
 
     // Create a group to hold both lines and arrows
     const edgeGroup = new THREE.Group();
@@ -1215,9 +1221,6 @@ export class Graph2D {
 
     this.edgeLines = edgeGroup;
     this.scene.add(this.edgeLines);
-    console.log(`[createEdgeLines] COMPLETED - Added group to scene with ${edgeGroup.children.length} children (${validEdges.length} arrows + 1 line segments)`);
-    console.log(`[createEdgeLines] edgeLines is now:`, this.edgeLines);
-    console.log(`[createEdgeLines] Scene now has ${this.scene.children.length} children`);
   }
 
   /**
@@ -1294,9 +1297,7 @@ export class Graph2D {
   }
 
   private clearEdgeLines(): void {
-    console.log(`[clearEdgeLines] CALLED - edgeLines exists: ${!!this.edgeLines}`);
     if (this.edgeLines) {
-      console.log(`[clearEdgeLines] Removing edgeLines with ${this.edgeLines.children ? this.edgeLines.children.length : 0} children`);
       this.scene.remove(this.edgeLines);
 
       // Handle both Group (with arrows) and LineSegments (legacy)
@@ -1802,8 +1803,8 @@ export class Graph2D {
         const padding = 1.2; // 20% padding
         this.zoomLevel = (viewSize * 2) / (maxRange * padding);
 
-        console.log(`[resetView] Node extent: X[${minX.toFixed(1)}, ${maxX.toFixed(1)}], Y[${minY.toFixed(1)}, ${maxY.toFixed(1)}]`);
-        console.log(`[resetView] Setting zoom to ${this.zoomLevel.toFixed(3)}x to fit range ${maxRange.toFixed(1)}`);
+        //console.log(`[resetView] Node extent: X[${minX.toFixed(1)}, ${maxX.toFixed(1)}], Y[${minY.toFixed(1)}, ${maxY.toFixed(1)}]`);
+        //console.log(`[resetView] Setting zoom to ${this.zoomLevel.toFixed(3)}x to fit range ${maxRange.toFixed(1)}`);
       } else {
         this.zoomLevel = 1.0;
       }
@@ -2208,11 +2209,9 @@ export class Graph2D {
     if (minXWorldPos >= viewLeft && minXWorldPos <= viewRight) {
       // Minimum X value is visible on screen, position Y-axis there
       yAxisX = minXWorldPos;
-      console.log("Y-axis at min parameter value:", minValues.x, "world pos:", yAxisX);
     } else {
       // Minimum X value is off-screen, snap Y-axis to left edge
       yAxisX = viewLeft;
-      console.log("Y-axis at screen edge (left):", yAxisX);
     }
 
     // X-axis positioning: Use minValues.y position if visible, otherwise snap to viewBottom
@@ -2220,11 +2219,9 @@ export class Graph2D {
     if (minYWorldPos >= viewBottom && minYWorldPos <= viewTop) {
       // Minimum Y value is visible on screen, position X-axis there
       xAxisY = minYWorldPos;
-      console.log("X-axis at min parameter value:", minValues.y, "world pos:", xAxisY);
     } else {
       // Minimum Y value is off-screen, snap X-axis to bottom edge
       xAxisY = viewBottom;
-      console.log("X-axis at screen edge (bottom):", xAxisY);
     }
     // X-axis: horizontal line starting from Y-axis position (minValues.x) extending right
     const xAxisGeometry = new THREE.BufferGeometry().setFromPoints([
@@ -2242,7 +2239,6 @@ export class Graph2D {
     const yAxisLine = new THREE.Line(yAxisGeometry, axisLinesMaterial);
     this.axisGroup.add(yAxisLine);
 
-    console.log("yAxisX 3:", yAxisX);
     // Create grid lines material (more visible)
     const gridLinesMaterial = new THREE.LineBasicMaterial({
       color: 0x666666,

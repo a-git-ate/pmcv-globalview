@@ -12,7 +12,7 @@ const graphConfig: Partial<GraphConfig> = {
   minZoom: 0.001, // Allow zooming out much further (was 0.05)
   maxZoom: 100.0,
   lodEnabled: true,
-  edgesVisible: true, // Show edges by default
+  edgesVisible: false, // Show edges by default
   clusterMode: false,
 };
 
@@ -21,18 +21,18 @@ const graphConfig: Partial<GraphConfig> = {
  */
 function initializeApp(): void {
   try {
-    console.log('Initializing 2D Million Node Graph (TypeScript)...');
+    console.log('[Main] Initializing PMCV-Global');
     
     // Create graph instance with configuration
     graph = new Graph2D(graphConfig);
     
-    console.log('Graph initialized successfully');
+    console.log('[Main] Graph initialized successfully');
     
     // Start with loading from API after initialization
     setTimeout(() => {
       if (graph) {
         // First try loading simple graph data
-        graph.loadGraphFromAPI('0').catch(() => {
+        graph.loadGraph('0').catch(() => {
           console.warn('Failed to load from simple API, trying PRISM format...');
           // Try PRISM API format as fallback
           if (graph) {
