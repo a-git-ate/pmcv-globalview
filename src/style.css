@@ -75,6 +75,12 @@ body {
 .check-button:hover:not(:disabled) {
   background: #229954;
 }
+.param-nominal-button.filtered:hover:not(:disabled) {
+  background: #999999;
+  background: #999999;
+}
+
+
 
 .check-button:disabled {
   background: #7f8c8d;
@@ -146,6 +152,7 @@ body {
 
 .param-category {
   margin-bottom: 10px;
+
 }
 
 .param-category-title {
@@ -166,6 +173,9 @@ body {
   background: #f8f9fa;
   border-radius: 2px;
   font-size: 10px;
+  max-width: 20rem;
+  max-height: 10rem;
+  overflow-x: auto;
 }
 
 .param-name {
@@ -341,4 +351,15 @@ button:disabled {
 #node-tooltip .property-category {
   font-weight: bold;
   margin-top: 6px;
+}
+
+.param-max-input, .param-min-input {
+  width: 60px;
+  font-size: 11px;
+  padding: 4px;
+  margin-left: 5px;
+}
+
+.param-nominal-button.filtered{
+  background-color: #aaa;
 }

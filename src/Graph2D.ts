@@ -271,6 +271,33 @@ export class Graph2D {
     }
   }
 
+  public filterNodes(filterFn: (node: NodeData) => boolean): void{
+    const alphas = this.pointCloud?.geometry.getAttribute('alpha') as THREE.BufferAttribute;
+    let nodesHidden = 0;
+    let nodesVisible = 0;
+
+    if (!alphas) return;
+
+    for (let i = 0; i < this.nodes.length; i++){
+      const node = this.nodes[i];
+      const isVisible = !filterFn(node);
+
+      if(!isVisible){
+        // Hide by making completely transparent
+        alphas.setX(i, 0.0);
+        nodesHidden++;
+      } else {
+        // Make fully opaque
+        alphas.setX(i, 1.0);
+        nodesVisible++;
+      }
+    }
+    console.log(`[Filter Nodes] Visible: ${nodesVisible}, Hidden: ${nodesHidden} (total: ${this.nodes.length})`);
+    alphas.needsUpdate = true;
+    this.renderer?.render(this.scene, this.camera);
+  }
+
+
   public async generateNodes(count: number): Promise<void> {
     this.ui.updateStatus(`Generating ${count.toLocaleString()} nodes in 2D...`);
     this.ui.disableButtons();
@@ -1343,13 +1370,47 @@ export class Graph2D {
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
-    const material = new THREE.PointsMaterial({
-      size: 9.0,
-      vertexColors: true,
-      sizeAttenuation: false, // Disable size attenuation so nodes don't disappear when zooming
+    // Add alpha attribute initialized to 1.0 (fully opaque) for all nodes
+    const alphas = new Float32Array(positions.length / 3);
+    alphas.fill(1.0);
+    geometry.setAttribute('alpha', new THREE.BufferAttribute(alphas, 1));
+
+    // Use ShaderMaterial for per-vertex alpha support
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        pointSize: { value: 9.0 }
+      },
+      vertexShader: `
+        attribute float size;
+        attribute float alpha;
+        varying vec3 vColor;
+        varying float vAlpha;
+        uniform float pointSize;
+
+        void main() {
+          vColor = color;
+          vAlpha = alpha;
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = pointSize;
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vColor;
+        varying float vAlpha;
+
+        void main() {
+          // Create circular points
+          vec2 center = gl_PointCoord - vec2(0.5);
+          float dist = length(center);
+          if (dist > 0.5) discard;
+
+          gl_FragColor = vec4(vColor, vAlpha * 0.9);
+        }
+      `,
       transparent: true,
-      opacity: 0.9,
-      alphaTest: 0.1
+      vertexColors: true,
+      depthWrite: false
     });
 
     this.pointCloud = new THREE.Points(geometry, material);
@@ -1574,9 +1635,15 @@ export class Graph2D {
 
     const node = this.nodes[nodeIndex];
 
+    // Check if node is visible (not filtered out)
+    const alphas = this.pointCloud?.geometry.getAttribute('alpha') as THREE.BufferAttribute;
+    if (alphas && alphas.getX(nodeIndex) === 0) {
+      return; // Don't show tooltip for invisible nodes
+    }
+
     // Find all nodes at the same position (stacked nodes)
     // Use a more generous epsilon for matching positions
-    const epsilon = 0.1; // Increased tolerance for position matching
+    const epsilon = 0.001; // Increased tolerance for position matching
     const stackedNodes: number[] = [nodeIndex]; // Always include the hovered node
 
     // Only search through nodes if we have a reasonable number

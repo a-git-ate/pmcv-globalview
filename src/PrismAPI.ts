@@ -6,6 +6,7 @@ export interface ParameterMetadata {
   min: number | string;
   max: number | string;
   identifier?: string;
+  possibleValues?: string[];
 }
 
 export interface NodeTypeInfo {
@@ -91,12 +92,45 @@ export class PrismAPI {
       }
     });
   }
+
+  /* Retrieve nominal parameters from parameter metadata and returns
+   2 json objects to be populated with possible values */
+  private getNominalParams(): Record<string, string[]>[] {
+    if (!this.parameterMetadata) return [];
+    const sNominalParams: Record<string, string[]> = {};
+    const tNominalParams: Record<string, string[]> = {};
+
+    for (const type of ['s', 't'] as const) {
+      const nodeInfo = this.parameterMetadata[type];
+      if (!nodeInfo) continue;
+
+      for (const category of Object.keys(nodeInfo)) {
+        const params = nodeInfo[category];
+        // Cast params to a known shape so entries have the expected type
+        for (const [paramName, paramMeta] of Object.entries(params as Record<string, any>)) {
+          if (type === 's'){
+            if (paramMeta?.type === 'nominal' && !Object.keys(sNominalParams).includes(paramName)) {
+              sNominalParams[paramName] = [];
+            }
+          }else{
+            if (paramMeta?.type === 'nominal' && !Object.keys(tNominalParams).includes(paramName)) {
+              tNominalParams[paramName] = [];
+            }
+          }
+
+        }
+      }
+    }
+
+    return [sNominalParams, tNominalParams];
+  }
   private convertNewFormatToInternalST(data: any): { s_nodes: NodeData[]; t_nodes: NodeData[]; edges: EdgeData[] } {
     if (data.info) {
       this.parameterMetadata = data.info;
       this.populateParameterOrder(data.info);
     }
 
+    const [sNominalParams, tNominalParams] = this.getNominalParams();
 
     const idToIndex = new Map<string, number>();
 
@@ -108,6 +142,19 @@ export class PrismAPI {
     const s_nodes: NodeData[] = s_nodes_raw.map((node: any, arrayIndex: number) => {
       const nodeId = String(node.id);
       const globalIndex = arrayIndex; // Global index in the final combined array
+
+      // Populate possible nominal parameter values
+      // todo: see if you can get this directly from api
+      for (const [categoryName, category] of Object.entries(node.details || {})){
+        for (const [paramName, paramValue] of Object.entries(category as any)){
+          if (Object.keys(sNominalParams).includes(paramName)){
+            const valueStr = String(paramValue);
+            if (!sNominalParams[paramName].includes(valueStr)){
+              sNominalParams[paramName].push(valueStr);
+            }
+          }
+        }
+      }
 
       // Map original ID to global index for edge resolution
       idToIndex.set(nodeId, globalIndex);
@@ -129,6 +176,18 @@ export class PrismAPI {
       const nodeId = String(node.id);
       const globalIndex = s_nodes.length + arrayIndex; // Offset by s_nodes length
 
+      // Populate possible values for nominal params
+      for (const [categoryName, category] of Object.entries(node.details || {})){
+        for (const [paramName, paramValue] of Object.entries(category as any)){
+          if (Object.keys(tNominalParams).includes(paramName)){
+            const valueStr = String(paramValue);
+            if (!tNominalParams[paramName].includes(valueStr)){
+              tNominalParams[paramName].push(valueStr);
+            }
+          }
+        }
+      }
+
       // Map original ID to global index for edge resolution
       idToIndex.set(nodeId, globalIndex);
 
@@ -143,6 +202,8 @@ export class PrismAPI {
         name: node.name || String(node.id)
       };
     });
+
+    this.addNominalValuesToParameterMetadata(sNominalParams, tNominalParams);;
 
     const edges: EdgeData[] = [];
     for (let i = 0; i < data.edges.length; i++) {
@@ -172,6 +233,53 @@ export class PrismAPI {
     const nodes = [...s_nodes, ...t_nodes];
     console.log(`[PrismAPI] Fetched Graph with ${nodes.length} nodes`);
     return { nodes, edges };
+  }
+
+  public getPossibleValuesForParameter(categoryName: string, paramName: string): string[] {
+    if (!this.parameterMetadata) return [];
+    const possibleValues: string[] = [];
+    for (const type of ['s', 't'] as const) {
+      const nodeInfo = this.parameterMetadata[type];
+      if (!nodeInfo) continue;
+
+      if (categoryName in nodeInfo) {
+        const category = nodeInfo[categoryName];
+        if (paramName in category) {
+          const paramMeta = category[paramName] as ParameterMetadata | undefined;
+          if (paramMeta && paramMeta.type === 'nominal' && paramMeta.possibleValues) {
+            return paramMeta.possibleValues;
+          }
+        }
+      }
+    }
+    return possibleValues;
+  }
+  private addNominalValuesToParameterMetadata(sNominalParams: Record<string, string[]>, tNominalParams: Record<string, string[]>): void {
+    if (!this.parameterMetadata) return;
+    console.log(sNominalParams);
+    console.log(tNominalParams);
+    for (const type of ['s', 't'] as const) {
+      console.log(`Processing node type: ${type}`);
+      const nodeInfo = this.parameterMetadata[type];
+      if (!nodeInfo) continue;
+
+      for (const category of Object.keys(nodeInfo)) {
+        const params = nodeInfo[category];
+        console.log(` Processing category: ${category}`);
+        
+        for (const paramName of Object.keys(params)){
+          console.log(`  Processing parameter: ${paramName}`);
+          if (type === 's' && Object.keys(sNominalParams).includes(paramName)) {
+            params[paramName].possibleValues = sNominalParams[paramName];
+            console.log(`Added possible values for s param ${paramName}: ${params[paramName].possibleValues}`);
+          }else if (type === 't' && Object.keys(tNominalParams).includes(paramName)) {
+            params[paramName].possibleValues = tNominalParams[paramName];
+            console.log(`Added possible values for t param ${paramName}: ${params[paramName].possibleValues}`);
+          }
+        }
+      }
+    }
+    
   }
 
   public getParameterLabels(type: string): Record<string, string[]> {

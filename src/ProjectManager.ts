@@ -1,5 +1,7 @@
+import { appendFile } from 'fs';
 import type { Graph2D } from './Graph2D';
-import type { PrismAPI } from './PrismAPI';
+import type { NodeData } from './types';
+import type { PrismAPI, ParameterMetadata } from './PrismAPI';
 
 export class ProjectManager {
   private graph: Graph2D;
@@ -149,7 +151,9 @@ export class ProjectManager {
       }
 
       // Merge cached structure with current status to ensure all parameters are shown
-      const mergedStatus = this.mergeParameterStructure(status);
+      let mergedStatus = this.mergeParameterStructure(status);
+
+      //mergedStatus = addNonStringParams(mergedStatus);
 
       this.cachedStatus = mergedStatus;
 
@@ -175,6 +179,8 @@ export class ProjectManager {
       console.error('[ProjectManager] Failed to fetch project status:', error);
     }
   }
+
+
 
   /**
    * Deep clone the parameter structure to preserve it
@@ -323,7 +329,7 @@ export class ProjectManager {
   /**
    * Render node type parameters (s or t)
    */
-  private renderNodeTypeParameters(title: string, nodeTypeInfo: Record<string, any>): void {
+  private renderNodeTypeParameters(title: string, nodeTypeInfo: Record<string, Record<string, ParameterMetadata>>): void {
     if (!this.paramStatusContent) return;
 
     const categoryDiv = document.createElement('div');
@@ -356,8 +362,8 @@ export class ProjectManager {
 
 
       // Add parameters
-      for (const [paramName, paramInfo] of Object.entries(categoryParams)) {
-        if (typeof paramInfo !== 'object') continue;
+      for (const [paramName, paramInfo] of Object.entries(categoryParams) as [string, ParameterMetadata][]) {
+        if (!paramInfo || typeof paramInfo !== 'object') continue;
         const outerItemDiv = document.createElement('div');
         outerItemDiv.className = 'param-item'; // evtl extra klasse nötig
 
@@ -372,7 +378,7 @@ export class ProjectManager {
         const statusSpan = document.createElement('span');
         statusSpan.className = 'param-status-icon';
 
-        const status = (paramInfo as any).status || (paramInfo as any).type;
+        const status = paramInfo.status || paramInfo.type;
 
         if (status === 'missing') {
           statusSpan.textContent = '✗';
@@ -392,46 +398,102 @@ export class ProjectManager {
         const rangeDiv = document.createElement('div');
         rangeDiv.className = 'param-item'; //evtl extra klasse nötig
 
-        const minSpan = document.createElement('span');
-        minSpan.className = 'param-range-label';
-        minSpan.textContent = "Min:";
-        const minDisplayInput = document.createElement('input');
-        minDisplayInput.type = 'text';
-        minDisplayInput.className = 'param-min-input';
-        // todo: default werte sind aktuelle min/max werte der parameter
-        minDisplayInput.value = ((paramInfo as any).min !== undefined) && ((paramInfo as any).max !== "Infinity") ? String((paramInfo as any).min) : '';
-        minDisplayInput.dataset.paramName = paramName;
-        minDisplayInput.dataset.category = categoryName;
-        minDisplayInput.dataset.nodeType = title.includes('State') ? 's' : 't';
-        minDisplayInput.dataset.rangeType = 'min';
-        minDisplayInput.addEventListener('keypress', (e) => {
-          if (e.key === 'Enter') {
-            this.displayParameterRange();
-          }
-        });
-        rangeDiv.appendChild(minSpan);
-        rangeDiv.appendChild(minDisplayInput);
-        // same thing for maxSpan and maxDisplayInput
-        const maxSpan = document.createElement('span');
-        maxSpan.className = 'param-range-label';
-        maxSpan.textContent = " Max:";
-        const maxDisplayInput = document.createElement('input');
-        maxDisplayInput.type = 'text';
-        maxDisplayInput.className = 'param-max-input';
-        maxDisplayInput.value = ((paramInfo as any).max !== undefined) && ((paramInfo as any).max !== "Infinity") ? String((paramInfo as any).max) : '';
-        maxDisplayInput.dataset.paramName = paramName;
-        maxDisplayInput.dataset.category = categoryName;
-        maxDisplayInput.dataset.nodeType = title.includes('State') ? 's' : 't';
-        maxDisplayInput.dataset.rangeType = 'max';
-        maxDisplayInput.addEventListener('keypress', (e) => {
-          if (e.key === 'Enter') {
-            this.displayParameterRange();
-          }
-        });        
+        switch (paramInfo.type){
+          case 'number':
+            const minSpan = document.createElement('span');
+            minSpan.className = 'param-range-label';
+            minSpan.textContent = "Min:";
+            const minDisplayInput = document.createElement('input');
+            minDisplayInput.type = 'text';
+            minDisplayInput.className = 'param-min-input';
+            // todo: default werte sind aktuelle min/max werte der parameter
+            minDisplayInput.value = (paramInfo.min !== undefined && paramInfo.max !== "Infinity") ? String(paramInfo.min) : '';
+            minDisplayInput.dataset.paramName = paramName;
+            minDisplayInput.dataset.category = categoryName;
+            minDisplayInput.dataset.rangeType = 'min';
+            minDisplayInput.addEventListener('keypress', (e) => {
+              if (e.key === 'Enter') {
+                this.displayParameterRange();
+              }
+            });
+            rangeDiv.appendChild(minSpan);
+            rangeDiv.appendChild(minDisplayInput);
+            // same thing for maxSpan and maxDisplayInput
+            const maxSpan = document.createElement('span');
+            maxSpan.className = 'param-range-label';
+            maxSpan.textContent = " Max:";
+            const maxDisplayInput = document.createElement('input');
+            maxDisplayInput.type = 'text';
+            maxDisplayInput.className = 'param-max-input';
+            maxDisplayInput.value = (paramInfo.max !== undefined && paramInfo.max !== "Infinity") ? String(paramInfo.max) : '';
+            maxDisplayInput.dataset.paramName = paramName;
+            maxDisplayInput.dataset.category = categoryName;
+            maxDisplayInput.dataset.rangeType = 'max';
+            maxDisplayInput.addEventListener('keypress', (e) => {
+              if (e.key === 'Enter') {
+                this.displayParameterRange();
+              }
+            });        
 
+            rangeDiv.appendChild(maxSpan);
+            rangeDiv.appendChild(maxDisplayInput);
+            break;
+          case 'boolean':
+            const falseButton = document.createElement('button');
+            falseButton.textContent = 'False';
+            falseButton.className = 'param-nominal-button';            
+            const paramNameClass = paramName.replace(/\s+/g, '-').toLowerCase();
+            const categoryNameClass = categoryName.replace(/\s+/g, '-').toLowerCase();
+            falseButton.classList.add(categoryNameClass);
+            falseButton.classList.add(paramNameClass);
 
-        rangeDiv.appendChild(maxSpan);
-        rangeDiv.appendChild(maxDisplayInput);
+            falseButton.dataset.paramName = paramName;
+            falseButton.dataset.category = categoryName;
+            falseButton.dataset.nominalValue = 'false';
+            falseButton.addEventListener('click', () => {
+              this.toggleFilterOptions(categoryNameClass, paramNameClass, 'false');
+            });
+            const trueButton = document.createElement('button');
+            trueButton.textContent = 'True';
+            trueButton.className = 'param-nominal-button';
+            trueButton.dataset.paramName = paramName;
+            trueButton.dataset.category = categoryName;
+            trueButton.dataset.nominalValue = 'true';
+
+            trueButton.classList.add(categoryNameClass);
+            trueButton.classList.add(paramNameClass);
+            trueButton.addEventListener('click', () => {
+              this.toggleFilterOptions(categoryNameClass, paramNameClass, 'true');
+            });
+            rangeDiv.appendChild(falseButton);
+            rangeDiv.appendChild(trueButton);
+            break;
+          case 'nominal':
+            const possibleValues = this.prismAPI.getPossibleValuesForParameter(categoryName, paramName);
+            console.log(`Possible values for ${paramName}:`, possibleValues);
+            possibleValues.forEach(value => {
+              const valueButton = document.createElement('button');
+              valueButton.textContent = value;
+              valueButton.className = 'param-nominal-button';
+              valueButton.dataset.paramName = paramName;
+              valueButton.dataset.category = categoryName;
+              valueButton.dataset.nominalValue = value;
+              const paramNameClass = paramName.replace(/\s+/g, '-').toLowerCase();
+              const categoryNameClass = categoryName.replace(/\s+/g, '-').toLowerCase();
+              valueButton.addEventListener('click', () => {
+                this.toggleFilterOptions(categoryNameClass, paramNameClass, value);
+              });
+              rangeDiv.appendChild(valueButton);
+
+              valueButton.classList.add(categoryNameClass);
+              valueButton.classList.add(paramNameClass);
+            });
+            break;
+          default:
+            // No range input for other types
+            break;
+        }
+
         
         outerItemDiv.appendChild(itemDiv);
         outerItemDiv.appendChild(rangeDiv);
@@ -442,68 +504,99 @@ export class ProjectManager {
     this.paramStatusContent.appendChild(categoryDiv);
   }
 
+  private toggleFilterOptions(category: string, paramName: string, valueToChange: string): void {
+    const buttons = document.querySelectorAll(`.param-nominal-button.${category}.${paramName}`) as NodeListOf<HTMLElement>;
+    console.log("Toggle: button count of " + buttons.length);
+    console.log(`.param-nominal-button.${category}.${paramName}`)
+    const button = Array.from(buttons).find(btn => btn.dataset.nominalValue === valueToChange);
+    if (!button) return;
+
+    const isActive = button.classList.contains('filtered');
+
+    if (isActive) {
+      button.classList.remove('filtered');
+    } else {
+      button.classList.add('filtered');
+    }
+
+    this.graph.filterNodes(this.nodeFilterFn.bind(this));
+  }
   /**
    * Display parameter range set by user
    */
   private displayParameterRange(): void {
-    console.log("[ProjectManager] Filter anwenden")
-    // Retrieve values from all input fields
+    console.log("[ProjectManager] Applying filters");
+    // Apply the filter function to all nodes in the graph
+    // The nodeFilterFn will check all the input values and button states
+    this.graph.filterNodes(this.nodeFilterFn.bind(this));
+  }
+
+  public nodeFilterFn(node: NodeData): boolean{
     const minInputs = document.querySelectorAll('.param-min-input') as NodeListOf<HTMLInputElement>;
     const maxInputs = document.querySelectorAll('.param-max-input') as NodeListOf<HTMLInputElement>;
 
-    let filteredNodes = this.graph.getFullNodes();
-    const filteredEdges = this.graph.getFullEdges();
-
-    var changesMade = 0;
-    var checksDone = 0;
-    // Process min inputs
-    minInputs.forEach(input => {
+    // Process min inputs - hide if value is LESS than min
+    for (const input of Array.from(minInputs)) {
       const paramName = input.dataset.paramName;
       const category = input.dataset.category;
-      const nodeType = input.dataset.nodeType;
       const minValue = input.value ? parseFloat(input.value) : null;
-      if (paramName && category && nodeType && minValue !== null){
-        console.log("0");
-        if (minValue !== null) {
-          console.log("1");
-          filteredNodes = filteredNodes.filter(node => {
-            checksDone++;
-            if (node.type !== nodeType) return true;
-            const paramValue = node.parameters?.[category]?.[paramName];
-            if (paramValue === undefined || paramValue === null) return false;
-            if (paramValue >= minValue) changesMade += 1;
-            return paramValue >= minValue;
-          });
-        }
+
+      if (paramName && category && minValue !== null) {
+        const paramValue = node.parameters?.[category]?.[paramName];
+        if (paramValue === undefined || paramValue === null) continue;
+        if (paramName == "edges") console.log(`minValue: ${minValue}, paramValue: ${paramValue}, result: ${paramValue > minValue}`);
+        if (paramValue < minValue) return true; // Hide if less than minimum
       }
+    }
 
-    });
-
-    // Process max inputs
-    maxInputs.forEach(input => {
+    // Process max inputs - hide if value is GREATER than max
+    for (const input of Array.from(maxInputs)) {
       const paramName = input.dataset.paramName;
       const category = input.dataset.category;
-      const nodeType = input.dataset.nodeType;
       const maxValue = input.value ? parseFloat(input.value) : null;
 
-      if (paramName && category && nodeType && maxValue !== null){
-        if (maxValue !== null) {
-          filteredNodes = filteredNodes.filter(node => {
-            checksDone++;
-            if ((node.type !== nodeType) && (category != 'Model Checking Results')) return true;
-            const paramValue = node.parameters?.[category]?.[paramName];
-            if (paramValue === undefined || paramValue === null) return false;
-            if (paramValue <= maxValue) changesMade += 1;
-            return paramValue <= maxValue;
-          });
-        }
+      if (paramName && category && maxValue !== null) {
+        const paramValue = node.parameters?.[category]?.[paramName];
+        if (paramValue === undefined || paramValue === null) continue;
+        if (paramValue > maxValue) return true; // Hide if greater than maximum
       }
+    }
 
-    });
-    console.log(`[ProjectManager] Applied parameter range filters, ${changesMade} nodes match criteria with ${checksDone} checks`);
-    this.graph.loadGraph(this.currentProjectId || '0', filteredNodes, filteredEdges);
+    // Nominal and Bool buttons - hide if value does NOT match the filtered values
+    const nominalButtons = document.querySelectorAll('.param-nominal-button.filtered') as NodeListOf<HTMLElement>;
+
+    if (nominalButtons.length > 0) {
+      // Group buttons by parameter
+      const filtersByParam = new Map<string, Set<string>>();
+
+      nominalButtons.forEach(button => {
+        const paramName = button.dataset.paramName;
+        const category = button.dataset.category;
+        const nominalValue = button.dataset.nominalValue;
+
+        if (paramName && category && nominalValue) {
+          const key = `${category}::${paramName}`;
+          if (!filtersByParam.has(key)) {
+            filtersByParam.set(key, new Set());
+          }
+          filtersByParam.get(key)!.add(nominalValue);
+        }
+      });
+
+      // Check if node matches any of the selected values for each parameter
+      for (const [key, valuesToFilter] of filtersByParam.entries()) {
+        const [category, paramName] = key.split('::');
+        const paramValue = node.parameters?.[category]?.[paramName];
+        //log result and node value
+        //console.log(`[Filter Nodes] Checking node ${node.id} parameter ${category}::${paramName} with value: ${paramValue}`);
+        //console.log("Result: " + allowedValues.has(String(paramValue)));
+        if (paramValue === undefined || paramValue === null) return false;
+        if (!valuesToFilter.has(String(paramValue))) return true;
+      }
+    }
+
+    return false;
   }
-
 
   /**
    * Start polling for status updates
