@@ -169,10 +169,9 @@ export class ProjectManager {
         this.graph.ui.updateParameterSelections(currentParamLabels);
       }
 
-      // Start polling if there are missing parameters
-      if (this.prismAPI.hasMissingParameters(mergedStatus)) {
-        this.startStatusPolling();
-      } else {
+      // Don't automatically start polling - only when check model button is clicked
+      // Stop polling if no more missing parameters
+      if (!this.prismAPI.hasMissingParameters(mergedStatus)) {
         this.stopStatusPolling();
       }
     } catch (error) {
@@ -470,7 +469,7 @@ export class ProjectManager {
             break;
           case 'nominal':
             const possibleValues = this.prismAPI.getPossibleValuesForParameter(categoryName, paramName);
-            console.log(`Possible values for ${paramName}:`, possibleValues);
+            //console.log(`Possible values for ${paramName}:`, possibleValues);
             possibleValues.forEach(value => {
               const valueButton = document.createElement('button');
               valueButton.textContent = value;
@@ -506,8 +505,8 @@ export class ProjectManager {
 
   private toggleFilterOptions(category: string, paramName: string, valueToChange: string): void {
     const buttons = document.querySelectorAll(`.param-nominal-button.${category}.${paramName}`) as NodeListOf<HTMLElement>;
-    console.log("Toggle: button count of " + buttons.length);
-    console.log(`.param-nominal-button.${category}.${paramName}`)
+    //console.log("Toggle: button count of " + buttons.length);
+    //console.log(`.param-nominal-button.${category}.${paramName}`)
     const button = Array.from(buttons).find(btn => btn.dataset.nominalValue === valueToChange);
     if (!button) return;
 
@@ -588,9 +587,9 @@ export class ProjectManager {
         const [category, paramName] = key.split('::');
         const paramValue = node.parameters?.[category]?.[paramName];
         //log result and node value
-        //console.log(`[Filter Nodes] Checking node ${node.id} parameter ${category}::${paramName} with value: ${paramValue}`);
-        //console.log("Result: " + allowedValues.has(String(paramValue)));
-        if (paramValue === undefined || paramValue === null) return false;
+        console.log(`[Filter Nodes] Checking node ${node.id} parameter ${category}::${paramName} with value: ${paramValue}`);
+        console.log("Result: " + valuesToFilter.has(String(paramValue)));
+        if (paramValue === undefined || paramValue === null) continue;
         if (!valuesToFilter.has(String(paramValue))) return true;
       }
     }
@@ -614,14 +613,9 @@ export class ProjectManager {
       }
 
       try {
-        const status = await this.prismAPI.fetchProjectStatus(this.currentProjectId);
-        this.displayParameterStatus(status);
-
-        // Stop polling if no more missing parameters
-        if (!this.prismAPI.hasMissingParameters(status)) {
-          console.log('[ProjectManager] All parameters ready, stopping poll');
-          this.stopStatusPolling();
-        }
+        // Use updateProjectStatus to properly merge and check status
+        await this.updateProjectStatus();
+        // updateProjectStatus will stop polling if no more missing parameters
       } catch (error) {
         console.error('[ProjectManager] Status poll failed:', error);
       }

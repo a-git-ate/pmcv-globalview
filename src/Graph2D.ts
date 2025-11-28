@@ -2212,8 +2212,8 @@ export class Graph2D {
 
   // Create axis labels in the 3D scene
   private createAxisVisualization(
-    yParamIndex: string,
     xParamIndex: string,
+    yParamIndex: string,
     minValues: { x: number; y: number },
     maxValues: { x: number; y: number },
     spread: number
@@ -2480,8 +2480,8 @@ export class Graph2D {
       sizeAttenuation: false
     });
     const xTitle = new THREE.Sprite(xTitleMaterial);
-    const xTitleX = (viewLeft + viewRight) / 2; // Center of screen
-    xTitle.position.set(xTitleX, xAxisY + labelScale * 1.5, 0);
+    const xTitleX = (yAxisX + maxXWorldPos) / 2; // Center of screen
+    xTitle.position.set(xTitleX, xAxisY + labelScale * -0.4, 0);
     // Scale proportionally to aspect ratio
     const xTitleHeight = labelScale * 0.7;
     xTitle.scale.set(xTitleHeight * xTitleAspect, xTitleHeight, 1);
@@ -2495,9 +2495,10 @@ export class Graph2D {
       opacity: 1.0,
       sizeAttenuation: false
     });
+    console.log(`x: ${xParamLabel}, y: ${yParamLabel}`);
     const yTitle = new THREE.Sprite(yTitleMaterial);
-    const yTitleY = (viewBottom + viewTop) / 2; // Center of screen
-    yTitle.position.set(yAxisX + labelScale * 2.0, yTitleY, 0);
+    const yTitleY = (xAxisY + maxYWorldPos) / 2; // Center of screen
+    yTitle.position.set(yAxisX + labelScale * -2.0, yTitleY, 0);
     // Scale proportionally to aspect ratio
     const yTitleHeight = labelScale * 0.7;
     yTitle.scale.set(yTitleHeight * yTitleAspect, yTitleHeight, 1);
