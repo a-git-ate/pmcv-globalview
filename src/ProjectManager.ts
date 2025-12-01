@@ -464,11 +464,25 @@ export class ProjectManager {
             trueButton.addEventListener('click', () => {
               this.toggleFilterOptions(categoryNameClass, paramNameClass, 'true');
             });
+            const undefinedButton = document.createElement('button');
+            undefinedButton.textContent = 'Undefined';
+            undefinedButton.className = 'param-nominal-button';
+            undefinedButton.dataset.paramName = paramName;
+            undefinedButton.dataset.category = categoryName;
+            undefinedButton.dataset.nominalValue = 'undefined';
+
+            undefinedButton.classList.add(categoryNameClass);
+            undefinedButton.classList.add(paramNameClass);
+            undefinedButton.addEventListener('click', () => {
+              this.toggleFilterOptions(categoryNameClass, paramNameClass, 'undefined');
+            });
             rangeDiv.appendChild(falseButton);
             rangeDiv.appendChild(trueButton);
+            rangeDiv.appendChild(undefinedButton);
             break;
           case 'nominal':
             const possibleValues = this.prismAPI.getPossibleValuesForParameter(categoryName, paramName);
+            console.log(`[ProjectManager] Possible values for ${paramName} in category ${categoryName}:`, possibleValues);
             //console.log(`Possible values for ${paramName}:`, possibleValues);
             possibleValues.forEach(value => {
               const valueButton = document.createElement('button');
@@ -530,6 +544,7 @@ export class ProjectManager {
     this.graph.filterNodes(this.nodeFilterFn.bind(this));
   }
 
+  //Returns true if node should be hidden
   public nodeFilterFn(node: NodeData): boolean{
     const minInputs = document.querySelectorAll('.param-min-input') as NodeListOf<HTMLInputElement>;
     const maxInputs = document.querySelectorAll('.param-max-input') as NodeListOf<HTMLInputElement>;
@@ -589,8 +604,8 @@ export class ProjectManager {
         //log result and node value
         console.log(`[Filter Nodes] Checking node ${node.id} parameter ${category}::${paramName} with value: ${paramValue}`);
         console.log("Result: " + valuesToFilter.has(String(paramValue)));
-        if (paramValue === undefined || paramValue === null) continue;
-        if (!valuesToFilter.has(String(paramValue))) return true;
+        if ((paramValue === undefined || paramValue === null) && valuesToFilter.has('undefined')) return true;
+        if (valuesToFilter.has(String(paramValue))) return true;
       }
     }
 

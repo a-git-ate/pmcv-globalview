@@ -28,26 +28,6 @@ function initializeApp(): void {
     
     console.log('[Main] Graph initialized successfully');
     
-    // Start with loading from API after initialization
-    setTimeout(() => {
-      if (graph) {
-        // First try loading simple graph data
-        graph.loadGraph('0').catch(() => {
-          console.warn('Failed to load from simple API, trying PRISM format...');
-          // Try PRISM API format as fallback
-          if (graph) {
-            graph.loadPrismProject('0').catch(() => {
-              // Final fallback to generating demo nodes
-              console.warn('Failed to load from PRISM API, falling back to demo nodes');
-              if (graph) {
-                graph.generateNodes(500);
-              }
-            });
-          }
-        });
-      }
-    }, 1000);
-    
   } catch (error) {
     handleInitializationError(error);
   }

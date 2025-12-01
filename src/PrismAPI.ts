@@ -41,6 +41,7 @@ export class PrismAPI {
   }
 
   clearParameterMetadata(): void {
+    console.log('[PrismAPI] Clearing parameterMetadata');
     this.parameterMetadata = null;
   }
 
@@ -126,11 +127,10 @@ export class PrismAPI {
   }
   private convertNewFormatToInternalST(data: any): { s_nodes: NodeData[]; t_nodes: NodeData[]; edges: EdgeData[] } {
     if (data.info) {
+      console.log('[PrismAPI] Setting parameterMetadata from data.info');
       this.parameterMetadata = data.info;
       this.populateParameterOrder(data.info);
     }
-
-    const [sNominalParams, tNominalParams] = this.getNominalParams();
 
     const idToIndex = new Map<string, number>();
 
@@ -142,19 +142,6 @@ export class PrismAPI {
     const s_nodes: NodeData[] = s_nodes_raw.map((node: any, arrayIndex: number) => {
       const nodeId = String(node.id);
       const globalIndex = arrayIndex; // Global index in the final combined array
-
-      // Populate possible nominal parameter values
-      // todo: see if you can get this directly from api
-      for (const [categoryName, category] of Object.entries(node.details || {})){
-        for (const [paramName, paramValue] of Object.entries(category as any)){
-          if (Object.keys(sNominalParams).includes(paramName)){
-            const valueStr = String(paramValue);
-            if (!sNominalParams[paramName].includes(valueStr)){
-              sNominalParams[paramName].push(valueStr);
-            }
-          }
-        }
-      }
 
       // Map original ID to global index for edge resolution
       idToIndex.set(nodeId, globalIndex);
@@ -176,18 +163,6 @@ export class PrismAPI {
       const nodeId = String(node.id);
       const globalIndex = s_nodes.length + arrayIndex; // Offset by s_nodes length
 
-      // Populate possible values for nominal params
-      for (const [categoryName, category] of Object.entries(node.details || {})){
-        for (const [paramName, paramValue] of Object.entries(category as any)){
-          if (Object.keys(tNominalParams).includes(paramName)){
-            const valueStr = String(paramValue);
-            if (!tNominalParams[paramName].includes(valueStr)){
-              tNominalParams[paramName].push(valueStr);
-            }
-          }
-        }
-      }
-
       // Map original ID to global index for edge resolution
       idToIndex.set(nodeId, globalIndex);
 
@@ -203,7 +178,9 @@ export class PrismAPI {
       };
     });
 
-    this.addNominalValuesToParameterMetadata(sNominalParams, tNominalParams);;
+    // Combine nodes and populate nominal values
+    const allNodes = [...s_nodes, ...t_nodes];
+    this.addNominalValuesToParameterMetadata(allNodes);;
 
     const edges: EdgeData[] = [];
     for (let i = 0; i < data.edges.length; i++) {
@@ -254,32 +231,68 @@ export class PrismAPI {
     }
     return possibleValues;
   }
-  private addNominalValuesToParameterMetadata(sNominalParams: Record<string, string[]>, tNominalParams: Record<string, string[]>): void {
+  private addNominalValuesToParameterMetadata(nodes: NodeData[]): void {
     if (!this.parameterMetadata) return;
-    console.log(sNominalParams);
-    console.log(tNominalParams);
+    console.log('[PrismAPI] addNominalValuesToParameterMetadata - START');
+
+    // Get nominal params structure from metadata
+    const [sNominalParams, tNominalParams] = this.getNominalParams();
+
+    // Initialize all nominal params with "undefined" as a possible value
+    for (const paramName of Object.keys(sNominalParams)) {
+      sNominalParams[paramName].push('undefined');
+    }
+    for (const paramName of Object.keys(tNominalParams)) {
+      tNominalParams[paramName].push('undefined');
+    }
+
+    // Populate nominal params with actual values from nodes
+    for (const node of nodes) {
+      const isStateNode = node.type === 's';
+      const nominalParams = isStateNode ? sNominalParams : tNominalParams;
+
+      for (const [categoryName, category] of Object.entries(node.parameters || {})) {
+        for (const [paramName, paramValue] of Object.entries(category as any)) {
+          if (Object.keys(nominalParams).includes(paramName)) {
+            const valueStr = String(paramValue);
+            if (!nominalParams[paramName].includes(valueStr)) {
+              nominalParams[paramName].push(valueStr);
+            }
+          }
+        }
+      }
+    }
+
+    console.log('[PrismAPI] sNominalParams:', sNominalParams);
+    console.log('[PrismAPI] tNominalParams:', tNominalParams);
+    console.log('[PrismAPI] parameterMetadata before modification:', JSON.stringify(this.parameterMetadata, null, 2));
+
     for (const type of ['s', 't'] as const) {
-      console.log(`Processing node type: ${type}`);
+      console.log(`[PrismAPI] Processing node type: ${type}`);
       const nodeInfo = this.parameterMetadata[type];
       if (!nodeInfo) continue;
 
       for (const category of Object.keys(nodeInfo)) {
         const params = nodeInfo[category];
-        console.log(` Processing category: ${category}`);
-        
+        console.log(`[PrismAPI]  Processing category: ${category}`);
+
         for (const paramName of Object.keys(params)){
-          console.log(`  Processing parameter: ${paramName}`);
+          console.log(`[PrismAPI]   Processing parameter: ${paramName}`);
           if (type === 's' && Object.keys(sNominalParams).includes(paramName)) {
             params[paramName].possibleValues = sNominalParams[paramName];
-            console.log(`Added possible values for s param ${paramName}: ${params[paramName].possibleValues}`);
+            console.log(`[PrismAPI]   Added possible values for s param ${paramName}:`, params[paramName].possibleValues);
+            console.log(`[PrismAPI]   Verification - this.parameterMetadata.s[${category}][${paramName}].possibleValues:`, this.parameterMetadata.s?.[category]?.[paramName]?.possibleValues);
           }else if (type === 't' && Object.keys(tNominalParams).includes(paramName)) {
             params[paramName].possibleValues = tNominalParams[paramName];
-            console.log(`Added possible values for t param ${paramName}: ${params[paramName].possibleValues}`);
+            console.log(`[PrismAPI]   Added possible values for t param ${paramName}:`, params[paramName].possibleValues);
+            console.log(`[PrismAPI]   Verification - this.parameterMetadata.t[${category}][${paramName}].possibleValues:`, this.parameterMetadata.t?.[category]?.[paramName]?.possibleValues);
           }
         }
       }
     }
-    
+
+    console.log('[PrismAPI] parameterMetadata after modification:', JSON.stringify(this.parameterMetadata, null, 2));
+    console.log('[PrismAPI] addNominalValuesToParameterMetadata - END');
   }
 
   public getParameterLabels(type: string): Record<string, string[]> {
@@ -381,7 +394,34 @@ export class PrismAPI {
 
       // Update parameter metadata if status contains info
       if (status?.info) {
+        console.log('[PrismAPI] Updating parameterMetadata from status.info');
+
+        // Preserve possibleValues from existing metadata before overwriting
+        if (this.parameterMetadata) {
+          for (const type of ['s', 't'] as const) {
+            const existingNodeInfo = this.parameterMetadata[type];
+            const newNodeInfo = status.info[type];
+
+            if (existingNodeInfo && newNodeInfo) {
+              for (const category of Object.keys(existingNodeInfo)) {
+                if (newNodeInfo[category]) {
+                  for (const paramName of Object.keys(existingNodeInfo[category])) {
+                    if (newNodeInfo[category][paramName]) {
+                      const possibleValues = existingNodeInfo[category][paramName]?.possibleValues;
+                      if (possibleValues) {
+                        console.log(`[PrismAPI] Preserving possibleValues for ${type}.${category}.${paramName}:`, possibleValues);
+                        newNodeInfo[category][paramName].possibleValues = possibleValues;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
         this.parameterMetadata = status.info;
+        console.log('[PrismAPI] parameterMetadata updated with preserved possibleValues');
       }
 
       return status;
