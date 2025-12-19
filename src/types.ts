@@ -35,7 +35,7 @@ export interface GraphConfig {
   renderDistance: number;
 }
 
-export type LayoutType = 'random' | 'grid' | 'force';
+export type LayoutType = 'none' | 'random' | 'grid' | 'force';
 
 export interface ViewportBounds {
   left: number;

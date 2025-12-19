@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { UIManager } from './UIManager';
 import { PrismAPI } from './PrismAPI';
 import { ProjectManager } from './ProjectManager';
+import PCA from 'pca-js';
+
 import type {
   NodeData,
   EdgeData,
@@ -24,7 +26,8 @@ export class Graph2D {
   private fullNodes : NodeData[] = [];
   private fullEdges : EdgeData[] = [];
   private nodeCount: number = 0;
-  private currentLayout: LayoutType = 'grid';
+  private currentLayout: LayoutType = 'none';
+  private loadedProjectId: string | null = null;
   private edgeLines: THREE.Group | THREE.LineSegments | null = null;
 
   // Axis visualization
@@ -271,6 +274,43 @@ export class Graph2D {
     }
   }
 
+  public doPCA(){
+    if(this.nodes.length === 0) return;
+    const flattened = this.flattenParameters();
+    const dataMatrixRaw = flattened.parameterMatrix;
+    const parameterOrder = flattened.parameterOrder;
+    var vectors = PCA.getEigenVectors(dataMatrixRaw);
+    var adjustedData = PCA.computeAdjustedData(dataMatrixRaw, vectors[0], vectors[1]);
+    console.log(vectors);
+    console.log(adjustedData);
+  }
+
+  public flattenParameters(): {parameterOrder: string[], parameterMatrix: number[][]} {
+    if(this.nodes.length === 0) return {parameterOrder: [], parameterMatrix: []};
+    const parameterOrder: string[] = [];
+    const parameterMatrix: number[][] = [];
+    for (let i = 0; i < this.nodes.length; i++){
+      const node = this.nodes[i];
+      const paramValues: number[] = [];
+      if (!(Object.keys(node.parameters).includes('Atomic Propositions'))) continue;
+      for (const key in node.parameters){
+        for (const paramKey in node.parameters[key]){
+          const paramValue = parseFloat(PrismAPI.getParameterValue(node, paramKey));
+          if (isNaN(paramValue)) continue;
+          if(!parameterOrder.includes(`${key}::${paramKey}`)){
+            parameterOrder.push(`${key}::${paramKey}`);
+            paramValues[parameterOrder.length - 1] = paramValue;
+          }
+          else{
+            const index = parameterOrder.indexOf(`${key}::${paramKey}`);
+            paramValues[index] = paramValue;
+          }
+        }
+      }
+      parameterMatrix.push(paramValues);
+    }
+    return {parameterOrder, parameterMatrix};
+  }
   public filterNodes(filterFn: (node: NodeData) => boolean): void{
     const alphas = this.pointCloud?.geometry.getAttribute('alpha') as THREE.BufferAttribute;
     let nodesHidden = 0;
@@ -292,9 +332,10 @@ export class Graph2D {
         nodesVisible++;
       }
     }
-    console.log(`[Filter Nodes] Visible: ${nodesVisible}, Hidden: ${nodesHidden} (total: ${this.nodes.length})`);
+    //console.log(`[Filter Nodes] Visible: ${nodesVisible}, Hidden: ${nodesHidden} (total: ${this.nodes.length})`);
     alphas.needsUpdate = true;
     this.renderer?.render(this.scene, this.camera);
+    this.doPCA();
   }
 
 
@@ -438,6 +479,138 @@ export class Graph2D {
       this.ui.showError(message);
       this.ui.clearModelInfo();
       throw error; // Re-throw to allow fallback in main.ts
+    } finally {
+      this.ui.enableButtons();
+    }
+  }
+
+  /**
+   * Load graph data without rendering - waits for user to select a layout
+   */
+  public async loadGraphData(graphId: string = '0'): Promise<void> {
+    const startTime = performance.now();
+    this.ui.updateStatus('Fetching graph data from API...');
+    this.ui.disableButtons();
+
+    try {
+      // Clear existing visualization
+      this.clearPointCloud();
+      this.clearEdgeLines();
+
+      // Fetch graph data using PrismAPI
+      const fetchStart = performance.now();
+      const graphData = await this.prismAPI.fetchSimpleGraph(graphId);
+      console.log(`[Performance] API fetch: ${(performance.now() - fetchStart).toFixed(2)}ms`);
+
+      // Store the data but don't render yet
+      this.nodes = graphData.nodes;
+      this.edges = graphData.edges;
+      this.fullNodes = graphData.nodes;
+      this.fullEdges = graphData.edges;
+      this.loadedProjectId = graphId;
+      this.nodeCount = this.nodes.length;
+
+      // Update UI with basic info
+      const paramLabels = this.prismAPI.getParameterLabels('s');
+      this.ui.updateParameterSelections(paramLabels);
+      this.ui.updateModelInfo(graphId, this.nodes.length, this.edges.length);
+      this.config.parameterXAxis = "";
+      this.config.parameterYAxis = "";
+
+      const totalTime = (performance.now() - startTime).toFixed(2);
+      this.ui.updateStatus(`Loaded ${this.nodes.length.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API (${totalTime}ms). Select a layout to visualize.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load graph from API';
+      this.ui.showError(message);
+      this.ui.clearModelInfo();
+      throw error;
+    } finally {
+      this.ui.enableButtons();
+    }
+  }
+
+  /**
+   * Render data that was loaded via loadGraphData (triggered by layout selection)
+   */
+  private async renderLoadedData(): Promise<void> {
+    if (this.nodes.length === 0) {
+      this.ui.updateStatus("No data to render!");
+      return;
+    }
+
+    const startTime = performance.now();
+    this.ui.disableButtons();
+
+    try {
+      const nodeCount = this.nodes.length;
+
+      // Create geometry arrays
+      const geometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(nodeCount * 3);
+      const colors = new Float32Array(nodeCount * 3);
+      const sizes = new Float32Array(nodeCount);
+
+      // Populate geometry arrays from loaded nodes
+      const layoutStart = performance.now();
+      await this.populateGeometryFromNodes(positions, colors, sizes);
+      console.log(`[Performance] Layout population: ${(performance.now() - layoutStart).toFixed(2)}ms`);
+
+      // Create point cloud
+      const cloudStart = performance.now();
+      this.createPointCloud(geometry, positions, colors, sizes);
+      this.ui.updateNodeCount(nodeCount);
+      this.resetView();
+      console.log(`[Performance] Point cloud creation: ${(performance.now() - cloudStart).toFixed(2)}ms`);
+
+      // Create edge lines if edges are visible
+      if (this.config.edgesVisible && this.edges.length > 0) {
+        const edgeStart = performance.now();
+
+        if (this.edges.length > 10000) {
+          this.ui.updateStatus(`Rendering ${this.edges.length.toLocaleString()} edges...`);
+          await new Promise(resolve => setTimeout(resolve, 16));
+        }
+
+        this.createEdgeLines();
+        this.updateArrowScales();
+        console.log(`[Performance] Edge rendering: ${(performance.now() - edgeStart).toFixed(2)}ms`);
+      }
+
+      // Update overlap labels
+      if (nodeCount < 50000) {
+        this.updateOverlapLabels();
+      } else {
+        setTimeout(() => this.updateOverlapLabels(), 100);
+      }
+
+      // Create axis visualization if using parameter positioning
+      if (this.config.useParameterPositioning && this.config.parameterXAxis && this.config.parameterYAxis) {
+        const xParam = this.config.parameterXAxis;
+        const yParam = this.config.parameterYAxis;
+
+        // Calculate min/max values for axes
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+
+        for (let i = 0; i < this.nodes.length; i++) {
+          const node = this.nodes[i];
+          minX = Math.min(minX, PrismAPI.getParameterValue(node, xParam));
+          maxX = Math.max(maxX, PrismAPI.getParameterValue(node, xParam));
+          minY = Math.min(minY, PrismAPI.getParameterValue(node, yParam));
+          maxY = Math.max(maxY, PrismAPI.getParameterValue(node, yParam));
+        }
+
+        const spread = Math.sqrt(nodeCount) * 0.5;
+        this.createAxisVisualization(xParam, yParam, { x: minX, y: minY }, { x: maxX, y: maxY }, spread);
+        this.fitViewToParameterRange(spread);
+      }
+
+      const totalTime = (performance.now() - startTime).toFixed(2);
+      this.ui.updateStatus(`Rendered ${nodeCount.toLocaleString()} nodes with ${this.currentLayout} layout (${totalTime}ms)`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to render graph';
+      this.ui.showError(message);
+      throw error;
     } finally {
       this.ui.enableButtons();
     }
@@ -1432,13 +1605,26 @@ export class Graph2D {
   }
 
   public applyLayout(layoutType: LayoutType): void {
+    // Ignore 'none' layout selection
+    if (layoutType === 'none') {
+      return;
+    }
+
     this.currentLayout = layoutType;
     this.config.useParameterPositioning = false;
     this.clearAxisVisualization();
     this.ui.onLayoutChange(layoutType);
 
+    // If data is loaded but not yet rendered, render it now
+    if (this.nodeCount > 0 && this.nodes.length > 0 && !this.pointCloud) {
+      this.ui.updateStatus(`Rendering with ${layoutType} layout...`);
+      this.renderLoadedData();
+      return;
+    }
+
+    // If already rendered, just re-layout
     if (this.nodeCount === 0 || !this.pointCloud) {
-      this.ui.updateStatus("Generate nodes first!");
+      this.ui.updateStatus("Load a project first!");
       return;
     }
 
@@ -2568,7 +2754,21 @@ export class Graph2D {
   }
 
   public rearrangeByParameters(xParam: string, yParam: string, colorParamIndex: string = ""): void {
-    if (!this.pointCloud || this.nodes.length === 0) return;
+    // If data is loaded but not yet rendered, render it first with parameter view
+    if (!this.pointCloud && this.nodes.length > 0) {
+      this.config.parameterXAxis = xParam;
+      this.config.parameterYAxis = yParam;
+      this.config.useParameterPositioning = true;
+      this.currentLayout = 'grid'; // Use grid as base for parameter view
+      this.ui.updateStatus(`Rendering with parameter view...`);
+      this.renderLoadedData();
+      return;
+    }
+
+    if (!this.pointCloud || this.nodes.length === 0) {
+      this.ui.updateStatus("Load a project first!");
+      return;
+    }
 
     console.log(`[Parameter View] Starting with ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
     this.ui.updateStatus(`Rearranging nodes by parameters ${xParam} and ${yParam}...`);

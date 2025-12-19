@@ -16,7 +16,7 @@ export class UIManager {
   private cacheElements(): void {
     const elementIds = [
       'btn-1k', 'btn-10k', 'btn-100k', 'btn-500k', 'btn-1m',
-      'btn-force-directed',
+      'btn-grid-layout', 'btn-random-layout', 'btn-force-directed',
       'btn-lod', 'btn-edges', 'btn-reset', 'btn-clusters', 'btn-gridlines', 'btn-export',
       'param-x-select', 'param-y-select', 'param-color-select', 'btn-apply-params', 'btn-apply-color', 'btn-reset-layout',
       'progress', 'progress-bar',
@@ -58,7 +58,9 @@ export class UIManager {
     this.addClickListener('btn-500k', () => this.graph.generateNodes(500000));
     this.addClickListener('btn-1m', () => this.graph.generateNodes(1000000));
 
-    // Layout button
+    // Layout buttons
+    this.addClickListener('btn-grid-layout', () => this.graph.applyLayout('grid'));
+    this.addClickListener('btn-random-layout', () => this.graph.applyLayout('random'));
     this.addClickListener('btn-force-directed', () => this.graph.applyLayout('force'));
 
     // Control buttons

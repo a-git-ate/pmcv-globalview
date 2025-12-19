@@ -63,10 +63,8 @@ export class ProjectManager {
       this.availableProjects = await this.prismAPI.fetchProjects();
       this.renderProjectTabs();
 
-      // Select first project by default if available
-      if (this.availableProjects.length > 0 && !this.currentProjectId) {
-        this.selectProject(this.availableProjects[0]);
-      }
+      // Don't auto-select any project - user must manually select
+      console.log('[ProjectManager] Projects loaded. User must select a project to begin.');
     } catch (error) {
       console.error('[ProjectManager] Failed to load projects:', error);
       this.graph.ui.showError('Failed to load available projects');
@@ -125,11 +123,14 @@ export class ProjectManager {
       this.resetButton.disabled = false;
     }
 
-    // Load the graph data for the selected project
-    await this.graph.loadGraph(projectId);
+    // Load the graph data for the selected project, but don't render yet
+    await this.graph.loadGraphData(projectId);
 
     // Fetch and display project status
     await this.updateProjectStatus();
+
+    // Inform user to select a layout
+    this.graph.ui.updateStatus(`Project ${projectId} loaded. Please select a layout to visualize.`);
   }
 
   /**
