@@ -46,6 +46,10 @@ export class ProjectManager {
 
     // Toggle parameter status button
     this.toggleParamStatusButton?.addEventListener('click', () => this.toggleParameterStatus());
+
+    // Apply PCA button
+    const applyPCAButton = document.getElementById('btn-apply-pca');
+    applyPCAButton?.addEventListener('click', () => this.handleApplyPCA());
   }
 
   private async initialize(): Promise<void> {
@@ -282,7 +286,7 @@ export class ProjectManager {
 
     this.PCAOptionsContent.innerHTML = '';
 
-    // Collect all unique parameters from both s and t nodes
+    // Collect all unique NUMERIC parameters from both s and t nodes
     const allParameters = new Map<string, { inS: boolean; inT: boolean; category: string }>();
 
     // Process s nodes
@@ -290,7 +294,10 @@ export class ProjectManager {
       for (const [categoryName, categoryParams] of Object.entries(status.info.s)) {
         if (typeof categoryParams !== 'object' || categoryParams === null) continue;
 
-        for (const paramName of Object.keys(categoryParams)) {
+        for (const [paramName, paramMeta] of Object.entries(categoryParams as Record<string, any>)) {
+          // Only include numeric parameters for PCA
+          if (paramMeta?.type !== 'number') continue;
+
           const key = `${categoryName}::${paramName}`;
           if (!allParameters.has(key)) {
             allParameters.set(key, { inS: true, inT: false, category: categoryName });
@@ -306,7 +313,10 @@ export class ProjectManager {
       for (const [categoryName, categoryParams] of Object.entries(status.info.t)) {
         if (typeof categoryParams !== 'object' || categoryParams === null) continue;
 
-        for (const paramName of Object.keys(categoryParams)) {
+        for (const [paramName, paramMeta] of Object.entries(categoryParams as Record<string, any>)) {
+          // Only include numeric parameters for PCA
+          if (paramMeta?.type !== 'number') continue;
+
           const key = `${categoryName}::${paramName}`;
           if (!allParameters.has(key)) {
             allParameters.set(key, { inS: false, inT: true, category: categoryName });
@@ -519,6 +529,64 @@ export class ProjectManager {
 
     // Enable button only if at least 2 checkboxes are checked
     applyButton.disabled = checkedCheckboxes.length < 2;
+  }
+
+  /**
+   * Handle Apply PCA button click
+   */
+  private handleApplyPCA(): void {
+    console.log('[ProjectManager] Apply PCA clicked');
+
+    // Get all checked checkboxes
+    const checkedCheckboxes = document.querySelectorAll('.pca-param-checkbox:checked:not(:disabled)') as NodeListOf<HTMLInputElement>;
+
+    if (checkedCheckboxes.length < 2) {
+      alert('Please select at least 2 parameters for PCA');
+      return;
+    }
+
+    // Collect selected parameters
+    const selectedParams: Array<{category: string, paramName: string, nodeTypes: Set<'s' | 't'>}> = [];
+    const paramMap = new Map<string, Set<'s' | 't'>>();
+
+    checkedCheckboxes.forEach(checkbox => {
+      const category = checkbox.dataset.category;
+      const paramName = checkbox.dataset.paramName;
+      const nodeType = checkbox.dataset.nodeType as 's' | 't';
+
+      if (!category || !paramName || !nodeType) return;
+
+      const key = `${category}::${paramName}`;
+
+      if (!paramMap.has(key)) {
+        paramMap.set(key, new Set());
+      }
+      paramMap.get(key)!.add(nodeType);
+    });
+
+    // Convert map to array
+    paramMap.forEach((nodeTypes, key) => {
+      const [category, paramName] = key.split('::');
+      selectedParams.push({ category, paramName, nodeTypes });
+    });
+
+    console.log('[ProjectManager] Selected parameters for PCA:', selectedParams);
+
+    // Call the PCA function on Graph2D
+    try {
+      this.graph.doPCAWithSelection(selectedParams);
+
+      // Close PCA menu after successful application
+      const pcaMenu = document.getElementById('pca-menu');
+      if (pcaMenu) {
+        pcaMenu.classList.add('hidden');
+      }
+
+      this.graph.ui.updateStatus('PCA applied successfully');
+    } catch (error) {
+      console.error('[ProjectManager] PCA failed:', error);
+      alert('PCA failed: ' + (error instanceof Error ? error.message : String(error)));
+    }
   }
 
   /**

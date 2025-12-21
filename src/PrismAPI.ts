@@ -31,9 +31,25 @@ export class PrismAPI {
   private readonly CACHE_TTL = 30000;
   private parameterMetadata: GraphInfo | null = null;
   private parameterOrder: Record<string, string[]> ={};
+  private worker: Worker | null = null;
+  private useWorker: boolean = true; // Flag to enable/disable worker
 
-  constructor(baseUrl: string = 'http://localhost:8080') {
+  constructor(baseUrl: string = 'http://localhost:8080', useWorker: boolean = true) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.useWorker = useWorker;
+
+    // Initialize worker if enabled
+    if (this.useWorker && typeof Worker !== 'undefined') {
+      try {
+        this.worker = new Worker(new URL('./dataProcessing.worker.ts', import.meta.url), {
+          type: 'module'
+        });
+        console.log('[PrismAPI] Web Worker initialized');
+      } catch (error) {
+        console.warn('[PrismAPI] Failed to initialize worker, falling back to main thread:', error);
+        this.useWorker = false;
+      }
+    }
   }
 
   getParameterMetadata(): GraphInfo | null {
@@ -43,6 +59,17 @@ export class PrismAPI {
   clearParameterMetadata(): void {
     console.log('[PrismAPI] Clearing parameterMetadata');
     this.parameterMetadata = null;
+  }
+
+  /**
+   * Cleanup method to terminate the worker when no longer needed
+   */
+  destroy(): void {
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+      console.log('[PrismAPI] Web Worker terminated');
+    }
   }
 
 
@@ -77,7 +104,7 @@ export class PrismAPI {
         throw new Error('Invalid response: missing edges array');
       }
 
-      return this.convertNewFormatToInternal(data);
+      return await this.convertNewFormatToInternal(data);
     } catch (error) {
       console.error('[PrismAPI] Simple Graph fetch failed: ', error);
       throw error;
@@ -125,6 +152,67 @@ export class PrismAPI {
 
     return [sNominalParams, tNominalParams];
   }
+
+  /**
+   * Process graph data using Web Worker (if available)
+   * Returns a promise that resolves with the processed data
+   */
+  private async convertNewFormatToInternalSTWorker(data: any): Promise<{ s_nodes: NodeData[]; t_nodes: NodeData[]; edges: EdgeData[] }> {
+    return new Promise((resolve, reject) => {
+      if (!this.worker) {
+        reject(new Error('Worker not available'));
+        return;
+      }
+
+      const timeout = setTimeout(() => {
+        reject(new Error('Worker processing timeout'));
+      }, 30000); // 30 second timeout
+
+      const handleMessage = (event: MessageEvent) => {
+        clearTimeout(timeout);
+        this.worker!.removeEventListener('message', handleMessage);
+        this.worker!.removeEventListener('error', handleError);
+
+        const result = event.data;
+
+        if (result.type === 'error') {
+          reject(new Error(result.error || 'Worker processing failed'));
+          return;
+        }
+
+        // Store parameter metadata from worker result
+        if (result.parameterMetadata) {
+          this.parameterMetadata = result.parameterMetadata;
+          this.populateParameterOrder(result.parameterMetadata);
+        }
+
+        const { s_nodes, t_nodes, edges } = result;
+
+        // Combine nodes for metadata processing
+        const allNodes = s_nodes.concat(t_nodes);
+
+        // Process metadata on main thread (these methods access class state)
+        this.addNominalValuesToParameterMetadata(allNodes);
+        this.calculateParameterMinMax(allNodes);
+
+        resolve({ s_nodes, t_nodes, edges });
+      };
+
+      const handleError = (error: ErrorEvent) => {
+        clearTimeout(timeout);
+        this.worker!.removeEventListener('message', handleMessage);
+        this.worker!.removeEventListener('error', handleError);
+        reject(new Error(`Worker error: ${error.message}`));
+      };
+
+      this.worker.addEventListener('message', handleMessage);
+      this.worker.addEventListener('error', handleError);
+
+      // Send data to worker
+      this.worker.postMessage({ type: 'process', data });
+    });
+  }
+
   private convertNewFormatToInternalST(data: any): { s_nodes: NodeData[]; t_nodes: NodeData[]; edges: EdgeData[] } {
     if (data.info) {
       console.log('[PrismAPI] Setting parameterMetadata from data.info');
@@ -180,8 +268,8 @@ export class PrismAPI {
       };
     });
 
-    // Combine nodes and populate nominal values
-    const allNodes = [...s_nodes, ...t_nodes];
+    // Combine nodes using concat (more efficient than spread for large arrays)
+    const allNodes = s_nodes.concat(t_nodes);
     this.addNominalValuesToParameterMetadata(allNodes);
 
     // Calculate and cache min/max values for all numeric parameters
@@ -215,9 +303,25 @@ export class PrismAPI {
   }
 
 
-  convertNewFormatToInternal(data: any): { nodes: NodeData[]; edges: EdgeData[] } {
-    const { s_nodes, t_nodes, edges } = this.convertNewFormatToInternalST(data);
-    const nodes = [...s_nodes, ...t_nodes];
+  async convertNewFormatToInternal(data: any): Promise<{ nodes: NodeData[]; edges: EdgeData[] }> {
+    let result: { s_nodes: NodeData[]; t_nodes: NodeData[]; edges: EdgeData[] };
+
+    // Use worker if available, otherwise fall back to main thread
+    if (this.useWorker && this.worker) {
+      try {
+        console.log('[PrismAPI] Processing data using Web Worker');
+        result = await this.convertNewFormatToInternalSTWorker(data);
+      } catch (error) {
+        console.warn('[PrismAPI] Worker processing failed, falling back to main thread:', error);
+        result = this.convertNewFormatToInternalST(data);
+      }
+    } else {
+      console.log('[PrismAPI] Processing data on main thread');
+      result = this.convertNewFormatToInternalST(data);
+    }
+
+    const { s_nodes, t_nodes, edges } = result;
+    const nodes = s_nodes.concat(t_nodes);
     console.log(`[PrismAPI] Fetched Graph with ${nodes.length} nodes`);
     return { nodes, edges };
   }
@@ -432,6 +536,14 @@ export class PrismAPI {
     }
 
     if (DEBUG) console.log('[PrismAPI] calculateParameterMinMax - END');
+  }
+
+  /**
+   * Public method to recalculate parameter min/max values
+   * Useful after adding new parameters (like PCA components) to nodes
+   */
+  public recalculateParameterMinMax(nodes: NodeData[]): void {
+    this.calculateParameterMinMax(nodes);
   }
 
   /**

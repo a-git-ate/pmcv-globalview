@@ -285,6 +285,251 @@ export class Graph2D {
     console.log(adjustedData);
   }
 
+  /**
+   * Perform PCA on selected parameters and node types
+   * @param selectedParams Array of parameter objects with category, paramName, and nodeTypes
+   */
+  public doPCAWithSelection(selectedParams: Array<{category: string, paramName: string, nodeTypes: Set<'s' | 't'>}>): void {
+    if (this.nodes.length === 0) {
+      console.warn('[Graph2D] No nodes available for PCA');
+      return;
+    }
+
+    if (selectedParams.length < 2) {
+      console.warn('[Graph2D] PCA requires at least 2 parameters');
+      alert('Please select at least 2 parameters for PCA');
+      return;
+    }
+
+    console.log('[Graph2D] Starting PCA with selected parameters:', selectedParams);
+
+    // 1. Clear existing PCA data from all nodes
+    this.clearPCAData();
+
+    // 2. Get selected node types from checkboxes
+    const sNodeCheckbox = document.getElementById('pca-node-type-s') as HTMLInputElement;
+    const tNodeCheckbox = document.getElementById('pca-node-type-t') as HTMLInputElement;
+    const includeS = sNodeCheckbox?.checked ?? true;
+    const includeT = tNodeCheckbox?.checked ?? true;
+
+    // 3. Build data matrix from selected nodes and parameters
+    const { dataMatrix, nodeIndices, parameterNames } = this.buildPCADataMatrix(
+      selectedParams,
+      includeS,
+      includeT
+    );
+
+    if (dataMatrix.length === 0) {
+      console.warn('[Graph2D] No valid data for PCA');
+      alert('No valid numeric data found for selected parameters');
+      return;
+    }
+
+    console.log(`[Graph2D] PCA data matrix: ${dataMatrix.length} nodes × ${parameterNames.length} parameters`);
+
+    // 4. Perform PCA
+    const vectors = PCA.getEigenVectors(dataMatrix);
+
+    if (vectors.length < 3) {
+      console.error('[Graph2D] Not enough principal components');
+      alert('PCA failed: not enough principal components generated');
+      return;
+    }
+
+    // Get first 3 principal components
+    const pc1 = vectors[0];
+    const pc2 = vectors[1];
+    const pc3 = vectors[2];
+
+    // Compute adjusted data (project data onto principal components)
+    const adjustedData = PCA.computeAdjustedData(dataMatrix, pc1, pc2, pc3);
+
+    // Debug: check the structure of adjustedData
+    console.log('[Graph2D] PCA adjustedData structure:', adjustedData);
+
+    // formattedAdjustedData is transposed: columns are PCs, rows are observations
+    // We need rows to be observations (nodes), columns to be PCs
+    let pcData = adjustedData.formattedAdjustedData;
+
+    if (!pcData || pcData.length === 0) {
+      // Fallback to adjustedData
+      pcData = adjustedData.adjustedData;
+    }
+
+    if (!pcData || pcData.length === 0) {
+      console.error('[Graph2D] PCA adjustedData is empty or undefined:', adjustedData);
+      alert('PCA failed: no data generated');
+      return;
+    }
+
+    console.log('[Graph2D] PC data initial dimensions:', pcData.length, 'x', pcData[0]?.length);
+
+    // Check if data needs to be transposed
+    // formattedAdjustedData has shape: [numPCs][numNodes]
+    // We need: [numNodes][numPCs]
+    if (pcData.length === 3 && pcData[0].length === nodeIndices.length) {
+      // Data is transposed, fix it
+      console.log('[Graph2D] Transposing PC data from [3 x', nodeIndices.length, '] to [', nodeIndices.length, 'x 3]');
+      const transposed: number[][] = [];
+      for (let i = 0; i < nodeIndices.length; i++) {
+        transposed.push([pcData[0][i], pcData[1][i], pcData[2][i]]);
+      }
+      pcData = transposed;
+    }
+
+    console.log('[Graph2D] PCA eigenvalues:', [pc1.eigenvalue, pc2.eigenvalue, pc3.eigenvalue]);
+    console.log('[Graph2D] Variance explained:',
+      PCA.computePercentageExplained(vectors, pc1, pc2, pc3).toFixed(2) + '%');
+    console.log('[Graph2D] Final PC data dimensions:', pcData.length, 'x', pcData[0]?.length);
+
+    // 5. Add PC values as parameters to nodes
+    this.addPCParametersToNodes(nodeIndices, pcData);
+
+    // 6. Apply parameter view with PC1 (x), PC2 (y), PC3 (color)
+    this.applyPCAView();
+
+    console.log('[Graph2D] PCA complete');
+  }
+
+  /**
+   * Clear existing PCA data from all nodes
+   */
+  private clearPCAData(): void {
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+      if (node.parameters['PCA']) {
+        delete node.parameters['PCA'];
+      }
+    }
+    console.log('[Graph2D] Cleared existing PCA data');
+  }
+
+  /**
+   * Build data matrix for PCA from selected parameters
+   */
+  private buildPCADataMatrix(
+    selectedParams: Array<{category: string, paramName: string, nodeTypes: Set<'s' | 't'>}>,
+    includeS: boolean,
+    includeT: boolean
+  ): { dataMatrix: number[][], nodeIndices: number[], parameterNames: string[] } {
+    const dataMatrix: number[][] = [];
+    const nodeIndices: number[] = [];
+    const parameterNames: string[] = selectedParams.map(p => `${p.category}::${p.paramName}`);
+
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+
+      // Skip node if its type is not selected
+      if (node.type === 's' && !includeS) continue;
+      if (node.type === 't' && !includeT) continue;
+
+      // Check if node has all selected parameters for its type
+      const rowData: number[] = [];
+      let validRow = true;
+
+      for (const param of selectedParams) {
+        // Check if this parameter applies to this node type
+        if (!param.nodeTypes.has(node.type)) {
+          validRow = false;
+          break;
+        }
+
+        // Get parameter value
+        const value = PrismAPI.getParameterValue(node, param.paramName);
+        const numValue = parseFloat(value);
+
+        if (isNaN(numValue)) {
+          validRow = false;
+          break;
+        }
+
+        rowData.push(numValue);
+      }
+
+      if (validRow && rowData.length === selectedParams.length) {
+        dataMatrix.push(rowData);
+        nodeIndices.push(i);
+      }
+    }
+
+    return { dataMatrix, nodeIndices, parameterNames };
+  }
+
+  /**
+   * Add principal component values as parameters to nodes
+   */
+  private addPCParametersToNodes(nodeIndices: number[], pcData: number[][]): void {
+    if (!pcData || pcData.length === 0) {
+      console.error('[Graph2D] pcData is empty or undefined');
+      throw new Error('PCA data is empty');
+    }
+
+    for (let i = 0; i < nodeIndices.length; i++) {
+      const nodeIdx = nodeIndices[i];
+      const node = this.nodes[nodeIdx];
+
+      if (!pcData[i]) {
+        console.error(`[Graph2D] pcData[${i}] is undefined. pcData length: ${pcData.length}, nodeIndices length: ${nodeIndices.length}`);
+        throw new Error(`PCA data missing for node index ${i}`);
+      }
+
+      // Create PCA category if it doesn't exist
+      if (!node.parameters['PCA']) {
+        node.parameters['PCA'] = {};
+      }
+
+      // Add PC1, PC2, PC3 values
+      // pcData[i] is an array: [PC1, PC2, PC3, ...]
+      node.parameters['PCA']['PC1'] = pcData[i][0] ?? 0;
+      node.parameters['PCA']['PC2'] = pcData[i][1] ?? 0;
+      node.parameters['PCA']['PC3'] = pcData[i][2] ?? 0;
+    }
+
+    console.log(`[Graph2D] Added PC1, PC2, PC3 parameters to ${nodeIndices.length} nodes`);
+  }
+
+  /**
+   * Apply parameter view with PC1 (x-axis), PC2 (y-axis), PC3 (color)
+   */
+  private applyPCAView(): void {
+    // Update parameter metadata to include PCA parameters
+    const metadata = this.prismAPI.getParameterMetadata();
+    if (metadata) {
+      // Add PCA category to both s and t nodes
+      if (!metadata.s) metadata.s = {};
+      if (!metadata.s['PCA']) {
+        metadata.s['PCA'] = {
+          PC1: { type: 'number', status: 'active', min: 0, max: 1 },
+          PC2: { type: 'number', status: 'active', min: 0, max: 1 },
+          PC3: { type: 'number', status: 'active', min: 0, max: 1 }
+        };
+      }
+
+      if (!metadata.t) metadata.t = {};
+      if (!metadata.t['PCA']) {
+        metadata.t['PCA'] = {
+          PC1: { type: 'number', status: 'active', min: 0, max: 1 },
+          PC2: { type: 'number', status: 'active', min: 0, max: 1 },
+          PC3: { type: 'number', status: 'active', min: 0, max: 1 }
+        };
+      }
+    }
+
+    // Recalculate parameter min/max to include PCA parameters
+    // This is done by converting nodes to internal format and back
+    const allNodes = this.nodes;
+    this.prismAPI.recalculateParameterMinMax(allNodes);
+
+    // Update UI dropdowns with new PCA parameters
+    const paramLabels = this.prismAPI.getParameterLabels('s');
+    this.ui.updateParameterSelections(paramLabels);
+
+    // Apply parameter view with PC1 (x), PC2 (y), PC3 (color)
+    this.rearrangeByParameters('PCA::PC1', 'PCA::PC2', 'PCA::PC3');
+
+    console.log('[Graph2D] Applied PCA view (PC1=X, PC2=Y, PC3=Color)');
+  }
+
   public flattenParameters(): {parameterOrder: string[], parameterMatrix: number[][]} {
     if(this.nodes.length === 0) return {parameterOrder: [], parameterMatrix: []};
     const parameterOrder: string[] = [];
@@ -1324,31 +1569,34 @@ export class Graph2D {
       return;
     }
 
-    // Filter out invalid edges (edges pointing to non-existent nodes)
-    const validEdges = this.edges.filter(edge => {
-      return edge.from >= 0 && edge.from < this.nodes.length &&
-             edge.to >= 0 && edge.to < this.nodes.length &&
-             this.nodes[edge.from] && this.nodes[edge.to];
-    });
-
-    if (validEdges.length === 0) {
-      return;
-    }
-
-    if (validEdges.length < this.edges.length) {
-    }
-
-
-    // Calculate edge extent for debugging
+    // Filter out invalid edges and calculate extent in a single pass
+    const validEdges: typeof this.edges = [];
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    validEdges.forEach(edge => {
+
+    for (let i = 0; i < this.edges.length; i++) {
+      const edge = this.edges[i];
+
+      // Validate edge indices
+      if (edge.from < 0 || edge.from >= this.nodes.length ||
+          edge.to < 0 || edge.to >= this.nodes.length ||
+          !this.nodes[edge.from] || !this.nodes[edge.to]) {
+        continue;
+      }
+
+      validEdges.push(edge);
+
+      // Calculate extent while we're iterating
       const fromNode = this.nodes[edge.from];
       const toNode = this.nodes[edge.to];
       minX = Math.min(minX, fromNode.x, toNode.x);
       maxX = Math.max(maxX, fromNode.x, toNode.x);
       minY = Math.min(minY, fromNode.y, toNode.y);
       maxY = Math.max(maxY, fromNode.y, toNode.y);
-    });
+    }
+
+    if (validEdges.length === 0) {
+      return;
+    }
 
     // Create a group to hold both lines and arrows
     const edgeGroup = new THREE.Group();
