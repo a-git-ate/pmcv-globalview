@@ -154,6 +154,7 @@ export class PrismAPI {
         x: 0,
         y: 0,
         cluster: 0,
+        degree: 0, // Initialize degree counter
         parameters: node.details || {}
       };
     });
@@ -173,6 +174,7 @@ export class PrismAPI {
         y: 0,
         type: 't',
         cluster: 0,
+        degree: 0, // Initialize degree counter
         parameters: node.details || {},
         name: node.name || String(node.id)
       };
@@ -180,8 +182,12 @@ export class PrismAPI {
 
     // Combine nodes and populate nominal values
     const allNodes = [...s_nodes, ...t_nodes];
-    this.addNominalValuesToParameterMetadata(allNodes);;
+    this.addNominalValuesToParameterMetadata(allNodes);
 
+    // Calculate and cache min/max values for all numeric parameters
+    this.calculateParameterMinMax(allNodes);
+
+    // Process edges and calculate degrees in a single pass
     const edges: EdgeData[] = [];
     for (let i = 0; i < data.edges.length; i++) {
       const edge = data.edges[i];
@@ -197,6 +203,10 @@ export class PrismAPI {
           to: toIndex,
           label: edge.label || ''
         });
+
+        // Increment degree for both nodes
+        allNodes[fromIndex].degree!++;
+        allNodes[toIndex].degree!++;
       }
     }
 
@@ -233,66 +243,231 @@ export class PrismAPI {
   }
   private addNominalValuesToParameterMetadata(nodes: NodeData[]): void {
     if (!this.parameterMetadata) return;
-    console.log('[PrismAPI] addNominalValuesToParameterMetadata - START');
+
+    const DEBUG = false; // Set to true to enable verbose logging
+    if (DEBUG) console.log('[PrismAPI] addNominalValuesToParameterMetadata - START');
 
     // Get nominal params structure from metadata
     const [sNominalParams, tNominalParams] = this.getNominalParams();
 
-    // Initialize all nominal params with "undefined" as a possible value
-    for (const paramName of Object.keys(sNominalParams)) {
-      sNominalParams[paramName].push('undefined');
+    // Early exit if no nominal params
+    const sNominalKeys = Object.keys(sNominalParams);
+    const tNominalKeys = Object.keys(tNominalParams);
+    if (sNominalKeys.length === 0 && tNominalKeys.length === 0) {
+      return;
     }
-    for (const paramName of Object.keys(tNominalParams)) {
-      tNominalParams[paramName].push('undefined');
+
+    // Use Sets for much faster duplicate checking
+    const sNominalSets: Record<string, Set<string>> = {};
+    const tNominalSets: Record<string, Set<string>> = {};
+
+    // Initialize with "undefined" value
+    for (let i = 0; i < sNominalKeys.length; i++) {
+      const paramName = sNominalKeys[i];
+      sNominalSets[paramName] = new Set(['undefined']);
+    }
+    for (let i = 0; i < tNominalKeys.length; i++) {
+      const paramName = tNominalKeys[i];
+      tNominalSets[paramName] = new Set(['undefined']);
+    }
+
+    // For large graphs, use sampling strategy to avoid scanning all nodes
+    const SAMPLE_THRESHOLD = 50000;
+    const SAMPLE_SIZE = 10000;
+    const shouldSample = nodes.length > SAMPLE_THRESHOLD;
+    const nodesToScan = shouldSample ? Math.min(SAMPLE_SIZE, nodes.length) : nodes.length;
+
+    if (shouldSample && DEBUG) {
+      console.log(`[PrismAPI] Large graph detected (${nodes.length} nodes). Sampling ${nodesToScan} nodes for nominal values.`);
     }
 
     // Populate nominal params with actual values from nodes
-    for (const node of nodes) {
-      const isStateNode = node.type === 's';
-      const nominalParams = isStateNode ? sNominalParams : tNominalParams;
+    // Use direct property access instead of Object.entries() for better performance
+    for (let i = 0; i < nodesToScan; i++) {
+      const node = nodes[i];
+      const nominalSets = node.type === 's' ? sNominalSets : tNominalSets;
+      const nominalKeys = node.type === 's' ? sNominalKeys : tNominalKeys;
 
-      for (const [categoryName, category] of Object.entries(node.parameters || {})) {
-        for (const [paramName, paramValue] of Object.entries(category as any)) {
-          if (Object.keys(nominalParams).includes(paramName)) {
-            const valueStr = String(paramValue);
-            if (!nominalParams[paramName].includes(valueStr)) {
-              nominalParams[paramName].push(valueStr);
-            }
+      if (!node.parameters) continue;
+
+      // Direct iteration without Object.entries()
+      for (const categoryName in node.parameters) {
+        if (!node.parameters.hasOwnProperty(categoryName)) continue;
+
+        const category = node.parameters[categoryName];
+        if (!category || typeof category !== 'object') continue;
+
+        // Check each nominal parameter directly
+        for (let j = 0; j < nominalKeys.length; j++) {
+          const paramName = nominalKeys[j];
+          if (paramName in category) {
+            const valueStr = String(category[paramName]);
+            nominalSets[paramName].add(valueStr);
           }
         }
       }
     }
 
-    console.log('[PrismAPI] sNominalParams:', sNominalParams);
-    console.log('[PrismAPI] tNominalParams:', tNominalParams);
-    console.log('[PrismAPI] parameterMetadata before modification:', JSON.stringify(this.parameterMetadata, null, 2));
+    // Convert Sets back to arrays
+    for (let i = 0; i < sNominalKeys.length; i++) {
+      const paramName = sNominalKeys[i];
+      sNominalParams[paramName] = Array.from(sNominalSets[paramName]);
+    }
+    for (let i = 0; i < tNominalKeys.length; i++) {
+      const paramName = tNominalKeys[i];
+      tNominalParams[paramName] = Array.from(tNominalSets[paramName]);
+    }
 
+    if (DEBUG) {
+      console.log('[PrismAPI] sNominalParams:', sNominalParams);
+      console.log('[PrismAPI] tNominalParams:', tNominalParams);
+    }
+
+    // Update metadata - optimized with direct access
     for (const type of ['s', 't'] as const) {
-      console.log(`[PrismAPI] Processing node type: ${type}`);
       const nodeInfo = this.parameterMetadata[type];
       if (!nodeInfo) continue;
 
-      for (const category of Object.keys(nodeInfo)) {
-        const params = nodeInfo[category];
-        console.log(`[PrismAPI]  Processing category: ${category}`);
+      const nominalParams = type === 's' ? sNominalParams : tNominalParams;
+      const nominalKeys = type === 's' ? sNominalKeys : tNominalKeys;
 
-        for (const paramName of Object.keys(params)){
-          console.log(`[PrismAPI]   Processing parameter: ${paramName}`);
-          if (type === 's' && Object.keys(sNominalParams).includes(paramName)) {
-            params[paramName].possibleValues = sNominalParams[paramName];
-            console.log(`[PrismAPI]   Added possible values for s param ${paramName}:`, params[paramName].possibleValues);
-            console.log(`[PrismAPI]   Verification - this.parameterMetadata.s[${category}][${paramName}].possibleValues:`, this.parameterMetadata.s?.[category]?.[paramName]?.possibleValues);
-          }else if (type === 't' && Object.keys(tNominalParams).includes(paramName)) {
-            params[paramName].possibleValues = tNominalParams[paramName];
-            console.log(`[PrismAPI]   Added possible values for t param ${paramName}:`, params[paramName].possibleValues);
-            console.log(`[PrismAPI]   Verification - this.parameterMetadata.t[${category}][${paramName}].possibleValues:`, this.parameterMetadata.t?.[category]?.[paramName]?.possibleValues);
+      // Direct iteration without Object.keys()
+      for (const category in nodeInfo) {
+        if (!nodeInfo.hasOwnProperty(category)) continue;
+
+        const params = nodeInfo[category];
+
+        for (let i = 0; i < nominalKeys.length; i++) {
+          const paramName = nominalKeys[i];
+          if (paramName in params) {
+            params[paramName].possibleValues = nominalParams[paramName];
           }
         }
       }
     }
 
-    console.log('[PrismAPI] parameterMetadata after modification:', JSON.stringify(this.parameterMetadata, null, 2));
-    console.log('[PrismAPI] addNominalValuesToParameterMetadata - END');
+    if (DEBUG) {
+      console.log('[PrismAPI] addNominalValuesToParameterMetadata - END');
+    }
+  }
+
+  /**
+   * Calculate actual min/max values for all numeric parameters from node data
+   * and update the parameterMetadata cache
+   */
+  private calculateParameterMinMax(nodes: NodeData[]): void {
+    if (!this.parameterMetadata || nodes.length === 0) return;
+
+    const DEBUG = false; // Set to true to enable verbose logging
+    if (DEBUG) console.log('[PrismAPI] calculateParameterMinMax - START');
+
+    // Track min/max for each parameter across all nodes
+    const paramStats: Record<string, { min: number; max: number; category: string; nodeType: 's' | 't' }> = {};
+
+    // Single pass through all nodes to calculate min/max
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (!node.parameters) continue;
+
+      const nodeType = node.type;
+
+      // Iterate through categories
+      for (const categoryName in node.parameters) {
+        if (!node.parameters.hasOwnProperty(categoryName)) continue;
+
+        const category = node.parameters[categoryName];
+        if (!category || typeof category !== 'object') continue;
+
+        // Iterate through parameters in this category
+        for (const paramName in category) {
+          if (!category.hasOwnProperty(paramName)) continue;
+
+          const value = category[paramName];
+
+          // Only process numeric values
+          if (typeof value !== 'number' || !isFinite(value)) continue;
+
+          const key = `${nodeType}::${categoryName}::${paramName}`;
+
+          if (!paramStats[key]) {
+            paramStats[key] = {
+              min: value,
+              max: value,
+              category: categoryName,
+              nodeType: nodeType
+            };
+          } else {
+            paramStats[key].min = Math.min(paramStats[key].min, value);
+            paramStats[key].max = Math.max(paramStats[key].max, value);
+          }
+        }
+      }
+    }
+
+    // Update parameterMetadata with calculated min/max values
+    for (const key in paramStats) {
+      if (!paramStats.hasOwnProperty(key)) continue;
+
+      const [nodeType, categoryName, paramName] = key.split('::');
+      const stats = paramStats[key];
+
+      const nodeInfo = this.parameterMetadata[nodeType as 's' | 't'];
+      if (!nodeInfo) continue;
+
+      const categoryParams = nodeInfo[categoryName];
+      if (!categoryParams) continue;
+
+      const param = categoryParams[paramName];
+      if (!param) continue;
+
+      // Update min/max only if they are numeric parameters
+      if (param.type === 'number') {
+        param.min = stats.min;
+        param.max = stats.max;
+
+        if (DEBUG) {
+          console.log(`[PrismAPI] Updated ${nodeType}/${categoryName}/${paramName}: min=${stats.min}, max=${stats.max}`);
+        }
+      }
+    }
+
+    if (DEBUG) console.log('[PrismAPI] calculateParameterMinMax - END');
+  }
+
+  /**
+   * Get cached min/max values for a specific parameter
+   * Returns null if parameter not found or not numeric
+   */
+  public getParameterMinMax(paramName: string, nodeType?: 's' | 't'): { min: number; max: number } | null {
+    if (!this.parameterMetadata) return null;
+
+    // Search through node types
+    const nodeTypes: Array<'s' | 't'> = nodeType ? [nodeType] : ['s', 't'];
+
+    for (const type of nodeTypes) {
+      const nodeInfo = this.parameterMetadata[type];
+      if (!nodeInfo) continue;
+
+      // Search through categories
+      for (const categoryName in nodeInfo) {
+        if (!nodeInfo.hasOwnProperty(categoryName)) continue;
+
+        const category = nodeInfo[categoryName];
+        if (!category || typeof category !== 'object') continue;
+
+        // Check if parameter exists in this category
+        if (paramName in category) {
+          const param = category[paramName] as ParameterMetadata;
+
+          // Return min/max only for numeric parameters
+          if (param.type === 'number' && typeof param.min === 'number' && typeof param.max === 'number') {
+            return { min: param.min, max: param.max };
+          }
+        }
+      }
+    }
+
+    return null;
   }
 
   public getParameterLabels(type: string): Record<string, string[]> {

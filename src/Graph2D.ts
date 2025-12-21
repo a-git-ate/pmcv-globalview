@@ -587,16 +587,38 @@ export class Graph2D {
         const xParam = this.config.parameterXAxis;
         const yParam = this.config.parameterYAxis;
 
-        // Calculate min/max values for axes
-        let minX = Infinity, maxX = -Infinity;
-        let minY = Infinity, maxY = -Infinity;
+        // Use cached min/max values from PrismAPI (calculated during data loading)
+        const xRange = this.prismAPI.getParameterMinMax(xParam);
+        const yRange = this.prismAPI.getParameterMinMax(yParam);
 
-        for (let i = 0; i < this.nodes.length; i++) {
-          const node = this.nodes[i];
-          minX = Math.min(minX, PrismAPI.getParameterValue(node, xParam));
-          maxX = Math.max(maxX, PrismAPI.getParameterValue(node, xParam));
-          minY = Math.min(minY, PrismAPI.getParameterValue(node, yParam));
-          maxY = Math.max(maxY, PrismAPI.getParameterValue(node, yParam));
+        let minX = 0, maxX = 100;
+        let minY = 0, maxY = 100;
+
+        // Use cached values if available, otherwise fall back to calculating
+        if (xRange) {
+          minX = xRange.min;
+          maxX = xRange.max;
+        } else {
+          // Fallback: calculate from nodes (shouldn't happen for API-loaded data)
+          minX = Infinity; maxX = -Infinity;
+          for (let i = 0; i < this.nodes.length; i++) {
+            const val = PrismAPI.getParameterValue(this.nodes[i], xParam);
+            minX = Math.min(minX, val);
+            maxX = Math.max(maxX, val);
+          }
+        }
+
+        if (yRange) {
+          minY = yRange.min;
+          maxY = yRange.max;
+        } else {
+          // Fallback: calculate from nodes (shouldn't happen for API-loaded data)
+          minY = Infinity; maxY = -Infinity;
+          for (let i = 0; i < this.nodes.length; i++) {
+            const val = PrismAPI.getParameterValue(this.nodes[i], yParam);
+            minY = Math.min(minY, val);
+            maxY = Math.max(maxY, val);
+          }
         }
 
         const spread = Math.sqrt(nodeCount) * 0.5;
@@ -635,17 +657,36 @@ export class Graph2D {
       const xParamIndex = this.config.parameterXAxis ?? "";
       const yParamIndex = this.config.parameterYAxis ?? "";
 
-      minX = Infinity;
-      maxX = -Infinity;
-      minY = Infinity;
-      maxY = -Infinity;
+      // Use cached min/max values from PrismAPI (calculated during data loading)
+      const xRange = this.prismAPI.getParameterMinMax(xParamIndex);
+      const yRange = this.prismAPI.getParameterMinMax(yParamIndex);
 
-      for (let i = 0; i < count; i++) {
-        const node = this.nodes[i];
-        minX = Math.min(minX, PrismAPI.getParameterValue(node, xParamIndex));
-        maxX = Math.max(maxX, PrismAPI.getParameterValue(node, xParamIndex));
-        minY = Math.min(minY, PrismAPI.getParameterValue(node, yParamIndex));
-        maxY = Math.max(maxY, PrismAPI.getParameterValue(node, yParamIndex));
+      if (xRange) {
+        minX = xRange.min;
+        maxX = xRange.max;
+      } else {
+        // Fallback: calculate from nodes (shouldn't happen for API-loaded data)
+        minX = Infinity;
+        maxX = -Infinity;
+        for (let i = 0; i < count; i++) {
+          const val = PrismAPI.getParameterValue(this.nodes[i], xParamIndex);
+          minX = Math.min(minX, val);
+          maxX = Math.max(maxX, val);
+        }
+      }
+
+      if (yRange) {
+        minY = yRange.min;
+        maxY = yRange.max;
+      } else {
+        // Fallback: calculate from nodes (shouldn't happen for API-loaded data)
+        minY = Infinity;
+        maxY = -Infinity;
+        for (let i = 0; i < count; i++) {
+          const val = PrismAPI.getParameterValue(this.nodes[i], yParamIndex);
+          minY = Math.min(minY, val);
+          maxY = Math.max(maxY, val);
+        }
       }
     }
 
@@ -708,18 +749,11 @@ export class Graph2D {
       return colorCache.get(key)!;
     };
 
-    // Calculate node degrees for coloring (batch process)
-    const nodeDegrees = new Int32Array(count);
-    for (let i = 0; i < this.edges.length; i++) {
-      const edge = this.edges[i];
-      if (edge.from < count) nodeDegrees[edge.from]++;
-      if (edge.to < count) nodeDegrees[edge.to]++;
-    }
-
     // Populate colors and sizes in a single pass
+    // Use pre-calculated degrees from NodeData (calculated during parsing in PrismAPI)
     for (let i = 0; i < count; i++) {
       const nodeData = this.nodes[i];
-      const degree = nodeDegrees[i];
+      const degree = nodeData.degree ?? 0; // Use pre-calculated degree or 0 if not available
       const colorData = getColorForDegree(degree);
 
       colors[i * 3] = colorData.r;
@@ -774,17 +808,36 @@ export class Graph2D {
       const xParamIndex = this.config.parameterXAxis ?? "";
       const yParamIndex = this.config.parameterYAxis ?? "";
 
-      minX = Infinity;
-      maxX = -Infinity;
-      minY = Infinity;
-      maxY = -Infinity;
+      // Use cached min/max values from PrismAPI (calculated during data loading)
+      const xRange = this.prismAPI.getParameterMinMax(xParamIndex);
+      const yRange = this.prismAPI.getParameterMinMax(yParamIndex);
 
-      for (let i = 0; i < count; i++) {
-        const node = this.nodes[i];
-        minX = Math.min(minX, PrismAPI.getParameterValue(node, xParamIndex));
-        maxX = Math.max(maxX, PrismAPI.getParameterValue(node, xParamIndex));
-        minY = Math.min(minY, PrismAPI.getParameterValue(node, yParamIndex));
-        maxY = Math.max(maxY, PrismAPI.getParameterValue(node, yParamIndex));
+      if (xRange) {
+        minX = xRange.min;
+        maxX = xRange.max;
+      } else {
+        // Fallback: calculate from nodes (shouldn't happen for API-loaded data)
+        minX = Infinity;
+        maxX = -Infinity;
+        for (let i = 0; i < count; i++) {
+          const val = PrismAPI.getParameterValue(this.nodes[i], xParamIndex);
+          minX = Math.min(minX, val);
+          maxX = Math.max(maxX, val);
+        }
+      }
+
+      if (yRange) {
+        minY = yRange.min;
+        maxY = yRange.max;
+      } else {
+        // Fallback: calculate from nodes (shouldn't happen for API-loaded data)
+        minY = Infinity;
+        maxY = -Infinity;
+        for (let i = 0; i < count; i++) {
+          const val = PrismAPI.getParameterValue(this.nodes[i], yParamIndex);
+          minY = Math.min(minY, val);
+          maxY = Math.max(maxY, val);
+        }
       }
     }
 
