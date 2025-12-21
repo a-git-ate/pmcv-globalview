@@ -52,7 +52,7 @@ export class PrismAPI {
       console.log(`[PrismAPI] Fetching simple graph from: ${url}`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
 
       const response = await fetch(url, {
         method: 'GET',

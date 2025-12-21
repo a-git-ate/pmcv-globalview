@@ -335,7 +335,6 @@ export class Graph2D {
     //console.log(`[Filter Nodes] Visible: ${nodesVisible}, Hidden: ${nodesHidden} (total: ${this.nodes.length})`);
     alphas.needsUpdate = true;
     this.renderer?.render(this.scene, this.camera);
-    this.doPCA();
   }
 
 

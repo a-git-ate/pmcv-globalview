@@ -18,6 +18,7 @@ export class ProjectManager {
   private resetButton: HTMLButtonElement | null = null;
   private toggleParamStatusButton: HTMLButtonElement | null = null;
   private paramStatusContent: HTMLElement | null = null;
+  private PCAOptionsContent: HTMLElement | null = null;
 
   constructor(graph: Graph2D, prismAPI: PrismAPI) {
     this.graph = graph;
@@ -33,6 +34,7 @@ export class ProjectManager {
     this.resetButton = document.getElementById('btn-reset-model') as HTMLButtonElement;
     this.toggleParamStatusButton = document.getElementById('btn-toggle-param-status') as HTMLButtonElement;
     this.paramStatusContent = document.getElementById('param-status-content');
+    this.PCAOptionsContent = document.getElementById('pca-content');
   }
 
   private setupEventListeners(): void {
@@ -160,6 +162,7 @@ export class ProjectManager {
 
       this.displayParameterStatus(mergedStatus);
 
+      this.populatePCAOptions(mergedStatus);
       // Show parameter status section when selecting a project
       this.showParameterStatus();
 
@@ -272,6 +275,250 @@ export class ProjectManager {
         }
       }
     }
+  }
+
+  private populatePCAOptions(status: any): void {
+    if (!this.PCAOptionsContent || !status?.info) return;
+
+    this.PCAOptionsContent.innerHTML = '';
+
+    // Collect all unique parameters from both s and t nodes
+    const allParameters = new Map<string, { inS: boolean; inT: boolean; category: string }>();
+
+    // Process s nodes
+    if (status.info.s) {
+      for (const [categoryName, categoryParams] of Object.entries(status.info.s)) {
+        if (typeof categoryParams !== 'object' || categoryParams === null) continue;
+
+        for (const paramName of Object.keys(categoryParams)) {
+          const key = `${categoryName}::${paramName}`;
+          if (!allParameters.has(key)) {
+            allParameters.set(key, { inS: true, inT: false, category: categoryName });
+          } else {
+            allParameters.get(key)!.inS = true;
+          }
+        }
+      }
+    }
+
+    // Process t nodes
+    if (status.info.t) {
+      for (const [categoryName, categoryParams] of Object.entries(status.info.t)) {
+        if (typeof categoryParams !== 'object' || categoryParams === null) continue;
+
+        for (const paramName of Object.keys(categoryParams)) {
+          const key = `${categoryName}::${paramName}`;
+          if (!allParameters.has(key)) {
+            allParameters.set(key, { inS: false, inT: true, category: categoryName });
+          } else {
+            allParameters.get(key)!.inT = true;
+          }
+        }
+      }
+    }
+
+    // Group parameters by category
+    const paramsByCategory = new Map<string, Array<{ paramName: string; inS: boolean; inT: boolean }>>();
+
+    for (const [key, paramInfo] of allParameters.entries()) {
+      const [categoryName, paramName] = key.split('::');
+
+      if (!paramsByCategory.has(categoryName)) {
+        paramsByCategory.set(categoryName, []);
+      }
+
+      paramsByCategory.get(categoryName)!.push({
+        paramName,
+        inS: paramInfo.inS,
+        inT: paramInfo.inT
+      });
+    }
+
+    // Create table rows grouped by category
+    for (const [categoryName, params] of paramsByCategory.entries()) {
+      // Create category header row
+      const categoryRow = document.createElement('tr');
+      categoryRow.className = 'pca-category-row';
+
+      const categoryCell = document.createElement('td');
+      categoryCell.className = 'pca-category-name';
+      categoryCell.textContent = categoryName;
+      categoryCell.colSpan = 3;
+      categoryRow.appendChild(categoryCell);
+
+      this.PCAOptionsContent.appendChild(categoryRow);
+
+      // Create parameter rows for this category
+      for (const param of params) {
+        const row = document.createElement('tr');
+        row.className = 'pca-param-row';
+        row.dataset.inS = String(param.inS);
+        row.dataset.inT = String(param.inT);
+
+        // Parameter name cell (indented)
+        const nameCell = document.createElement('td');
+        nameCell.className = 'pca-param-name';
+        nameCell.textContent = param.paramName;
+        row.appendChild(nameCell);
+
+        // S node checkbox cell
+        const sCell = document.createElement('td');
+        sCell.className = 'pca-checkbox-cell';
+        if (param.inS) {
+          const sCheckbox = document.createElement('input');
+          sCheckbox.type = 'checkbox';
+          sCheckbox.className = 'pca-param-checkbox';
+          sCheckbox.dataset.nodeType = 's';
+          sCheckbox.dataset.category = categoryName;
+          sCheckbox.dataset.paramName = param.paramName;
+          sCheckbox.checked = true;
+          sCheckbox.addEventListener('change', () => this.updatePCAApplyButton());
+          sCell.appendChild(sCheckbox);
+        }
+        row.appendChild(sCell);
+
+        // T node checkbox cell
+        const tCell = document.createElement('td');
+        tCell.className = 'pca-checkbox-cell';
+        if (param.inT) {
+          const tCheckbox = document.createElement('input');
+          tCheckbox.type = 'checkbox';
+          tCheckbox.className = 'pca-param-checkbox';
+          tCheckbox.dataset.nodeType = 't';
+          tCheckbox.dataset.category = categoryName;
+          tCheckbox.dataset.paramName = param.paramName;
+          tCheckbox.checked = true;
+          tCheckbox.addEventListener('change', () => this.updatePCAApplyButton());
+          tCell.appendChild(tCheckbox);
+        }
+        row.appendChild(tCell);
+
+        this.PCAOptionsContent.appendChild(row);
+      }
+    }
+
+    // Setup node type checkbox listeners
+    this.setupPCANodeTypeListeners();
+
+    // Initial state update
+    this.updatePCATableState();
+  }
+
+  /**
+   * Setup event listeners for node type checkboxes in PCA table header
+   */
+  private setupPCANodeTypeListeners(): void {
+    const sNodeTypeCheckbox = document.getElementById('pca-node-type-s') as HTMLInputElement;
+    const tNodeTypeCheckbox = document.getElementById('pca-node-type-t') as HTMLInputElement;
+
+    if (sNodeTypeCheckbox) {
+      sNodeTypeCheckbox.addEventListener('change', () => this.updatePCATableState());
+    }
+
+    if (tNodeTypeCheckbox) {
+      tNodeTypeCheckbox.addEventListener('change', () => this.updatePCATableState());
+    }
+  }
+
+  /**
+   * Update PCA table state based on node type checkbox selections
+   */
+  private updatePCATableState(): void {
+    const sNodeTypeCheckbox = document.getElementById('pca-node-type-s') as HTMLInputElement;
+    const tNodeTypeCheckbox = document.getElementById('pca-node-type-t') as HTMLInputElement;
+
+    if (!sNodeTypeCheckbox || !tNodeTypeCheckbox || !this.PCAOptionsContent) return;
+
+    const sChecked = sNodeTypeCheckbox.checked;
+    const tChecked = tNodeTypeCheckbox.checked;
+
+    // Only process parameter rows, not category header rows
+    const rows = this.PCAOptionsContent.querySelectorAll('tr.pca-param-row');
+
+    rows.forEach(row => {
+      const rowElement = row as HTMLElement;
+      const inS = rowElement.dataset.inS === 'true';
+      const inT = rowElement.dataset.inT === 'true';
+      const inBoth = inS && inT;
+
+      const sCheckbox = rowElement.querySelector('input[data-node-type="s"]') as HTMLInputElement;
+      const tCheckbox = rowElement.querySelector('input[data-node-type="t"]') as HTMLInputElement;
+
+      // Case 1: Both node types checked - only parameters in both are active
+      if (sChecked && tChecked) {
+        if (inBoth) {
+          // Enable both checkboxes
+          if (sCheckbox) {
+            sCheckbox.disabled = false;
+          }
+          if (tCheckbox) {
+            tCheckbox.disabled = false;
+          }
+          rowElement.style.opacity = '1';
+        } else {
+          // Disable and uncheck
+          if (sCheckbox) {
+            sCheckbox.disabled = true;
+            sCheckbox.checked = false;
+          }
+          if (tCheckbox) {
+            tCheckbox.disabled = true;
+            tCheckbox.checked = false;
+          }
+          rowElement.style.opacity = '0.4';
+        }
+      }
+      // Case 2: Only S checked
+      else if (sChecked && !tChecked) {
+        if (sCheckbox) {
+          sCheckbox.disabled = false;
+        }
+        if (tCheckbox) {
+          tCheckbox.disabled = true;
+          tCheckbox.checked = false;
+        }
+        rowElement.style.opacity = inS ? '1' : '0.4';
+      }
+      // Case 3: Only T checked
+      else if (!sChecked && tChecked) {
+        if (sCheckbox) {
+          sCheckbox.disabled = true;
+          sCheckbox.checked = false;
+        }
+        if (tCheckbox) {
+          tCheckbox.disabled = false;
+        }
+        rowElement.style.opacity = inT ? '1' : '0.4';
+      }
+      // Case 4: Both unchecked
+      else {
+        if (sCheckbox) {
+          sCheckbox.disabled = true;
+          sCheckbox.checked = false;
+        }
+        if (tCheckbox) {
+          tCheckbox.disabled = true;
+          tCheckbox.checked = false;
+        }
+        rowElement.style.opacity = '0.4';
+      }
+    });
+
+    // Update apply button state
+    this.updatePCAApplyButton();
+  }
+
+  /**
+   * Update the state of the Apply PCA button based on checked checkboxes
+   */
+  private updatePCAApplyButton(): void {
+    const applyButton = document.getElementById('btn-apply-pca') as HTMLButtonElement;
+    if (!applyButton) return;
+
+    const checkedCheckboxes = document.querySelectorAll('.pca-param-checkbox:checked:not(:disabled)');
+
+    // Enable button only if at least 2 checkboxes are checked
+    applyButton.disabled = checkedCheckboxes.length < 2;
   }
 
   /**

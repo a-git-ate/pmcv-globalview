@@ -27,6 +27,8 @@ export class UIManager {
       'debug-renderer-info', 'debug-memory-info',
       'debug-render-time', 'debug-fps',
       'debug-zoom', 'debug-pan',
+      // PCA menu elements
+      'btn-toggle-pca', 'pca-menu', 'btn-close-pca',
       // Parameter status (now in controls)
       'btn-toggle-param-status', 'param-status-content'
     ];
@@ -79,6 +81,10 @@ export class UIManager {
     // Debug menu controls
     this.addClickListener('btn-toggle-debug', () => this.toggleDebugMenu());
     this.addClickListener('btn-close-debug', () => this.closeDebugMenu());
+
+    // PCA menu controls
+    this.addClickListener('btn-toggle-pca', () => this.togglePCAMenu());
+    this.addClickListener('btn-close-pca', () => this.closePCAMenu());
   }
 
   private addClickListener(elementId: string, handler: () => void): void {
@@ -262,6 +268,26 @@ export class UIManager {
     const debugMenu = this.getElement('debug-menu');
     if (debugMenu) {
       debugMenu.classList.add('hidden');
+    }
+  }
+
+  /**
+   * Toggle PCA menu visibility
+   */
+  public togglePCAMenu(): void {
+    const pcaMenu = this.getElement('pca-menu');
+    if (pcaMenu) {
+      pcaMenu.classList.toggle('hidden');
+    }
+  }
+
+  /**
+   * Close PCA menu
+   */
+  public closePCAMenu(): void {
+    const pcaMenu = this.getElement('pca-menu');
+    if (pcaMenu) {
+      pcaMenu.classList.add('hidden');
     }
   }
 

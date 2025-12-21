@@ -115,6 +115,17 @@ body {
   background: #d35400;
 }
 
+.pca-button {
+  background: #3498db;
+  border: 1px solid #2980b9;
+  padding: 8px 20px;
+  font-weight: bold;
+}
+
+.pca-button:hover {
+  background: #2980b9;
+}
+
 /* Parameter Status (now integrated in controls) */
 #param-status-content {
   padding: 5px;
@@ -216,7 +227,20 @@ body {
   margin-top: 0;
   padding-top: 0;
 }
-
+#pca-menu {
+  position: fixed;
+  top: 45px;
+  left: 0;
+  width: 320px;
+  max-height: calc(100vh - 45px);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.15);
+  z-index: 150;
+  overflow-y: auto;
+  border-right: 1px solid #ddd;
+  margin-top: 0;
+  padding-top: 0;
+}
 #debug-content {
   padding: 15px;
 }
@@ -362,4 +386,89 @@ button:disabled {
 
 .param-nominal-button.filtered{
   background-color: #aaa;
+}
+
+/* PCA Table Styling */
+#pca-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+#pca-table thead th {
+  background: #34495e;
+  color: white;
+  padding: 8px;
+  text-align: left;
+  font-weight: bold;
+}
+
+.pca-type-section th {
+  border-bottom: 2px solid #2c3e50;
+}
+
+.pca-section-title {
+  text-align: left !important;
+}
+
+.pca-category-row {
+  background: #ecf0f1;
+}
+
+.pca-category-name {
+  font-weight: bold;
+  font-size: 11px;
+  color: #2c3e50;
+  padding: 8px 10px;
+  border-top: 1px solid #bdc3c7;
+  border-bottom: 1px solid #bdc3c7;
+}
+
+.pca-param-row {
+  transition: opacity 0.2s;
+}
+
+.pca-param-row:hover {
+  background: #f8f9fa;
+}
+
+.pca-param-name {
+  padding: 6px 10px 6px 25px;
+  color: #34495e;
+  font-size: 11px;
+}
+
+.pca-checkbox-cell {
+  text-align: center;
+  padding: 6px;
+  width: 50px;
+}
+
+.pca-param-checkbox {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+}
+
+.pca-param-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+#btn-apply-pca {
+  width: 100%;
+  margin-top: 15px;
+  padding: 10px;
+  font-weight: bold;
+  background: #27ae60;
+  border-color: #229954;
+}
+
+#btn-apply-pca:hover:not(:disabled) {
+  background: #229954;
+}
+
+#btn-apply-pca:disabled {
+  background: #95a5a6;
+  border-color: #7f8c8d;
 }
