@@ -572,9 +572,16 @@ export class ProjectManager {
 
     console.log('[ProjectManager] Selected parameters for PCA:', selectedParams);
 
+    // Show progress indicator
+    this.prismAPI.progressIndicator.show({ title: 'Applying PCA' });
+    this.prismAPI.progressIndicator.setIndeterminate('Computing principal components...');
+
     // Call the PCA function on Graph2D
     try {
       this.graph.doPCAWithSelection(selectedParams);
+
+      // Hide progress indicator
+      this.prismAPI.progressIndicator.hide();
 
       // Close PCA menu after successful application
       const pcaMenu = document.getElementById('pca-menu');
@@ -584,6 +591,9 @@ export class ProjectManager {
 
       this.graph.ui.updateStatus('PCA applied successfully');
     } catch (error) {
+      // Hide progress indicator on error
+      this.prismAPI.progressIndicator.hide();
+
       console.error('[ProjectManager] PCA failed:', error);
       alert('PCA failed: ' + (error instanceof Error ? error.message : String(error)));
     }

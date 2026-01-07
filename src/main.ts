@@ -1,6 +1,7 @@
 import './style.css';
 import { Graph2D } from './Graph2D.ts';
 import type { GraphConfig } from './types';
+import './progressExample'; // Load progress indicator examples
 
 // Global graph instance
 let graph: Graph2D | null = null;

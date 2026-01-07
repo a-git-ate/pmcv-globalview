@@ -304,6 +304,7 @@ export class Graph2D {
     console.log('[Graph2D] Starting PCA with selected parameters:', selectedParams);
 
     // 1. Clear existing PCA data from all nodes
+    this.prismAPI.progressIndicator.setStatus('Clearing previous PCA data...');
     this.clearPCAData();
 
     // 2. Get selected node types from checkboxes
@@ -313,6 +314,7 @@ export class Graph2D {
     const includeT = tNodeCheckbox?.checked ?? true;
 
     // 3. Build data matrix from selected nodes and parameters
+    this.prismAPI.progressIndicator.setStatus('Building data matrix...');
     const { dataMatrix, nodeIndices, parameterNames } = this.buildPCADataMatrix(
       selectedParams,
       includeS,
@@ -328,6 +330,7 @@ export class Graph2D {
     console.log(`[Graph2D] PCA data matrix: ${dataMatrix.length} nodes × ${parameterNames.length} parameters`);
 
     // 4. Perform PCA
+    this.prismAPI.progressIndicator.setStatus(`Computing eigenvectors for ${dataMatrix.length.toLocaleString()} nodes...`);
     const vectors = PCA.getEigenVectors(dataMatrix);
 
     if (vectors.length < 3) {
@@ -342,6 +345,7 @@ export class Graph2D {
     const pc3 = vectors[2];
 
     // Compute adjusted data (project data onto principal components)
+    this.prismAPI.progressIndicator.setStatus('Projecting data onto principal components...');
     const adjustedData = PCA.computeAdjustedData(dataMatrix, pc1, pc2, pc3);
 
     // Debug: check the structure of adjustedData
@@ -383,9 +387,11 @@ export class Graph2D {
     console.log('[Graph2D] Final PC data dimensions:', pcData.length, 'x', pcData[0]?.length);
 
     // 5. Add PC values as parameters to nodes
+    this.prismAPI.progressIndicator.setStatus('Adding PC values to nodes...');
     this.addPCParametersToNodes(nodeIndices, pcData);
 
     // 6. Apply parameter view with PC1 (x), PC2 (y), PC3 (color)
+    this.prismAPI.progressIndicator.setStatus('Applying PCA visualization...');
     this.applyPCAView();
 
     console.log('[Graph2D] PCA complete');
@@ -464,6 +470,7 @@ export class Graph2D {
       throw new Error('PCA data is empty');
     }
 
+    // First, add PCA parameters to nodes that were included in PCA
     for (let i = 0; i < nodeIndices.length; i++) {
       const nodeIdx = nodeIndices[i];
       const node = this.nodes[nodeIdx];
@@ -485,7 +492,22 @@ export class Graph2D {
       node.parameters['PCA']['PC3'] = pcData[i][2] ?? 0;
     }
 
-    console.log(`[Graph2D] Added PC1, PC2, PC3 parameters to ${nodeIndices.length} nodes`);
+    // Add default PCA values (0, 0, 0) to nodes NOT included in PCA
+    // This ensures all nodes can be positioned when PCA view is applied
+    const includedNodeSet = new Set(nodeIndices);
+    for (let i = 0; i < this.nodes.length; i++) {
+      if (!includedNodeSet.has(i)) {
+        const node = this.nodes[i];
+        if (!node.parameters['PCA']) {
+          node.parameters['PCA'] = {};
+        }
+        node.parameters['PCA']['PC1'] = 0;
+        node.parameters['PCA']['PC2'] = 0;
+        node.parameters['PCA']['PC3'] = 0;
+      }
+    }
+
+    console.log(`[Graph2D] Added PC1, PC2, PC3 parameters to ${nodeIndices.length} nodes (+ defaults for ${this.nodes.length - nodeIndices.length} excluded nodes)`);
   }
 
   /**
@@ -1255,6 +1277,11 @@ export class Graph2D {
     maxParam: number,
     spread: number
   ): number {
+    // Handle invalid parameter values
+    if (paramValue === null || paramValue === undefined || isNaN(paramValue)) {
+      return 0; // Default to origin for invalid values
+    }
+
     const range = maxParam - minParam;
     if (range === 0) return 0; // If no range, center at origin
 
@@ -2954,8 +2981,8 @@ export class Graph2D {
     // Add axis titles positioned at screen edges
     // Get parameter names from API metadata
     const paramLabels = this.prismAPI.getParameterLabels('s');
-    const xParamLabel = `P${xParamIndex}`;
-    const yParamLabel = `P${yParamIndex}`;
+    const xParamLabel = xParamIndex;
+    const yParamLabel = yParamIndex;
 
     // X-axis title: centered horizontally at bottom of screen
     const { texture: xTitleTexture, aspectRatio: xTitleAspect } = this.createTextTexture(xParamLabel, 64);
@@ -3089,15 +3116,33 @@ export class Graph2D {
     // First pass: find min/max values for all parameters
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
-      minX = Math.min(minX, PrismAPI.getParameterValue(node, xParam));
-      maxX = Math.max(maxX, PrismAPI.getParameterValue(node, xParam));
-      minY = Math.min(minY, PrismAPI.getParameterValue(node, yParam));
-      maxY = Math.max(maxY, PrismAPI.getParameterValue(node, yParam));
+      const xVal = PrismAPI.getParameterValue(node, xParam);
+      const yVal = PrismAPI.getParameterValue(node, yParam);
+
+      // Only update min/max if values are valid numbers
+      if (xVal !== null && xVal !== undefined && !isNaN(xVal)) {
+        minX = Math.min(minX, xVal);
+        maxX = Math.max(maxX, xVal);
+      }
+      if (yVal !== null && yVal !== undefined && !isNaN(yVal)) {
+        minY = Math.min(minY, yVal);
+        maxY = Math.max(maxY, yVal);
+      }
 
       if (colorParamIndex) {
-        minColor = Math.min(minColor, PrismAPI.getParameterValue(node, colorParamIndex));
-        maxColor = Math.max(maxColor, PrismAPI.getParameterValue(node, colorParamIndex));
+        const colorVal = PrismAPI.getParameterValue(node, colorParamIndex);
+        if (colorVal !== null && colorVal !== undefined && !isNaN(colorVal)) {
+          minColor = Math.min(minColor, colorVal);
+          maxColor = Math.max(maxColor, colorVal);
+        }
       }
+    }
+
+    // Log parameter ranges for debugging
+    console.log(`[Parameter View] X range: ${minX} to ${maxX} (${xParam})`);
+    console.log(`[Parameter View] Y range: ${minY} to ${maxY} (${yParam})`);
+    if (colorParamIndex) {
+      console.log(`[Parameter View] Color range: ${minColor} to ${maxColor} (${colorParamIndex})`);
     }
 
     // Calculate spread independently for X and Y to maintain 1:1 aspect ratio

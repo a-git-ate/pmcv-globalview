@@ -12,12 +12,14 @@ interface WorkerInput {
 }
 
 interface WorkerOutput {
-  type: 'result' | 'error';
+  type: 'result' | 'error' | 'progress';
   s_nodes?: NodeData[];
   t_nodes?: NodeData[];
   edges?: EdgeData[];
   parameterMetadata?: GraphInfo;
   error?: string;
+  progress?: number;
+  status?: string;
 }
 
 // Process incoming messages
@@ -66,6 +68,9 @@ function processGraphData(data: any): {
   const s_nodes: NodeData[] = new Array(s_nodes_raw.length);
   const t_nodes: NodeData[] = new Array(t_nodes_raw.length);
 
+  // Total nodes for progress calculation
+  const totalNodes = s_nodes_raw.length + t_nodes_raw.length;
+
   // Create s_nodes with their global indices
   for (let i = 0; i < s_nodes_raw.length; i++) {
     const node = s_nodes_raw[i];
@@ -85,6 +90,16 @@ function processGraphData(data: any): {
       degree: 0,
       parameters: node.details || {}
     };
+
+    // Send progress update every 10000 nodes
+    if (i % 10000 === 0 && i > 0) {
+      const progress = (i / totalNodes) * 50; // 0-50% for s_nodes
+      self.postMessage({
+        type: 'progress',
+        progress,
+        status: `Processing state nodes: ${i.toLocaleString()} / ${s_nodes_raw.length.toLocaleString()}`
+      });
+    }
   }
 
   // Create t_nodes with their global indices (offset by s_nodes length)
@@ -107,6 +122,16 @@ function processGraphData(data: any): {
       degree: 0,
       parameters: node.details || {}
     };
+
+    // Send progress update every 10000 nodes
+    if (i % 10000 === 0 && i > 0) {
+      const progress = 50 + (i / totalNodes) * 50; // 50-100% for t_nodes
+      self.postMessage({
+        type: 'progress',
+        progress,
+        status: `Processing transition nodes: ${i.toLocaleString()} / ${t_nodes_raw.length.toLocaleString()}`
+      });
+    }
   }
 
   // Combine nodes for degree calculation

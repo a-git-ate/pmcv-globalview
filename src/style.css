@@ -472,3 +472,121 @@ button:disabled {
   background: #95a5a6;
   border-color: #7f8c8d;
 }
+
+/* Progress Indicator - Bottom Right Window */
+.progress-indicator {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 320px;
+  background: #ffffff;
+  border: 1px solid #bdc3c7;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  overflow: hidden;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.progress-indicator.hidden {
+  opacity: 0;
+  transform: translateY(20px);
+  pointer-events: none;
+}
+
+.progress-title-bar {
+  background: linear-gradient(180deg, #3498db 0%, #2980b9 100%);
+  color: white;
+  padding: 10px 15px;
+  font-weight: bold;
+  font-size: 13px;
+  border-bottom: 1px solid #2472a4;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.progress-title {
+  flex: 1;
+}
+
+.progress-abort-button {
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: white;
+  width: 24px;
+  height: 24px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  font-weight: bold;
+  margin-left: 10px;
+}
+
+.progress-abort-button:hover {
+  background: rgba(231, 76, 60, 0.8);
+  border-color: rgba(192, 57, 43, 0.8);
+}
+
+.progress-abort-button.hidden {
+  display: none;
+}
+
+.progress-bar-container {
+  height: 24px;
+  background: #ecf0f1;
+  margin: 15px 15px 10px 15px;
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3498db 0%, #2ecc71 100%);
+  transition: width 0.3s ease;
+  border-radius: 4px;
+  position: relative;
+}
+
+.progress-bar-fill.indeterminate {
+  width: 100% !important;
+  background: linear-gradient(90deg,
+    #3498db 0%,
+    #2ecc71 25%,
+    #3498db 50%,
+    #2ecc71 75%,
+    #3498db 100%);
+  background-size: 200% 100%;
+  animation: indeterminate-progress 1.5s linear infinite;
+}
+
+@keyframes indeterminate-progress {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: 0 0;
+  }
+}
+
+.progress-status {
+  font-size: 12px;
+  color: #7f8c8d;
+  padding: 0 15px 5px 15px;
+  text-align: center;
+}
+
+.progress-percentage {
+  font-size: 14px;
+  font-weight: bold;
+  color: #2c3e50;
+  padding: 0 15px 15px 15px;
+  text-align: center;
+}

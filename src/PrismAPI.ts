@@ -1,4 +1,5 @@
 import type { NodeData, EdgeData } from './types';
+import { ProgressIndicator } from './ProgressIndicator';
 
 export interface ParameterMetadata {
   type: 'number' | 'boolean' | 'nominal';
@@ -33,10 +34,13 @@ export class PrismAPI {
   private parameterOrder: Record<string, string[]> ={};
   private worker: Worker | null = null;
   private useWorker: boolean = true; // Flag to enable/disable worker
+  public progressIndicator: ProgressIndicator; // Public so other classes can use it
+  private currentAbortController: AbortController | null = null; // For aborting fetch operations
 
   constructor(baseUrl: string = 'http://localhost:8080', useWorker: boolean = true) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.useWorker = useWorker;
+    this.progressIndicator = new ProgressIndicator();
 
     // Initialize worker if enabled
     if (this.useWorker && typeof Worker !== 'undefined') {
@@ -78,8 +82,22 @@ export class PrismAPI {
       const url = `${this.baseUrl}/${projectId}`;
       console.log(`[PrismAPI] Fetching simple graph from: ${url}`);
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000);
+      // Create abort controller for this fetch
+      this.currentAbortController = new AbortController();
+
+      // Show progress indicator with abort button
+      this.progressIndicator.show({
+        title: 'Loading Graph Data',
+        showAbortButton: true,
+        onAbort: () => {
+          console.log('[PrismAPI] User aborted fetch operation');
+          if (this.currentAbortController) {
+            this.currentAbortController.abort();
+            this.currentAbortController = null;
+          }
+        }
+      });
+      this.progressIndicator.setIndeterminate('Downloading...');
 
       const response = await fetch(url, {
         method: 'GET',
@@ -87,26 +105,53 @@ export class PrismAPI {
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         },
-        signal: controller.signal
+        signal: this.currentAbortController.signal
       });
 
-      clearTimeout(timeoutId);
       if (!response.ok) {
+        this.currentAbortController = null;
+        this.progressIndicator.hide();
         throw new Error(`HTTP error! status: ${response.status}`);
       }
+
+      // Parse the response
+      this.progressIndicator.setStatus('Parsing JSON data...');
       const data = await response.json();
 
       if (!data.nodes || !Array.isArray(data.nodes)) {
+        this.currentAbortController = null;
+        this.progressIndicator.hide();
         throw new Error('Invalid response: missing nodes array');
       }
 
       if (!data.edges || !Array.isArray(data.edges)) {
+        this.currentAbortController = null;
+        this.progressIndicator.hide();
         throw new Error('Invalid response: missing edges array');
       }
 
-      return await this.convertNewFormatToInternal(data);
+      // Update progress for data processing
+      this.progressIndicator.setTitle('Processing Graph Data');
+      this.progressIndicator.setStatus('Converting node data...');
+
+      const result = await this.convertNewFormatToInternal(data);
+
+      // Clear abort controller and hide progress indicator when done
+      this.currentAbortController = null;
+      this.progressIndicator.hide();
+
+      return result;
     } catch (error) {
       console.error('[PrismAPI] Simple Graph fetch failed: ', error);
+      this.currentAbortController = null;
+      this.progressIndicator.hide();
+
+      // Check if it was aborted by user
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log('[PrismAPI] Fetch was aborted by user');
+        throw new Error('Operation cancelled by user');
+      }
+
       throw error;
     }
   }
@@ -169,11 +214,21 @@ export class PrismAPI {
       }, 30000); // 30 second timeout
 
       const handleMessage = (event: MessageEvent) => {
+        const result = event.data;
+
+        // Handle progress updates
+        if (result.type === 'progress') {
+          this.progressIndicator.updateProgress(result.progress);
+          if (result.status) {
+            this.progressIndicator.setStatus(result.status);
+          }
+          return; // Don't clear listeners, continue waiting for result
+        }
+
+        // Handle final result or error
         clearTimeout(timeout);
         this.worker!.removeEventListener('message', handleMessage);
         this.worker!.removeEventListener('error', handleError);
-
-        const result = event.data;
 
         if (result.type === 'error') {
           reject(new Error(result.error || 'Worker processing failed'));
@@ -761,6 +816,16 @@ export class PrismAPI {
     }
   }
   static getParameterValue(node: NodeData, param: string): any {
+    // Check if param is in "category::paramName" format
+    if (param.includes('::')) {
+      const [category, paramName] = param.split('::');
+      if (node.parameters[category] && node.parameters[category][paramName] !== undefined) {
+        return node.parameters[category][paramName];
+      }
+      return null;
+    }
+
+    // Original behavior: search all categories for the parameter
     for (const category of Object.values(node.parameters || {})) {
       if (category[param] !== undefined) {
         return category[param];
