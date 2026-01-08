@@ -79,70 +79,113 @@
     </div>
 
     <div id="container">
-      
-      <div id="controls">
-        <div><strong>Controls</strong></div>
-        <button id="btn-1k">1K Nodes</button>
-        <button id="btn-10k">10K Nodes</button>
-        <button id="btn-100k">100K Nodes</button>
-        <br>
-        <button id="btn-500k">500K Nodes</button>
-        <button id="btn-1m">1M Nodes</button>
-        <br><br>
-        <div><strong>Layout Selection</strong></div>
-        <button id="btn-grid-layout" class="layout-btn">Grid Layout</button>
-        <button id="btn-random-layout" class="layout-btn">Random Layout</button>
-        <br>
-        <button id="btn-force-directed" class="layout-btn">Force-Directed Layout</button>
-        <br>
-        <button id="btn-lod">Toggle LOD</button>
-        <button id="btn-edges">Toggle Edges</button>
-        <button id="btn-reset">Reset View</button>
-        <br>
-        <button id="btn-clusters">Cluster Mode</button>
-        <button id="btn-gridlines">Toggle Grid</button>
-        <button id="btn-export">Export PNG</button>
-        <br><br>
-        <div style="border-top: 1px solid #666; padding-top: 10px; margin-top: 10px;">
-          <div><strong>Parameter View</strong></div>
-          <div style="margin: 5px 0; font-size: 11px;">
-            X-Axis:
-            <select id="param-x-select" style="width: 60px; padding: 1px;">
-            </select>
-            Y-Axis:
-            <select id="param-y-select" style="width: 60px; padding: 1px;">
-            </select>
-            <br>
-            Color:
-            <select id="param-color-select" style="width: 60px; padding: 1px;">
-            </select>
-          </div>
-          <button id="btn-apply-params">Apply Parameters</button>
-          <br>
-          <button id="btn-apply-color">Apply Color Only</button>
-          <button id="btn-reset-layout">Reset Layout</button>
-        </div>
+      <!-- Canvas will be appended here by Graph2D -->
 
-        <!-- Parameter Status Section (Collapsible) -->
-        <div style="border-top: 1px solid #666; margin-top: 15px; padding-top: 10px;">
-          <button id="btn-toggle-param-status" style="width: 100%; background: #3498db;">
-            <strong>▼ Parameter Status</strong>
-          </button>
-          <div id="param-status-content" class="hidden" style="margin-top: 10px; max-height: 300px; overflow-y: auto;"></div>
-        </div>
-
-        <!-- Debug & Utility Buttons -->
-        <div style="border-top: 1px solid #666; margin-top: 15px; padding-top: 10px;">
-          <button id="btn-toggle-pca" class="pca-button" style="width: 49%;">PCA</button>
-          <button id="btn-toggle-debug" class="debug-button" style="width: 49%;">Debug Info</button>
-        </div>
-      </div>
-      
       <div id="progress" class="hidden">
         <div id="progress-bar"></div>
       </div>
 
       <div id="node-tooltip" class="hidden"></div>
+
+      <!-- Resize handle -->
+      <div id="resize-handle"></div>
+
+      <!-- Controls side pane -->
+      <div id="controls-pane">
+        <div id="controls">
+          <!-- View Controls Section -->
+          <div class="control-section">
+            <button class="section-toggle" data-target="view-content">
+              <strong>▼ View Controls</strong>
+            </button>
+            <div id="view-content" class="section-content">
+              <div class="button-group">
+                <button id="btn-force-directed" class="layout-btn">Force-Directed Layout</button>
+                <button id="btn-lod">Toggle LOD</button>
+                <button id="btn-edges">Toggle Edges</button>
+                <button id="btn-reset">Reset View</button>
+                <button id="btn-clusters">Cluster Mode</button>
+                <button id="btn-gridlines">Toggle Grid</button>
+                <button id="btn-export">Export PNG</button>
+                <button id="btn-toggle-debug" class="debug-button">Debug Info</button>
+                <button id="btn-remove-t-nodes">Remove Transition Nodes</button>
+                <button id="btn-remove-s-nodes">Remove State Nodes</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Parameter View Section -->
+          <div class="control-section">
+            <button class="section-toggle" data-target="param-view-content">
+              <strong>▼ Parameter View</strong>
+            </button>
+            <div id="param-view-content" class="section-content">
+              <div class="param-select-container">
+                <label class="param-select-label">
+                  <span>X-Axis:</span>
+                  <select id="param-x-select" class="param-select"></select>
+                </label>
+                <label class="param-select-label">
+                  <span>Y-Axis:</span>
+                  <select id="param-y-select" class="param-select"></select>
+                </label>
+                <label class="param-select-label">
+                  <span>Color:</span>
+                  <select id="param-color-select" class="param-select"></select>
+                </label>
+              </div>
+              <div class="button-group">
+                <button id="btn-apply-params">Apply Parameters</button>
+                <button id="btn-apply-color">Apply Color Only</button>
+                <button id="btn-reset-layout">Reset Layout</button>
+              </div>
+              <div id="param-view-display-label" class="param-view-label hidden"></div>
+            </div>
+          </div>
+
+          <!-- Parameter Status Section -->
+          <div class="control-section">
+            <button class="section-toggle" data-target="param-status-content">
+              <strong>▼ Parameter Status</strong>
+            </button>
+            <div id="param-status-content" class="section-content hidden" style="max-height: 300px; overflow-y: auto;"></div>
+          </div>
+
+          <!-- PCA Section -->
+          <div class="control-section">
+            <button class="section-toggle" data-target="pca-section-content">
+              <strong>▼ PCA (Principal Component Analysis)</strong>
+            </button>
+            <div id="pca-section-content" class="section-content">
+              <button id="btn-toggle-pca" class="pca-button" style="width: 100%; margin-bottom: 10px;">Configure & Apply PCA</button>
+              <div id="pca-eigenvectors-display" class="pca-eigenvectors hidden">
+                <div class="pca-header">Eigenvectors (Parameter Loadings)</div>
+                <div id="pca-eigenvectors-content"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Selected Nodes Section -->
+          <div class="control-section">
+            <button class="section-toggle" data-target="selected-nodes-content">
+              <strong>▼ Selected Nodes</strong>
+            </button>
+            <div id="selected-nodes-content" class="section-content">
+              <div class="selected-nodes-header">
+                <div id="selected-nodes-counter" class="selection-counter">0 nodes selected</div>
+                <div class="selected-nodes-buttons">
+                  <button id="btn-table-view" class="small-btn btn-table-view">Table View</button>
+                  <button id="btn-show-all-nodes" class="small-btn">Show All</button>
+                  <button id="btn-clear-selection" class="small-btn">Clear</button>
+                </div>
+              </div>
+              <div id="selected-nodes-list" class="selected-nodes-scroll">
+                <div class="no-selection-message">Click on a node to select it</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

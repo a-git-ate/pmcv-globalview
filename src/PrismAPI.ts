@@ -649,6 +649,42 @@ export class PrismAPI {
     return extractedKeys;
   }
 
+  /**
+   * Check which node types (s, t, or both) have a specific parameter
+   * Returns 's', 't', 'st', or null
+   */
+  public getParameterNodeTypes(paramName: string): string | null {
+    if (!this.parameterMetadata) return null;
+
+    let hasS = false;
+    let hasT = false;
+
+    // Check in 's' nodes
+    if (this.parameterMetadata.s) {
+      for (const category of Object.keys(this.parameterMetadata.s)) {
+        if (this.parameterMetadata.s[category][paramName]) {
+          hasS = true;
+          break;
+        }
+      }
+    }
+
+    // Check in 't' nodes
+    if (this.parameterMetadata.t) {
+      for (const category of Object.keys(this.parameterMetadata.t)) {
+        if (this.parameterMetadata.t[category][paramName]) {
+          hasT = true;
+          break;
+        }
+      }
+    }
+
+    if (hasS && hasT) return 'st';
+    if (hasS) return 's';
+    if (hasT) return 't';
+    return null;
+  }
+
   updateBaseUrl(newBaseUrl: string): void {
     this.baseUrl = newBaseUrl.replace(/\/$/, "");
   }

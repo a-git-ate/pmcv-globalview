@@ -15,8 +15,7 @@ export class UIManager {
 
   private cacheElements(): void {
     const elementIds = [
-      'btn-1k', 'btn-10k', 'btn-100k', 'btn-500k', 'btn-1m',
-      'btn-grid-layout', 'btn-random-layout', 'btn-force-directed',
+      'btn-force-directed',
       'btn-lod', 'btn-edges', 'btn-reset', 'btn-clusters', 'btn-gridlines', 'btn-export',
       'param-x-select', 'param-y-select', 'param-color-select', 'btn-apply-params', 'btn-apply-color', 'btn-reset-layout',
       'progress', 'progress-bar',
@@ -30,7 +29,11 @@ export class UIManager {
       // PCA menu elements
       'btn-toggle-pca', 'pca-menu', 'btn-close-pca',
       // Parameter status (now in controls)
-      'btn-toggle-param-status', 'param-status-content'
+      'btn-toggle-param-status', 'param-status-content',
+      // Selected nodes
+      'btn-clear-selection', 'btn-show-all-nodes', 'btn-table-view', 'selected-nodes-list', 'selected-nodes-counter',
+      // Node filtering buttons
+      'btn-remove-t-nodes', 'btn-remove-s-nodes'
     ];
 
     elementIds.forEach(id => {
@@ -53,19 +56,10 @@ export class UIManager {
   }
 
   private setupEventListeners(): void {
-    // Node generation buttons
-    this.addClickListener('btn-1k', () => this.graph.generateNodes(1000));
-    this.addClickListener('btn-10k', () => this.graph.generateNodes(10000));
-    this.addClickListener('btn-100k', () => this.graph.generateNodes(100000));
-    this.addClickListener('btn-500k', () => this.graph.generateNodes(500000));
-    this.addClickListener('btn-1m', () => this.graph.generateNodes(1000000));
-
-    // Layout buttons
-    this.addClickListener('btn-grid-layout', () => this.graph.applyLayout('grid'));
-    this.addClickListener('btn-random-layout', () => this.graph.applyLayout('random'));
+    // Layout button (force-directed only)
     this.addClickListener('btn-force-directed', () => this.graph.applyLayout('force'));
 
-    // Control buttons
+    // View control buttons
     this.addClickListener('btn-lod', () => this.graph.toggleLOD());
     this.addClickListener('btn-edges', () => this.graph.toggleEdges());
     this.addClickListener('btn-reset', () => this.graph.resetView());
@@ -85,6 +79,50 @@ export class UIManager {
     // PCA menu controls
     this.addClickListener('btn-toggle-pca', () => this.togglePCAMenu());
     this.addClickListener('btn-close-pca', () => this.closePCAMenu());
+
+    // Selection controls
+    this.addClickListener('btn-clear-selection', () => this.graph.clearSelection());
+    this.addClickListener('btn-show-all-nodes', () => this.graph.selectAllNodes());
+    this.addClickListener('btn-table-view', () => {
+      const selectedNodes = this.graph.getSelectedNodes();
+      this.graph.openTableView(selectedNodes);
+    });
+
+    // Node filtering controls
+    this.addClickListener('btn-remove-t-nodes', () => this.graph.removeTransitionNodes());
+    this.addClickListener('btn-remove-s-nodes', () => this.graph.removeStateNodes());
+
+    // Setup collapsible sections
+    this.setupCollapsibleSections();
+  }
+
+  private setupCollapsibleSections(): void {
+    const toggleButtons = document.querySelectorAll('.section-toggle');
+
+    toggleButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        const target = (button as HTMLElement).getAttribute('data-target');
+        if (!target) return;
+
+        const content = document.getElementById(target);
+        if (!content) return;
+
+        // Toggle visibility
+        const isHidden = content.classList.contains('hidden');
+        content.classList.toggle('hidden');
+
+        // Update arrow indicator
+        const strong = button.querySelector('strong');
+        if (strong) {
+          const text = strong.textContent || '';
+          if (isHidden) {
+            strong.textContent = text.replace('►', '▼');
+          } else {
+            strong.textContent = text.replace('▼', '►');
+          }
+        }
+      });
+    });
   }
 
   private addClickListener(elementId: string, handler: () => void): void {
@@ -367,9 +405,16 @@ export class UIManager {
     colorSelect.innerHTML = '<option value="-1">None</option>';
     Object.values(paramLabels).forEach(value => {
       value.forEach(param => {
+        // Get which node types have this parameter
+        const nodeTypes = this.graph.prismAPI.getParameterNodeTypes(param);
+        let prefix = '';
+        if (nodeTypes === 'st') prefix = '[s,t] ';
+        else if (nodeTypes === 's') prefix = '[s] ';
+        else if (nodeTypes === 't') prefix = '[t] ';
+
         const option = document.createElement('option');
         option.value = param;
-        option.textContent = param;
+        option.textContent = prefix + param;
         option.title = param;
         colorSelect.appendChild(option);
       });
@@ -389,9 +434,16 @@ export class UIManager {
     select.innerHTML = '';
     Object.values(paramLabels).forEach(value => {
       value.forEach(param => {
+        // Get which node types have this parameter
+        const nodeTypes = this.graph.prismAPI.getParameterNodeTypes(param);
+        let prefix = '';
+        if (nodeTypes === 'st') prefix = '[s,t] ';
+        else if (nodeTypes === 's') prefix = '[s] ';
+        else if (nodeTypes === 't') prefix = '[t] ';
+
         const option = document.createElement('option');
         option.value = param;
-        option.textContent = param;
+        option.textContent = prefix + param;
         option.title = param;
         select.appendChild(option);
       });

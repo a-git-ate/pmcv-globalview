@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Node Table View</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 100%;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+    }
+
+    .header {
+      background: linear-gradient(180deg, #2c3e50 0%, #34495e 100%);
+      color: white;
+      padding: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .header h1 {
+      font-size: 24px;
+      font-weight: 600;
+    }
+
+    .header-info {
+      font-size: 14px;
+      opacity: 0.9;
+    }
+
+    .controls {
+      padding: 15px 20px;
+      background: #ecf0f1;
+      border-bottom: 1px solid #bdc3c7;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .search-box {
+      flex: 1;
+      min-width: 250px;
+      padding: 8px 12px;
+      border: 1px solid #bdc3c7;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      background: #3498db;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.2s;
+    }
+
+    .btn:hover {
+      background: #2980b9;
+    }
+
+    .btn-secondary {
+      background: #95a5a6;
+    }
+
+    .btn-secondary:hover {
+      background: #7f8c8d;
+    }
+
+    .table-wrapper {
+      overflow-x: auto;
+      max-height: calc(100vh - 180px);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    thead {
+      position: sticky;
+      top: 0;
+      background: #34495e;
+      color: white;
+      z-index: 10;
+    }
+
+    th {
+      padding: 12px 8px;
+      text-align: left;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      position: relative;
+    }
+
+    th:hover {
+      background: #2c3e50;
+    }
+
+    th.sortable::after {
+      content: ' ⇅';
+      opacity: 0.3;
+      font-size: 12px;
+    }
+
+    th.sort-asc::after {
+      content: ' ▲';
+      opacity: 1;
+    }
+
+    th.sort-desc::after {
+      content: ' ▼';
+      opacity: 1;
+    }
+
+    td {
+      padding: 10px 8px;
+      border-bottom: 1px solid #ecf0f1;
+    }
+
+    tbody tr:hover {
+      background: #f8f9fa;
+    }
+
+    tbody tr:nth-child(even) {
+      background: #fafafa;
+    }
+
+    tbody tr:nth-child(even):hover {
+      background: #f0f0f0;
+    }
+
+    .node-id {
+      font-weight: bold;
+      color: #2c3e50;
+    }
+
+    .node-type {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: bold;
+    }
+
+    .node-type.type-s {
+      background: #3498db;
+      color: white;
+    }
+
+    .node-type.type-t {
+      background: #e74c3c;
+      color: white;
+    }
+
+    .no-data {
+      text-align: center;
+      padding: 40px;
+      color: #7f8c8d;
+      font-size: 16px;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      font-size: 16px;
+      color: #3498db;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div>
+        <h1>Node Table View</h1>
+        <div class="header-info" id="node-count">Loading...</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <input type="text" id="search-input" class="search-box" placeholder="Search nodes...">
+      <button id="btn-export-csv" class="btn">Export CSV</button>
+      <button id="btn-reset-filters" class="btn btn-secondary">Reset Filters</button>
+    </div>
+
+    <div class="table-wrapper">
+      <table id="node-table">
+        <thead id="table-head">
+          <!-- Headers will be generated dynamically -->
+        </thead>
+        <tbody id="table-body">
+          <tr>
+            <td colspan="100" class="loading">Loading node data...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    // Global state
+    let allNodes = [];
+    let filteredNodes = [];
+    let currentSort = { column: null, direction: 'asc' };
+
+    // Initialize table from localStorage data
+    function init() {
+      const nodesData = localStorage.getItem('tableViewNodes');
+
+      if (!nodesData) {
+        document.getElementById('table-body').innerHTML = '<tr><td colspan="100" class="no-data">No node data found. Please open this view from the main application.</td></tr>';
+        document.getElementById('node-count').textContent = '0 nodes';
+        return;
+      }
+
+      try {
+        allNodes = JSON.parse(nodesData);
+        filteredNodes = [...allNodes];
+
+        document.getElementById('node-count').textContent = `${allNodes.length} nodes`;
+
+        buildTable();
+        setupEventListeners();
+
+        // Clear localStorage after reading
+        localStorage.removeItem('tableViewNodes');
+      } catch (error) {
+        console.error('Error parsing node data:', error);
+        document.getElementById('table-body').innerHTML = '<tr><td colspan="100" class="no-data">Error loading node data.</td></tr>';
+      }
+    }
+
+    // Build table structure
+    function buildTable() {
+      if (allNodes.length === 0) {
+        document.getElementById('table-body').innerHTML = '<tr><td colspan="100" class="no-data">No nodes to display.</td></tr>';
+        return;
+      }
+
+      // Get all unique column names
+      const columns = ['id', 'type', 'x', 'y', 'cluster'];
+      const parameterColumns = new Set();
+
+      allNodes.forEach(node => {
+        if (node.parameters) {
+          Object.keys(node.parameters).forEach(category => {
+            Object.keys(node.parameters[category]).forEach(param => {
+              parameterColumns.add(`${category}::${param}`);
+            });
+          });
+        }
+      });
+
+      const allColumns = [...columns, ...Array.from(parameterColumns).sort()];
+
+      // Build header
+      const thead = document.getElementById('table-head');
+      thead.innerHTML = '<tr>' + allColumns.map(col => {
+        const displayName = col === 'id' ? 'ID' :
+                           col === 'x' ? 'X' :
+                           col === 'y' ? 'Y' :
+                           col === 'type' ? 'Type' :
+                           col === 'cluster' ? 'Cluster' :
+                           col;
+        return `<th class="sortable" data-column="${col}">${displayName}</th>`;
+      }).join('') + '</tr>';
+
+      // Build body
+      renderTableBody(filteredNodes, allColumns);
+    }
+
+    // Render table body
+    function renderTableBody(nodes, columns) {
+      const tbody = document.getElementById('table-body');
+
+      if (nodes.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="100" class="no-data">No nodes match the current filter.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = nodes.map(node => {
+        return '<tr>' + columns.map(col => {
+          let value = '';
+
+          if (col === 'id') {
+            value = `<span class="node-id">${node.id}</span>`;
+          } else if (col === 'type') {
+            value = `<span class="node-type type-${node.type}">${node.type}</span>`;
+          } else if (col === 'x') {
+            value = node.x?.toFixed(2) ?? '-';
+          } else if (col === 'y') {
+            value = node.y?.toFixed(2) ?? '-';
+          } else if (col === 'cluster') {
+            value = node.cluster ?? '-';
+          } else {
+            // Parameter column
+            const [category, param] = col.split('::');
+            value = node.parameters?.[category]?.[param] ?? '-';
+
+            // Format numbers
+            if (typeof value === 'number') {
+              value = value.toFixed(4);
+            }
+          }
+
+          return `<td>${value}</td>`;
+        }).join('') + '</tr>';
+      }).join('');
+    }
+
+    // Sort table
+    function sortTable(column) {
+      const thead = document.getElementById('table-head');
+      const headers = thead.querySelectorAll('th');
+
+      // Update sort direction
+      if (currentSort.column === column) {
+        currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+      } else {
+        currentSort.column = column;
+        currentSort.direction = 'asc';
+      }
+
+      // Update header classes
+      headers.forEach(th => {
+        th.classList.remove('sort-asc', 'sort-desc');
+        if (th.dataset.column === column) {
+          th.classList.add(currentSort.direction === 'asc' ? 'sort-asc' : 'sort-desc');
+        }
+      });
+
+      // Sort data
+      filteredNodes.sort((a, b) => {
+        let aVal, bVal;
+
+        if (['id', 'type', 'cluster'].includes(column)) {
+          aVal = a[column];
+          bVal = b[column];
+        } else if (['x', 'y'].includes(column)) {
+          aVal = a[column] ?? -Infinity;
+          bVal = b[column] ?? -Infinity;
+        } else {
+          // Parameter column
+          const [category, param] = column.split('::');
+          aVal = a.parameters?.[category]?.[param];
+          bVal = b.parameters?.[category]?.[param];
+        }
+
+        // Handle undefined/null values
+        if (aVal === undefined || aVal === null) aVal = '';
+        if (bVal === undefined || bVal === null) bVal = '';
+
+        // Compare
+        let comparison = 0;
+        if (typeof aVal === 'number' && typeof bVal === 'number') {
+          comparison = aVal - bVal;
+        } else {
+          comparison = String(aVal).localeCompare(String(bVal));
+        }
+
+        return currentSort.direction === 'asc' ? comparison : -comparison;
+      });
+
+      // Re-render
+      const columns = Array.from(headers).map(th => th.dataset.column);
+      renderTableBody(filteredNodes, columns);
+    }
+
+    // Filter table
+    function filterTable(searchTerm) {
+      const term = searchTerm.toLowerCase();
+
+      filteredNodes = allNodes.filter(node => {
+        // Search in basic fields
+        if (String(node.id).toLowerCase().includes(term)) return true;
+        if (node.type?.toLowerCase().includes(term)) return true;
+        if (String(node.cluster).toLowerCase().includes(term)) return true;
+
+        // Search in parameters
+        if (node.parameters) {
+          for (const category of Object.keys(node.parameters)) {
+            for (const param of Object.keys(node.parameters[category])) {
+              const value = String(node.parameters[category][param]).toLowerCase();
+              if (value.includes(term)) return true;
+            }
+          }
+        }
+
+        return false;
+      });
+
+      document.getElementById('node-count').textContent =
+        `${filteredNodes.length} of ${allNodes.length} nodes`;
+
+      const thead = document.getElementById('table-head');
+      const headers = thead.querySelectorAll('th');
+      const columns = Array.from(headers).map(th => th.dataset.column);
+      renderTableBody(filteredNodes, columns);
+    }
+
+    // Export to CSV
+    function exportToCSV() {
+      if (allNodes.length === 0) return;
+
+      // Get all columns
+      const thead = document.getElementById('table-head');
+      const headers = thead.querySelectorAll('th');
+      const columns = Array.from(headers).map(th => th.dataset.column);
+
+      // Build CSV
+      let csv = columns.join(',') + '\n';
+
+      filteredNodes.forEach(node => {
+        const row = columns.map(col => {
+          let value = '';
+
+          if (col === 'id') {
+            value = node.id;
+          } else if (col === 'type') {
+            value = node.type;
+          } else if (col === 'x') {
+            value = node.x?.toFixed(2) ?? '';
+          } else if (col === 'y') {
+            value = node.y?.toFixed(2) ?? '';
+          } else if (col === 'cluster') {
+            value = node.cluster ?? '';
+          } else {
+            const [category, param] = col.split('::');
+            value = node.parameters?.[category]?.[param] ?? '';
+          }
+
+          // Escape CSV special characters
+          if (typeof value === 'string' && (value.includes(',') || value.includes('"') || value.includes('\n'))) {
+            value = '"' + value.replace(/"/g, '""') + '"';
+          }
+
+          return value;
+        });
+
+        csv += row.join(',') + '\n';
+      });
+
+      // Download
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `nodes_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // Setup event listeners
+    function setupEventListeners() {
+      // Sort on header click
+      document.getElementById('table-head').addEventListener('click', (e) => {
+        if (e.target.tagName === 'TH' && e.target.dataset.column) {
+          sortTable(e.target.dataset.column);
+        }
+      });
+
+      // Search
+      document.getElementById('search-input').addEventListener('input', (e) => {
+        filterTable(e.target.value);
+      });
+
+      // Export CSV
+      document.getElementById('btn-export-csv').addEventListener('click', exportToCSV);
+
+      // Reset filters
+      document.getElementById('btn-reset-filters').addEventListener('click', () => {
+        document.getElementById('search-input').value = '';
+        filteredNodes = [...allNodes];
+        document.getElementById('node-count').textContent = `${allNodes.length} nodes`;
+
+        const thead = document.getElementById('table-head');
+        const headers = thead.querySelectorAll('th');
+        const columns = Array.from(headers).map(th => th.dataset.column);
+        renderTableBody(filteredNodes, columns);
+      });
+    }
+
+    // Initialize on page load
+    window.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>

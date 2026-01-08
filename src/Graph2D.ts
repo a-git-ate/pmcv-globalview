@@ -41,6 +41,20 @@ export class Graph2D {
   private tooltipElement: HTMLElement | null = null;
   private hoveredNodeIndex: number = -1;
 
+  // Selection
+  private selectedNodeIndices: Set<number> = new Set();
+
+  // Geometry to nodes mapping (for stacked nodes)
+  // Maps geometry point index to array of node indices at that position
+  private geometryToNodesMap: Map<number, number[]> = new Map();
+
+  // PCA Results storage
+  private pcaResults: {
+    eigenvectors: Array<{eigenvalue: number, eigenvector: number[]}>;
+    parameterNames: string[];
+    varianceExplained: number;
+  } | null = null;
+
   // Store current parameter axes info for dynamic updates
   private currentAxisInfo: {
     xParamIndex: string;
@@ -66,7 +80,7 @@ export class Graph2D {
   public ui: UIManager;
 
   // PRISM API Integration
-  private prismAPI: PrismAPI;
+  public prismAPI: PrismAPI;
 
   // Project Manager
   public projectManager: ProjectManager;
@@ -382,9 +396,16 @@ export class Graph2D {
     }
 
     console.log('[Graph2D] PCA eigenvalues:', [pc1.eigenvalue, pc2.eigenvalue, pc3.eigenvalue]);
-    console.log('[Graph2D] Variance explained:',
-      PCA.computePercentageExplained(vectors, pc1, pc2, pc3).toFixed(2) + '%');
+    const varianceExplained = PCA.computePercentageExplained(vectors, pc1, pc2, pc3);
+    console.log('[Graph2D] Variance explained:', varianceExplained.toFixed(2) + '%');
     console.log('[Graph2D] Final PC data dimensions:', pcData.length, 'x', pcData[0]?.length);
+
+    // Store PCA results for display
+    this.pcaResults = {
+      eigenvectors: [pc1, pc2, pc3],
+      parameterNames: parameterNames,
+      varianceExplained: varianceExplained
+    };
 
     // 5. Add PC values as parameters to nodes
     this.prismAPI.progressIndicator.setStatus('Adding PC values to nodes...');
@@ -393,6 +414,9 @@ export class Graph2D {
     // 6. Apply parameter view with PC1 (x), PC2 (y), PC3 (color)
     this.prismAPI.progressIndicator.setStatus('Applying PCA visualization...');
     this.applyPCAView();
+
+    // 7. Update PCA eigenvectors display
+    this.updatePCAEigenvectorsDisplay();
 
     console.log('[Graph2D] PCA complete');
   }
@@ -664,9 +688,10 @@ export class Graph2D {
     this.ui.disableButtons();
 
     try {
-      // Clear existing nodes and edges
+      // Clear existing state when switching projects
       this.clearPointCloud();
       this.clearEdgeLines();
+      this.clearSelection(); // Clear selected nodes
       this.nodes = [];
       this.edges = [];
       if (!filteredNodes || !filteredEdges) {
@@ -759,9 +784,10 @@ export class Graph2D {
     this.ui.disableButtons();
 
     try {
-      // Clear existing visualization
+      // Clear existing state when switching projects
       this.clearPointCloud();
       this.clearEdgeLines();
+      this.clearSelection(); // Clear selected nodes
 
       // Fetch graph data using PrismAPI
       const fetchStart = performance.now();
@@ -1860,20 +1886,102 @@ export class Graph2D {
     }
   }
 
+  /**
+   * Deduplicate stacked nodes to create only one geometry point per unique position
+   * Returns deduplicated arrays and a mapping from geometry index to node indices
+   */
+  private deduplicateStackedNodes(
+    positions: Float32Array,
+    colors: Float32Array,
+    sizes: Float32Array
+  ): {
+    positions: Float32Array;
+    colors: Float32Array;
+    sizes: Float32Array;
+    geometryToNodesMap: Map<number, number[]>;
+  } {
+    const epsilon = 0.001; // Same tolerance as findStackedNodes
+    const nodeCount = positions.length / 3;
+
+    // Map from position key to list of node indices at that position
+    const positionMap = new Map<string, number[]>();
+
+    // Build position map
+    for (let i = 0; i < nodeCount; i++) {
+      const x = positions[i * 3];
+      const y = positions[i * 3 + 1];
+      const z = positions[i * 3 + 2];
+
+      // Round to epsilon precision to group nearby positions
+      const key = `${Math.round(x / epsilon)}:${Math.round(y / epsilon)}:${Math.round(z / epsilon)}`;
+
+      if (!positionMap.has(key)) {
+        positionMap.set(key, []);
+      }
+      positionMap.get(key)!.push(i);
+    }
+
+    // Create deduplicated arrays
+    const uniquePositionCount = positionMap.size;
+    const deduplicatedPositions = new Float32Array(uniquePositionCount * 3);
+    const deduplicatedColors = new Float32Array(uniquePositionCount * 3);
+    const deduplicatedSizes = new Float32Array(uniquePositionCount);
+    const geometryToNodesMap = new Map<number, number[]>();
+
+    let geometryIndex = 0;
+    for (const nodeIndices of positionMap.values()) {
+      // Use the first node in the stack as the representative
+      const firstNodeIndex = nodeIndices[0];
+
+      // Copy position
+      deduplicatedPositions[geometryIndex * 3] = positions[firstNodeIndex * 3];
+      deduplicatedPositions[geometryIndex * 3 + 1] = positions[firstNodeIndex * 3 + 1];
+      deduplicatedPositions[geometryIndex * 3 + 2] = positions[firstNodeIndex * 3 + 2];
+
+      // Copy color
+      deduplicatedColors[geometryIndex * 3] = colors[firstNodeIndex * 3];
+      deduplicatedColors[geometryIndex * 3 + 1] = colors[firstNodeIndex * 3 + 1];
+      deduplicatedColors[geometryIndex * 3 + 2] = colors[firstNodeIndex * 3 + 2];
+
+      // Copy size (could average if stacked, but using first for now)
+      deduplicatedSizes[geometryIndex] = sizes[firstNodeIndex];
+
+      // Store mapping
+      geometryToNodesMap.set(geometryIndex, nodeIndices);
+
+      geometryIndex++;
+    }
+
+    console.log(`[Deduplication] ${nodeCount} nodes → ${uniquePositionCount} geometry points (${nodeCount - uniquePositionCount} duplicates removed)`);
+
+    return {
+      positions: deduplicatedPositions,
+      colors: deduplicatedColors,
+      sizes: deduplicatedSizes,
+      geometryToNodesMap
+    };
+  }
+
   private createPointCloud(
     geometry: THREE.BufferGeometry,
     positions: Float32Array,
     colors: Float32Array,
     sizes: Float32Array
   ): void {
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+    // Deduplicate stacked nodes - only create one geometry point per unique position
+    const deduplicatedData = this.deduplicateStackedNodes(positions, colors, sizes);
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(deduplicatedData.positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(deduplicatedData.colors, 3));
+    geometry.setAttribute('size', new THREE.BufferAttribute(deduplicatedData.sizes, 1));
 
     // Add alpha attribute initialized to 1.0 (fully opaque) for all nodes
-    const alphas = new Float32Array(positions.length / 3);
+    const alphas = new Float32Array(deduplicatedData.positions.length / 3);
     alphas.fill(1.0);
     geometry.setAttribute('alpha', new THREE.BufferAttribute(alphas, 1));
+
+    // Store the mapping for hover/click detection
+    this.geometryToNodesMap = deduplicatedData.geometryToNodesMap;
 
     // Use ShaderMaterial for per-vertex alpha support
     const material = new THREE.ShaderMaterial({
@@ -2128,11 +2236,13 @@ export class Graph2D {
     const intersects = raycaster.intersectObject(this.pointCloud);
 
     if (intersects.length > 0) {
-      const index = intersects[0].index;
-      if (index !== undefined && index !== this.hoveredNodeIndex) {
-        this.hoveredNodeIndex = index;
-        this.showNodeTooltip(index, event.clientX, event.clientY);
-      } else if (index !== undefined) {
+      const geometryIndex = intersects[0].index;
+      if (geometryIndex !== undefined && geometryIndex !== this.hoveredNodeIndex) {
+        this.hoveredNodeIndex = geometryIndex;
+        // Get all node indices at this geometry position (handles stacked nodes)
+        const nodeIndices = this.geometryToNodesMap.get(geometryIndex) || [geometryIndex];
+        this.showNodeTooltip(nodeIndices, event.clientX, event.clientY);
+      } else if (geometryIndex !== undefined) {
         // Update tooltip position
         this.updateTooltipPosition(event.clientX, event.clientY);
       }
@@ -2141,38 +2251,22 @@ export class Graph2D {
     }
   }
 
-  private showNodeTooltip(nodeIndex: number, x: number, y: number): void {
-    if (!this.tooltipElement || nodeIndex >= this.nodes.length) {
+  private showNodeTooltip(stackedNodes: number[], x: number, y: number): void {
+    if (!this.tooltipElement || stackedNodes.length === 0) {
       return;
     }
 
-    const node = this.nodes[nodeIndex];
+    const firstNodeIndex = stackedNodes[0];
+    if (firstNodeIndex >= this.nodes.length) {
+      return;
+    }
+
+    const node = this.nodes[firstNodeIndex];
 
     // Check if node is visible (not filtered out)
     const alphas = this.pointCloud?.geometry.getAttribute('alpha') as THREE.BufferAttribute;
-    if (alphas && alphas.getX(nodeIndex) === 0) {
+    if (alphas && alphas.getX(firstNodeIndex) === 0) {
       return; // Don't show tooltip for invisible nodes
-    }
-
-    // Find all nodes at the same position (stacked nodes)
-    // Use a more generous epsilon for matching positions
-    const epsilon = 0.001; // Increased tolerance for position matching
-    const stackedNodes: number[] = [nodeIndex]; // Always include the hovered node
-
-    // Only search through nodes if we have a reasonable number
-    const maxNodesToSearch = Math.min(this.nodes.length, 10000);
-    for (let i = 0; i < maxNodesToSearch; i++) {
-      if (i === nodeIndex) continue; // Skip the node we already added
-
-      const otherNode = this.nodes[i];
-      if (!otherNode) continue; // Skip if node doesn't exist
-
-      const dx = Math.abs(otherNode.x - node.x);
-      const dy = Math.abs(otherNode.y - node.y);
-
-      if (dx < epsilon && dy < epsilon) {
-        stackedNodes.push(i);
-      }
     }
 
     // Get parameter labels from PRISM API
@@ -2280,24 +2374,475 @@ export class Graph2D {
 
     const intersects = raycaster.intersectObject(this.pointCloud);
     if (intersects.length > 0) {
-      const point = intersects[0].point;
-      const clickEvent: NodeClickEvent = {
-        type: 'nodeClick',
-        data: {
-          position: point,
-          screenPosition: mouse
-        }
-      };
+      const geometryIndex = intersects[0].index;
+      if (geometryIndex !== undefined) {
+        // Get all node indices at this geometry position (handles stacked nodes)
+        const stackedIndices = this.geometryToNodesMap.get(geometryIndex) || [geometryIndex];
 
-      this.handleNodeClick(clickEvent);
+        // Support multi-select with Ctrl/Cmd key
+        const multiSelect = event.ctrlKey || event.metaKey;
+
+        // Select all stacked nodes
+        this.selectNodes(stackedIndices, multiSelect);
+      }
     }
   }
 
-  private handleNodeClick(event: NodeClickEvent): void {
-    const position = event.data.position;
-    this.ui.updateStatus(
-      `Selected node at (${position.x.toFixed(1)}, ${position.y.toFixed(1)})`
-    );
+  /**
+   * Find all nodes stacked at the same position as the given node
+   */
+  private findStackedNodes(nodeIndex: number): number[] {
+    if (nodeIndex < 0 || nodeIndex >= this.nodes.length) return [];
+
+    const node = this.nodes[nodeIndex];
+    const epsilon = 0.001; // Same tolerance as tooltip
+    const stackedNodes: number[] = [nodeIndex];
+
+    // Only search through nodes if we have a reasonable number
+    const maxNodesToSearch = Math.min(this.nodes.length, 10000);
+    for (let i = 0; i < maxNodesToSearch; i++) {
+      if (i === nodeIndex) continue;
+
+      const otherNode = this.nodes[i];
+      if (!otherNode) continue;
+
+      const dx = Math.abs(otherNode.x - node.x);
+      const dy = Math.abs(otherNode.y - node.y);
+
+      if (dx < epsilon && dy < epsilon) {
+        stackedNodes.push(i);
+      }
+    }
+
+    return stackedNodes;
+  }
+
+  /**
+   * Select multiple nodes at once
+   */
+  private selectNodes(indices: number[], multiSelect: boolean = false): void {
+    if (indices.length === 0) return;
+
+    if (!multiSelect) {
+      // Single select - clear previous selections
+      this.selectedNodeIndices.clear();
+    }
+
+    // Add or toggle all indices
+    indices.forEach(index => {
+      if (this.selectedNodeIndices.has(index)) {
+        this.selectedNodeIndices.delete(index);
+      } else {
+        this.selectedNodeIndices.add(index);
+      }
+    });
+
+    // Update UI
+    this.updateSelectedNodesUI();
+
+    // Update status bar
+    if (this.selectedNodeIndices.size === 0) {
+      this.ui.updateStatus('No nodes selected');
+    } else if (this.selectedNodeIndices.size === 1) {
+      const nodeId = this.nodes[Array.from(this.selectedNodeIndices)[0]].id;
+      this.ui.updateStatus(`Selected node #${nodeId}`);
+    } else {
+      const stackMessage = indices.length > 1 ? ` (${indices.length} stacked)` : '';
+      this.ui.updateStatus(`Selected ${this.selectedNodeIndices.size} nodes${stackMessage}`);
+    }
+  }
+
+  /**
+   * Select a node by index
+   */
+  private selectNode(index: number, multiSelect: boolean = false): void {
+    if (index < 0 || index >= this.nodes.length) return;
+
+    if (!multiSelect) {
+      // Single select - clear previous selections
+      this.selectedNodeIndices.clear();
+    }
+
+    // Toggle selection if already selected
+    if (this.selectedNodeIndices.has(index)) {
+      this.selectedNodeIndices.delete(index);
+    } else {
+      this.selectedNodeIndices.add(index);
+    }
+
+    // Update UI
+    this.updateSelectedNodesUI();
+
+    // Update status bar
+    if (this.selectedNodeIndices.size === 0) {
+      this.ui.updateStatus('No nodes selected');
+    } else if (this.selectedNodeIndices.size === 1) {
+      const node = this.nodes[index];
+      this.ui.updateStatus(`Selected node #${node.id}`);
+    } else {
+      this.ui.updateStatus(`Selected ${this.selectedNodeIndices.size} nodes`);
+    }
+  }
+
+  /**
+   * Deselect a node by index
+   */
+  private deselectNode(index: number): void {
+    this.selectedNodeIndices.delete(index);
+    this.updateSelectedNodesUI();
+
+    if (this.selectedNodeIndices.size === 0) {
+      this.ui.updateStatus('No nodes selected');
+    } else {
+      this.ui.updateStatus(`Selected ${this.selectedNodeIndices.size} nodes`);
+    }
+  }
+
+  /**
+   * Clear all selected nodes
+   */
+  public clearSelection(): void {
+    this.selectedNodeIndices.clear();
+    this.updateSelectedNodesUI();
+    this.ui.updateStatus('Selection cleared');
+  }
+
+  /**
+   * Select all visible nodes
+   */
+  public selectAllNodes(): void {
+    // Clear existing selection
+    this.selectedNodeIndices.clear();
+
+    // Add all nodes to selection
+    for (let i = 0; i < this.nodes.length; i++) {
+      this.selectedNodeIndices.add(i);
+    }
+
+    // Update UI
+    this.updateSelectedNodesUI();
+    this.ui.updateStatus(`Selected all ${this.selectedNodeIndices.size} nodes`);
+  }
+
+  /**
+   * Get all selected nodes
+   */
+  public getSelectedNodes(): NodeData[] {
+    return Array.from(this.selectedNodeIndices).map(index => this.nodes[index]);
+  }
+
+  /**
+   * Remove all transition (t-type) nodes and create direct edges between connected state (s-type) nodes
+   */
+  public async removeTransitionNodes(): Promise<void> {
+    this.ui.updateStatus('Removing transition nodes...');
+    this.ui.updateProgress(0);
+
+    try {
+      // Build a map of node IDs to their indices for quick lookup
+      const nodeIdToIndex = new Map<number | string, number>();
+      for (let i = 0; i < this.nodes.length; i++) {
+        nodeIdToIndex.set(this.nodes[i].id, i);
+      }
+
+      // Find all t-type nodes and build adjacency information
+      const tNodeIndices = new Set<number>();
+      const edgesByTNode = new Map<number, { from: number, to: number }[]>();
+
+      for (let i = 0; i < this.nodes.length; i++) {
+        if (this.nodes[i].type === 't') {
+          tNodeIndices.add(i);
+          edgesByTNode.set(i, []);
+        }
+      }
+
+      this.ui.updateProgress(20);
+
+      // Categorize edges by t-nodes
+      for (const edge of this.edges) {
+        const fromNode = this.nodes[edge.from];
+        const toNode = this.nodes[edge.to];
+
+        if (fromNode && toNode) {
+          if (fromNode.type === 't') {
+            edgesByTNode.get(edge.from)?.push({ from: edge.from, to: edge.to });
+          } else if (toNode.type === 't') {
+            edgesByTNode.get(edge.to)?.push({ from: edge.from, to: edge.to });
+          }
+        }
+      }
+
+      this.ui.updateProgress(40);
+
+      // Create new edges connecting s-nodes that were connected via t-nodes
+      const newEdges: EdgeData[] = [];
+      for (const [tNodeIndex, connectedEdges] of edgesByTNode) {
+        // Find all s-nodes connected to this t-node
+        const connectedSNodes: number[] = [];
+        for (const edge of connectedEdges) {
+          const otherNodeIndex = edge.from === tNodeIndex ? edge.to : edge.from;
+          const otherNode = this.nodes[otherNodeIndex];
+          if (otherNode && otherNode.type === 's') {
+            connectedSNodes.push(otherNodeIndex);
+          }
+        }
+
+        // Create edges between all pairs of connected s-nodes
+        for (let i = 0; i < connectedSNodes.length; i++) {
+          for (let j = i + 1; j < connectedSNodes.length; j++) {
+            newEdges.push({
+              from: connectedSNodes[i],
+              to: connectedSNodes[j]
+            });
+          }
+        }
+      }
+
+      this.ui.updateProgress(60);
+
+      // Filter out t-nodes and edges involving t-nodes
+      const filteredNodes = this.nodes.filter(node => node.type === 's');
+      const filteredEdges = this.edges.filter(edge => {
+        const fromNode = this.nodes[edge.from];
+        const toNode = this.nodes[edge.to];
+        return fromNode?.type === 's' && toNode?.type === 's';
+      });
+
+      // Add new edges
+      filteredEdges.push(...newEdges);
+
+      // Re-index nodes
+      const oldIndexToNewIndex = new Map<number, number>();
+      for (let i = 0; i < filteredNodes.length; i++) {
+        const oldIndex = this.nodes.findIndex(n => n.id === filteredNodes[i].id);
+        oldIndexToNewIndex.set(oldIndex, i);
+        filteredNodes[i].index = i;
+      }
+
+      // Update edge indices to match new node indices
+      const reindexedEdges = filteredEdges.map(edge => {
+        const result: EdgeData = {
+          from: oldIndexToNewIndex.get(edge.from) ?? edge.from,
+          to: oldIndexToNewIndex.get(edge.to) ?? edge.to
+        };
+        if (edge.label !== undefined) {
+          result.label = edge.label;
+        }
+        return result;
+      });
+
+      this.ui.updateProgress(80);
+
+      // Clear selection and reload graph with filtered data
+      this.clearSelection();
+      await this.loadGraph('0', filteredNodes, reindexedEdges);
+
+      this.ui.updateProgress(100);
+      this.ui.updateStatus(`Removed ${tNodeIndices.size} transition nodes, added ${newEdges.length} new edges`);
+    } catch (error) {
+      console.error('Error removing transition nodes:', error);
+      this.ui.showError('Failed to remove transition nodes');
+      this.ui.updateProgress(100);
+    }
+  }
+
+  /**
+   * Remove all state (s-type) nodes and create direct edges between connected transition (t-type) nodes
+   */
+  public async removeStateNodes(): Promise<void> {
+    this.ui.updateStatus('Removing state nodes...');
+    this.ui.updateProgress(0);
+
+    try {
+      // Build a map of node IDs to their indices for quick lookup
+      const nodeIdToIndex = new Map<number | string, number>();
+      for (let i = 0; i < this.nodes.length; i++) {
+        nodeIdToIndex.set(this.nodes[i].id, i);
+      }
+
+      // Find all s-type nodes and build adjacency information
+      const sNodeIndices = new Set<number>();
+      const edgesBySNode = new Map<number, { from: number, to: number }[]>();
+
+      for (let i = 0; i < this.nodes.length; i++) {
+        if (this.nodes[i].type === 's') {
+          sNodeIndices.add(i);
+          edgesBySNode.set(i, []);
+        }
+      }
+
+      this.ui.updateProgress(20);
+
+      // Categorize edges by s-nodes
+      for (const edge of this.edges) {
+        const fromNode = this.nodes[edge.from];
+        const toNode = this.nodes[edge.to];
+
+        if (fromNode && toNode) {
+          if (fromNode.type === 's') {
+            edgesBySNode.get(edge.from)?.push({ from: edge.from, to: edge.to });
+          } else if (toNode.type === 's') {
+            edgesBySNode.get(edge.to)?.push({ from: edge.from, to: edge.to });
+          }
+        }
+      }
+
+      this.ui.updateProgress(40);
+
+      // Create new edges connecting t-nodes that were connected via s-nodes
+      const newEdges: EdgeData[] = [];
+      for (const [sNodeIndex, connectedEdges] of edgesBySNode) {
+        // Find all t-nodes connected to this s-node
+        const connectedTNodes: number[] = [];
+        for (const edge of connectedEdges) {
+          const otherNodeIndex = edge.from === sNodeIndex ? edge.to : edge.from;
+          const otherNode = this.nodes[otherNodeIndex];
+          if (otherNode && otherNode.type === 't') {
+            connectedTNodes.push(otherNodeIndex);
+          }
+        }
+
+        // Create edges between all pairs of connected t-nodes
+        for (let i = 0; i < connectedTNodes.length; i++) {
+          for (let j = i + 1; j < connectedTNodes.length; j++) {
+            newEdges.push({
+              from: connectedTNodes[i],
+              to: connectedTNodes[j]
+            });
+          }
+        }
+      }
+
+      this.ui.updateProgress(60);
+
+      // Filter out s-nodes and edges involving s-nodes
+      const filteredNodes = this.nodes.filter(node => node.type === 't');
+      const filteredEdges = this.edges.filter(edge => {
+        const fromNode = this.nodes[edge.from];
+        const toNode = this.nodes[edge.to];
+        return fromNode?.type === 't' && toNode?.type === 't';
+      });
+
+      // Add new edges
+      filteredEdges.push(...newEdges);
+
+      // Re-index nodes
+      const oldIndexToNewIndex = new Map<number, number>();
+      for (let i = 0; i < filteredNodes.length; i++) {
+        const oldIndex = this.nodes.findIndex(n => n.id === filteredNodes[i].id);
+        oldIndexToNewIndex.set(oldIndex, i);
+        filteredNodes[i].index = i;
+      }
+
+      // Update edge indices to match new node indices
+      const reindexedEdges = filteredEdges.map(edge => {
+        const result: EdgeData = {
+          from: oldIndexToNewIndex.get(edge.from) ?? edge.from,
+          to: oldIndexToNewIndex.get(edge.to) ?? edge.to
+        };
+        if (edge.label !== undefined) {
+          result.label = edge.label;
+        }
+        return result;
+      });
+
+      this.ui.updateProgress(80);
+
+      // Clear selection and reload graph with filtered data
+      this.clearSelection();
+      await this.loadGraph('0', filteredNodes, reindexedEdges);
+
+      this.ui.updateProgress(100);
+      this.ui.updateStatus(`Removed ${sNodeIndices.size} state nodes, added ${newEdges.length} new edges`);
+    } catch (error) {
+      console.error('Error removing state nodes:', error);
+      this.ui.showError('Failed to remove state nodes');
+      this.ui.updateProgress(100);
+    }
+  }
+
+  /**
+   * Update the UI to display selected nodes
+   */
+  private updateSelectedNodesUI(): void {
+    const listElement = document.getElementById('selected-nodes-list');
+    const counterElement = document.getElementById('selected-nodes-counter');
+
+    if (!listElement) return;
+
+    // Update counter
+    if (counterElement) {
+      const count = this.selectedNodeIndices.size;
+      counterElement.textContent = `${count} node${count !== 1 ? 's' : ''} selected`;
+    }
+
+    // Clear current content
+    listElement.innerHTML = '';
+
+    if (this.selectedNodeIndices.size === 0) {
+      listElement.innerHTML = '<div class="no-selection-message">Click on a node to select it</div>';
+      return;
+    }
+
+    // Build HTML for each selected node
+    Array.from(this.selectedNodeIndices).forEach(index => {
+      const node = this.nodes[index];
+      if (!node) return;
+
+      const nodeDiv = document.createElement('div');
+      nodeDiv.className = 'selected-node-item';
+      nodeDiv.dataset.index = index.toString();
+
+      let html = `
+        <div class="selected-node-header">
+          Node #${node.id}
+          <button class="selected-node-remove" data-index="${index}">×</button>
+        </div>
+        <div class="selected-node-property">Position: (${node.x.toFixed(2)}, ${node.y.toFixed(2)})</div>
+        <div class="selected-node-property">Cluster: ${node.cluster}</div>
+        <div class="selected-node-property">Type: ${node.type}</div>
+      `;
+
+      // Add parameters by category
+      Object.keys(node.parameters).forEach((category: string) => {
+        html += `<div class="selected-node-category">${category}</div>`;
+        html += `<div class="selected-node-params-container">`;
+        Object.keys(node.parameters[category]).forEach((parameter: string) => {
+          const value = node.parameters[category][parameter];
+          html += `<span class="selected-node-param-tag">${parameter}: ${value.toString()}</span>`;
+        });
+        html += `</div>`;
+      });
+
+      nodeDiv.innerHTML = html;
+      listElement.appendChild(nodeDiv);
+
+      // Add click handler for remove button
+      const removeBtn = nodeDiv.querySelector('.selected-node-remove') as HTMLButtonElement;
+      if (removeBtn) {
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.deselectNode(index);
+        });
+      }
+
+      // Add click handler to focus on node
+      nodeDiv.addEventListener('click', () => {
+        this.focusOnNode(index);
+      });
+    });
+  }
+
+  /**
+   * Focus camera on a specific node
+   */
+  private focusOnNode(index: number): void {
+    if (index < 0 || index >= this.nodes.length) return;
+
+    const node = this.nodes[index];
+    this.panOffset.set(-node.x, -node.y);
+    this.updateCameraPosition();
+    this.ui.updateStatus(`Focused on node #${node.id}`);
   }
 
   // Public API methods
@@ -2341,6 +2886,90 @@ export class Graph2D {
   public toggleClusters(): void {
     this.config.clusterMode = !this.config.clusterMode;
     this.ui.updateStatus(`Cluster mode ${this.config.clusterMode ? 'enabled' : 'disabled'}`);
+  }
+
+  /**
+   * Open table view with given nodes in a new tab
+   * This is a reusable function that can be called from anywhere
+   */
+  public openTableView(nodes: NodeData[]): void {
+    if (nodes.length === 0) {
+      this.ui.updateStatus('No nodes to display in table view');
+      return;
+    }
+
+    // Store nodes in localStorage for the new tab to access
+    localStorage.setItem('tableViewNodes', JSON.stringify(nodes));
+
+    // Open table view in new tab
+    window.open('table-view.html', '_blank');
+
+    this.ui.updateStatus(`Opening table view with ${nodes.length} nodes`);
+  }
+
+  /**
+   * Update PCA eigenvectors display with color coding and arrows
+   */
+  private updatePCAEigenvectorsDisplay(): void {
+    const displayElement = document.getElementById('pca-eigenvectors-display');
+    const contentElement = document.getElementById('pca-eigenvectors-content');
+
+    if (!displayElement || !contentElement) return;
+
+    if (!this.pcaResults) {
+      displayElement.classList.add('hidden');
+      return;
+    }
+
+    // Show the display
+    displayElement.classList.remove('hidden');
+
+    // Build HTML for each principal component
+    let html = '';
+
+    this.pcaResults.eigenvectors.forEach((pc, pcIndex) => {
+      const pcName = `PC${pcIndex + 1}`;
+      const variance = (pc.eigenvalue / this.pcaResults!.eigenvectors.reduce((sum, v) => sum + v.eigenvalue, 0) * 100).toFixed(1);
+
+      html += `<div class="pca-component">`;
+      html += `<div class="pca-component-title">
+        <span>${pcName} (${pcIndex === 0 ? 'X-Axis' : pcIndex === 1 ? 'Y-Axis' : 'Color'})</span>
+        <span class="pca-variance">${variance}% variance</span>
+      </div>`;
+      html += `<div class="pca-parameter-list">`;
+
+      // Create array of {name, loading} and sort by absolute loading value
+      const loadings = this.pcaResults!.parameterNames.map((name, i) => ({
+        name: name,
+        loading: pc.eigenvector[i]
+      }));
+
+      // Sort by absolute value descending
+      loadings.sort((a, b) => Math.abs(b.loading) - Math.abs(a.loading));
+
+      // Show top parameters (those with significant loadings)
+      const threshold = 0.1; // Only show loadings above this threshold
+      loadings.forEach(item => {
+        const absLoading = Math.abs(item.loading);
+        if (absLoading < threshold) return;
+
+        const isPositive = item.loading > 0;
+        const arrow = isPositive ? '↑' : '↓';
+        const cssClass = isPositive ? 'positive' : 'negative';
+
+        html += `<div class="pca-parameter-item ${cssClass}">
+          <span class="pca-arrow">${arrow}</span>
+          <span class="pca-parameter-name">${item.name}</span>
+          <span class="pca-loading-value">${absLoading.toFixed(3)}</span>
+        </div>`;
+      });
+
+      html += `</div></div>`;
+    });
+
+    contentElement.innerHTML = html;
+
+    console.log('[Graph2D] Updated PCA eigenvectors display');
   }
 
   public toggleGrid(): void {
@@ -3107,17 +3736,66 @@ export class Graph2D {
 
     const positions = this.pointCloud.geometry.attributes.position as THREE.BufferAttribute;
     const colors = this.pointCloud.geometry.attributes.color as THREE.BufferAttribute;
+    const alphas = this.pointCloud.geometry.getAttribute('alpha') as THREE.BufferAttribute;
+
+    // Determine which node types have both parameters
+    const xNodeTypes = this.prismAPI.getParameterNodeTypes(xParam);
+    const yNodeTypes = this.prismAPI.getParameterNodeTypes(yParam);
+
+    // Find intersection of node types (nodes that have BOTH parameters)
+    let displayTypes: string[] = [];
+    if (xNodeTypes && yNodeTypes) {
+      const xTypes = xNodeTypes.includes('st') ? ['s', 't'] : [xNodeTypes];
+      const yTypes = yNodeTypes.includes('st') ? ['s', 't'] : [yNodeTypes];
+      displayTypes = xTypes.filter(t => yTypes.includes(t));
+    }
+
+    // Update display label
+    const labelElement = document.getElementById('param-view-display-label');
+    if (labelElement) {
+      if (displayTypes.length > 0) {
+        const typeStr = displayTypes.join(', ');
+        labelElement.textContent = `Displaying [${typeStr}] nodes`;
+        labelElement.classList.remove('hidden');
+      } else {
+        labelElement.classList.add('hidden');
+      }
+    }
+
+    console.log(`[Parameter View] Displaying node types: [${displayTypes.join(', ')}]`);
 
     // Track min and max parameter values for axis labels and color mapping
     let minX = Infinity, maxX = -Infinity;
     let minY = Infinity, maxY = -Infinity;
     let minColor = Infinity, maxColor = -Infinity;
+    let visibleCount = 0;
+    let hiddenCount = 0;
 
-    // First pass: find min/max values for all parameters
+    // First pass: filter nodes and find min/max values for parameters
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
       const xVal = PrismAPI.getParameterValue(node, xParam);
       const yVal = PrismAPI.getParameterValue(node, yParam);
+
+      // Check if node should be visible (has both parameters)
+      const hasX = xVal !== null && xVal !== undefined && !isNaN(xVal);
+      const hasY = yVal !== null && yVal !== undefined && !isNaN(yVal);
+      const isCorrectType = displayTypes.length === 0 || displayTypes.includes(node.type);
+
+      if (!hasX || !hasY || !isCorrectType) {
+        // Hide node
+        if (alphas) {
+          alphas.setX(i, 0.0);
+        }
+        hiddenCount++;
+        continue;
+      }
+
+      // Show node
+      if (alphas) {
+        alphas.setX(i, 1.0);
+      }
+      visibleCount++;
 
       // Only update min/max if values are valid numbers
       if (xVal !== null && xVal !== undefined && !isNaN(xVal)) {
@@ -3138,7 +3816,13 @@ export class Graph2D {
       }
     }
 
-    // Log parameter ranges for debugging
+    // Update alpha buffer
+    if (alphas) {
+      alphas.needsUpdate = true;
+    }
+
+    // Log parameter ranges and filtering for debugging
+    console.log(`[Parameter View] Visible: ${visibleCount}, Hidden: ${hiddenCount} (total: ${this.nodes.length})`);
     console.log(`[Parameter View] X range: ${minX} to ${maxX} (${xParam})`);
     console.log(`[Parameter View] Y range: ${minY} to ${maxY} (${yParam})`);
     if (colorParamIndex) {
@@ -3333,9 +4017,10 @@ export class Graph2D {
     this.ui.disableButtons();
 
     try {
-      // Clear existing nodes and edges
+      // Clear existing state when switching projects
       this.clearPointCloud();
       this.clearEdgeLines();
+      this.clearSelection(); // Clear selected nodes
       this.nodes = [];
       this.edges = [];
 

@@ -90,22 +90,96 @@ function handleBeforeUnload(): void {
 function setupEventListeners(): void {
   // Window resize
   window.addEventListener('resize', handleWindowResize);
-  
+
   // Page visibility for performance optimization
   document.addEventListener('visibilitychange', handleVisibilityChange);
-  
+
   // Cleanup on page unload
   window.addEventListener('beforeunload', handleBeforeUnload);
-  
+
   // Error handling
   window.addEventListener('error', (event) => {
     console.error('Global error:', event.error);
   });
-  
+
   // Unhandled promise rejections
   window.addEventListener('unhandledrejection', (event) => {
     console.error('Unhandled promise rejection:', event.reason);
   });
+
+  // Setup resize handle functionality
+  setupResizeHandle();
+}
+
+/**
+ * Setup the resizable pane functionality
+ */
+function setupResizeHandle(): void {
+  const resizeHandle = document.getElementById('resize-handle');
+  const controlsPane = document.getElementById('controls-pane');
+
+  if (!resizeHandle || !controlsPane) {
+    console.error('[Resize] Resize handle or controls pane not found', {
+      resizeHandle: !!resizeHandle,
+      controlsPane: !!controlsPane
+    });
+    return;
+  }
+
+  console.log('[Resize] Setting up resize handle functionality');
+
+  let isResizing = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  const onMouseDown = (e: MouseEvent) => {
+    isResizing = true;
+    startX = e.clientX;
+    startWidth = controlsPane.offsetWidth;
+
+    console.log('[Resize] Mouse down - starting resize', { startX, startWidth });
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    e.preventDefault();
+  };
+
+  const onMouseMove = (e: MouseEvent) => {
+    if (!isResizing) return;
+
+    // Calculate new width (controls pane is on the right, dragging left increases width)
+    const deltaX = startX - e.clientX;
+    const newWidth = startWidth + deltaX;
+
+    // Apply constraints
+    const minWidth = 200;
+    const maxWidth = 600;
+    const constrainedWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
+
+    // Update controls pane width
+    controlsPane.style.width = `${constrainedWidth}px`;
+
+    // Update resize handle position to match
+    resizeHandle.style.right = `${constrainedWidth}px`;
+
+    // Note: Canvas doesn't need to resize since it spans full width underneath
+  };
+
+  const onMouseUp = () => {
+    if (isResizing) {
+      console.log('[Resize] Mouse up - ending resize');
+      isResizing = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+  };
+
+  resizeHandle.addEventListener('mousedown', onMouseDown);
+  document.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mouseup', onMouseUp);
+
+  console.log('[Resize] Event listeners attached successfully');
 }
 
 /**
