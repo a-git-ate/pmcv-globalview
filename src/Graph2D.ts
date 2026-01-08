@@ -122,8 +122,8 @@ export class Graph2D {
     // Initialize UI Manager
     this.ui = new UIManager(this);
 
-    // Initialize PRISM API
-    this.prismAPI = new PrismAPI('http://localhost:8080');
+    // Initialize PRISM API with progress indicator from UI Manager
+    this.prismAPI = new PrismAPI('http://localhost:8080', true, this.ui.progressIndicator);
 
     // Initialize Project Manager
     this.projectManager = new ProjectManager(this, this.prismAPI);
@@ -288,16 +288,7 @@ export class Graph2D {
     }
   }
 
-  public doPCA(){
-    if(this.nodes.length === 0) return;
-    const flattened = this.flattenParameters();
-    const dataMatrixRaw = flattened.parameterMatrix;
-    const parameterOrder = flattened.parameterOrder;
-    var vectors = PCA.getEigenVectors(dataMatrixRaw);
-    var adjustedData = PCA.computeAdjustedData(dataMatrixRaw, vectors[0], vectors[1]);
-    console.log(vectors);
-    console.log(adjustedData);
-  }
+
 
   /**
    * Perform PCA on selected parameters and node types
@@ -576,32 +567,7 @@ export class Graph2D {
     console.log('[Graph2D] Applied PCA view (PC1=X, PC2=Y, PC3=Color)');
   }
 
-  public flattenParameters(): {parameterOrder: string[], parameterMatrix: number[][]} {
-    if(this.nodes.length === 0) return {parameterOrder: [], parameterMatrix: []};
-    const parameterOrder: string[] = [];
-    const parameterMatrix: number[][] = [];
-    for (let i = 0; i < this.nodes.length; i++){
-      const node = this.nodes[i];
-      const paramValues: number[] = [];
-      if (!(Object.keys(node.parameters).includes('Atomic Propositions'))) continue;
-      for (const key in node.parameters){
-        for (const paramKey in node.parameters[key]){
-          const paramValue = parseFloat(PrismAPI.getParameterValue(node, paramKey));
-          if (isNaN(paramValue)) continue;
-          if(!parameterOrder.includes(`${key}::${paramKey}`)){
-            parameterOrder.push(`${key}::${paramKey}`);
-            paramValues[parameterOrder.length - 1] = paramValue;
-          }
-          else{
-            const index = parameterOrder.indexOf(`${key}::${paramKey}`);
-            paramValues[index] = paramValue;
-          }
-        }
-      }
-      parameterMatrix.push(paramValues);
-    }
-    return {parameterOrder, parameterMatrix};
-  }
+
   public filterNodes(filterFn: (node: NodeData) => boolean): void{
     const alphas = this.pointCloud?.geometry.getAttribute('alpha') as THREE.BufferAttribute;
     let nodesHidden = 0;
@@ -3150,33 +3116,28 @@ export class Graph2D {
 
   /**
    * Detect overlapping nodes and create labels for them
+   * Uses the geometryToNodesMap which was created during point cloud deduplication
    */
   private updateOverlapLabels(): void {
     // Clear existing overlap labels
     this.clearOverlapLabels();
 
-    if (!this.nodes.length) return;
+    if (!this.nodes.length || !this.geometryToNodesMap || this.geometryToNodesMap.size === 0 || !this.pointCloud) return;
 
-    // Create a map of positions to node indices
-    const positionMap = new Map<string, number[]>();
-    const epsilon = 0.001; // Tolerance for considering positions "equal"
-
-    // Group nodes by position
-    for (let i = 0; i < this.nodes.length; i++) {
-      const node = this.nodes[i];
-      // Round to avoid floating point precision issues
-      const posKey = `${Math.round(node.x / epsilon) * epsilon},${Math.round(node.y / epsilon) * epsilon}`;
-
-      if (!positionMap.has(posKey)) {
-        positionMap.set(posKey, []);
-      }
-      positionMap.get(posKey)!.push(i);
-    }
+    // Get alpha buffer to check if nodes are visible
+    const alphas = this.pointCloud.geometry.getAttribute('alpha') as THREE.BufferAttribute;
+    if (!alphas) return;
 
     // Create labels for positions with multiple nodes
     this.overlapLabelsGroup = new THREE.Group();
 
-    positionMap.forEach((nodeIndices) => {
+    // Use the existing geometryToNodesMap which already has deduplicated positions
+    this.geometryToNodesMap.forEach((nodeIndices, geometryIndex) => {
+      // Check if this geometry point is visible (alpha > 0)
+      if (alphas.getX(geometryIndex) === 0) {
+        return; // Skip invisible nodes
+      }
+
       if (nodeIndices.length > 1) {
         // Get position from first node
         const firstNode = this.nodes[nodeIndices[0]];
@@ -3214,7 +3175,7 @@ export class Graph2D {
         sprite.scale.set(labelScale, labelScale, 1);
 
         // Store node reference for position updates
-        sprite.userData = { nodeIndex: nodeIndices[0] };
+        sprite.userData = { nodeIndex: nodeIndices[0], geometryIndex: geometryIndex };
 
         if (this.overlapLabelsGroup) {
           this.overlapLabelsGroup.add(sprite);

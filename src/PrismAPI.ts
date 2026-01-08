@@ -1,5 +1,5 @@
 import type { NodeData, EdgeData } from './types';
-import { ProgressIndicator } from './ProgressIndicator';
+import type { ProgressIndicator } from './UIManager';
 
 export interface ParameterMetadata {
   type: 'number' | 'boolean' | 'nominal';
@@ -37,10 +37,17 @@ export class PrismAPI {
   public progressIndicator: ProgressIndicator; // Public so other classes can use it
   private currentAbortController: AbortController | null = null; // For aborting fetch operations
 
-  constructor(baseUrl: string = 'http://localhost:8080', useWorker: boolean = true) {
+  constructor(baseUrl: string = 'http://localhost:8080', useWorker: boolean = true, progressIndicator?: ProgressIndicator) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.useWorker = useWorker;
-    this.progressIndicator = new ProgressIndicator();
+
+    // Use provided progress indicator or create a new one (for backwards compatibility)
+    if (progressIndicator) {
+      this.progressIndicator = progressIndicator;
+    } else {
+      // This should never happen in the refactored version, but keeping for safety
+      throw new Error('[PrismAPI] ProgressIndicator must be provided');
+    }
 
     // Initialize worker if enabled
     if (this.useWorker && typeof Worker !== 'undefined') {
@@ -202,7 +209,7 @@ export class PrismAPI {
    * Process graph data using Web Worker (if available)
    * Returns a promise that resolves with the processed data
    */
-  private async convertNewFormatToInternalSTWorker(data: any): Promise<{ s_nodes: NodeData[]; t_nodes: NodeData[]; edges: EdgeData[] }> {
+  private async convertNewFormatToInternalWorker(data: any): Promise<{ nodes: NodeData[]; edges: EdgeData[] }> {
     return new Promise((resolve, reject) => {
       if (!this.worker) {
         reject(new Error('Worker not available'));
@@ -241,16 +248,13 @@ export class PrismAPI {
           this.populateParameterOrder(result.parameterMetadata);
         }
 
-        const { s_nodes, t_nodes, edges } = result;
-
-        // Combine nodes for metadata processing
-        const allNodes = s_nodes.concat(t_nodes);
+        const { nodes, edges } = result;
 
         // Process metadata on main thread (these methods access class state)
-        this.addNominalValuesToParameterMetadata(allNodes);
-        this.calculateParameterMinMax(allNodes);
+        this.addNominalValuesToParameterMetadata(nodes);
+        this.calculateParameterMinMax(nodes);
 
-        resolve({ s_nodes, t_nodes, edges });
+        resolve({ nodes, edges });
       };
 
       const handleError = (error: ErrorEvent) => {
@@ -268,7 +272,7 @@ export class PrismAPI {
     });
   }
 
-  private convertNewFormatToInternalST(data: any): { s_nodes: NodeData[]; t_nodes: NodeData[]; edges: EdgeData[] } {
+  private convertNewFormatToInternalMainThread(data: any): { nodes: NodeData[]; edges: EdgeData[] } {
     if (data.info) {
       console.log('[PrismAPI] Setting parameterMetadata from data.info');
       this.parameterMetadata = data.info;
@@ -281,15 +285,20 @@ export class PrismAPI {
     const s_nodes_raw = data.nodes.filter((node: any) => node.type === 's');
     const t_nodes_raw = data.nodes.filter((node: any) => node.type === 't');
 
+    // Pre-allocate the combined nodes array
+    const totalNodes = s_nodes_raw.length + t_nodes_raw.length;
+    const nodes: NodeData[] = new Array(totalNodes);
+
     // Create s_nodes with their global indices
-    const s_nodes: NodeData[] = s_nodes_raw.map((node: any, arrayIndex: number) => {
+    for (let i = 0; i < s_nodes_raw.length; i++) {
+      const node = s_nodes_raw[i];
       const nodeId = String(node.id);
-      const globalIndex = arrayIndex; // Global index in the final combined array
+      const globalIndex = i; // Global index in the final combined array
 
       // Map original ID to global index for edge resolution
       idToIndex.set(nodeId, globalIndex);
 
-      return {
+      nodes[globalIndex] = {
         id: node.id, // Keep original ID
         index: globalIndex, // Add sequential index for positioning
         type: 's',
@@ -300,17 +309,19 @@ export class PrismAPI {
         degree: 0, // Initialize degree counter
         parameters: node.details || {}
       };
-    });
+    }
 
     // Create t_nodes with their global indices (offset by s_nodes length)
-    const t_nodes: NodeData[] = t_nodes_raw.map((node: any, arrayIndex: number) => {
+    const s_length = s_nodes_raw.length;
+    for (let i = 0; i < t_nodes_raw.length; i++) {
+      const node = t_nodes_raw[i];
       const nodeId = String(node.id);
-      const globalIndex = s_nodes.length + arrayIndex; // Offset by s_nodes length
+      const globalIndex = s_length + i; // Offset by s_nodes length
 
       // Map original ID to global index for edge resolution
       idToIndex.set(nodeId, globalIndex);
 
-      return {
+      nodes[globalIndex] = {
         id: node.id, // Keep original ID
         index: globalIndex, // Add sequential index for positioning
         x: 0,
@@ -321,14 +332,12 @@ export class PrismAPI {
         parameters: node.details || {},
         name: node.name || String(node.id)
       };
-    });
+    }
 
-    // Combine nodes using concat (more efficient than spread for large arrays)
-    const allNodes = s_nodes.concat(t_nodes);
-    this.addNominalValuesToParameterMetadata(allNodes);
+    this.addNominalValuesToParameterMetadata(nodes);
 
     // Calculate and cache min/max values for all numeric parameters
-    this.calculateParameterMinMax(allNodes);
+    this.calculateParameterMinMax(nodes);
 
     // Process edges and calculate degrees in a single pass
     const edges: EdgeData[] = [];
@@ -348,37 +357,30 @@ export class PrismAPI {
         });
 
         // Increment degree for both nodes
-        allNodes[fromIndex].degree!++;
-        allNodes[toIndex].degree!++;
+        nodes[fromIndex].degree!++;
+        nodes[toIndex].degree!++;
       }
     }
 
-    console.log(`[PrismAPI] Converted graph with ${s_nodes.length} s_nodes, ${t_nodes.length} t_nodes, ${edges.length} edges.`);
-    return { s_nodes, t_nodes, edges };
+    console.log(`[PrismAPI] Converted graph with ${nodes.length} nodes, ${edges.length} edges.`);
+    return { nodes, edges };
   }
 
 
   async convertNewFormatToInternal(data: any): Promise<{ nodes: NodeData[]; edges: EdgeData[] }> {
-    let result: { s_nodes: NodeData[]; t_nodes: NodeData[]; edges: EdgeData[] };
-
     // Use worker if available, otherwise fall back to main thread
     if (this.useWorker && this.worker) {
       try {
         console.log('[PrismAPI] Processing data using Web Worker');
-        result = await this.convertNewFormatToInternalSTWorker(data);
+        return await this.convertNewFormatToInternalWorker(data);
       } catch (error) {
         console.warn('[PrismAPI] Worker processing failed, falling back to main thread:', error);
-        result = this.convertNewFormatToInternalST(data);
+        return this.convertNewFormatToInternalMainThread(data);
       }
     } else {
       console.log('[PrismAPI] Processing data on main thread');
-      result = this.convertNewFormatToInternalST(data);
+      return this.convertNewFormatToInternalMainThread(data);
     }
-
-    const { s_nodes, t_nodes, edges } = result;
-    const nodes = s_nodes.concat(t_nodes);
-    console.log(`[PrismAPI] Fetched Graph with ${nodes.length} nodes`);
-    return { nodes, edges };
   }
 
   public getPossibleValuesForParameter(categoryName: string, paramName: string): string[] {

@@ -13,8 +13,7 @@ interface WorkerInput {
 
 interface WorkerOutput {
   type: 'result' | 'error' | 'progress';
-  s_nodes?: NodeData[];
-  t_nodes?: NodeData[];
+  nodes?: NodeData[];
   edges?: EdgeData[];
   parameterMetadata?: GraphInfo;
   error?: string;
@@ -48,8 +47,7 @@ self.onmessage = (event: MessageEvent<WorkerInput>) => {
  * Process graph data and convert to internal format
  */
 function processGraphData(data: any): {
-  s_nodes: NodeData[];
-  t_nodes: NodeData[];
+  nodes: NodeData[];
   edges: EdgeData[];
   parameterMetadata?: GraphInfo;
 } {
@@ -64,12 +62,11 @@ function processGraphData(data: any): {
   const s_nodes_raw = data.nodes.filter((node: any) => node.type === 's');
   const t_nodes_raw = data.nodes.filter((node: any) => node.type === 't');
 
-  // Pre-allocate arrays for better performance
-  const s_nodes: NodeData[] = new Array(s_nodes_raw.length);
-  const t_nodes: NodeData[] = new Array(t_nodes_raw.length);
-
   // Total nodes for progress calculation
   const totalNodes = s_nodes_raw.length + t_nodes_raw.length;
+
+  // Pre-allocate the combined nodes array
+  const nodes: NodeData[] = new Array(totalNodes);
 
   // Create s_nodes with their global indices
   for (let i = 0; i < s_nodes_raw.length; i++) {
@@ -79,7 +76,7 @@ function processGraphData(data: any): {
 
     idToIndex.set(nodeId, globalIndex);
 
-    s_nodes[i] = {
+    nodes[globalIndex] = {
       id: node.id,
       index: globalIndex,
       type: 's',
@@ -103,7 +100,7 @@ function processGraphData(data: any): {
   }
 
   // Create t_nodes with their global indices (offset by s_nodes length)
-  const s_length = s_nodes.length;
+  const s_length = s_nodes_raw.length;
   for (let i = 0; i < t_nodes_raw.length; i++) {
     const node = t_nodes_raw[i];
     const nodeId = String(node.id);
@@ -111,7 +108,7 @@ function processGraphData(data: any): {
 
     idToIndex.set(nodeId, globalIndex);
 
-    t_nodes[i] = {
+    nodes[globalIndex] = {
       id: node.id,
       index: globalIndex,
       type: 't',
@@ -134,9 +131,6 @@ function processGraphData(data: any): {
     }
   }
 
-  // Combine nodes for degree calculation
-  const allNodes = s_nodes.concat(t_nodes);
-
   // Process edges and calculate degrees in a single pass
   const edgeCount = data.edges.length;
   const edges: EdgeData[] = [];
@@ -157,17 +151,16 @@ function processGraphData(data: any): {
       });
 
       // Increment degree for both nodes
-      allNodes[fromIndex].degree!++;
-      allNodes[toIndex].degree!++;
+      nodes[fromIndex].degree!++;
+      nodes[toIndex].degree!++;
     }
   }
 
   const endTime = performance.now();
-  console.log(`[Worker] Processed graph in ${(endTime - startTime).toFixed(2)}ms: ${s_nodes.length} s_nodes, ${t_nodes.length} t_nodes, ${edges.length} edges`);
+  console.log(`[Worker] Processed graph in ${(endTime - startTime).toFixed(2)}ms: ${nodes.length} nodes, ${edges.length} edges`);
 
   return {
-    s_nodes,
-    t_nodes,
+    nodes,
     edges,
     parameterMetadata
   };
