@@ -2729,6 +2729,7 @@ export class Graph2D {
 
   /**
    * Update the UI to display selected nodes
+   * For large selections (>100), this processes nodes progressively in the background
    */
   private updateSelectedNodesUI(): void {
     const listElement = document.getElementById('selected-nodes-list');
@@ -2736,67 +2737,155 @@ export class Graph2D {
 
     if (!listElement) return;
 
-    // Update counter
+    const selectedCount = this.selectedNodeIndices.size;
+
+    // Update counter immediately
     if (counterElement) {
-      const count = this.selectedNodeIndices.size;
-      counterElement.textContent = `${count} node${count !== 1 ? 's' : ''} selected`;
+      counterElement.textContent = `${selectedCount} node${selectedCount !== 1 ? 's' : ''} selected`;
     }
 
     // Clear current content
     listElement.innerHTML = '';
 
-    if (this.selectedNodeIndices.size === 0) {
+    if (selectedCount === 0) {
       listElement.innerHTML = '<div class="no-selection-message">Click on a node to select it</div>';
       return;
     }
 
-    // Build HTML for each selected node
-    Array.from(this.selectedNodeIndices).forEach(index => {
+    // For large selections, use progressive rendering
+    if (selectedCount > 100) {
+      this.updateSelectedNodesUIProgressive(listElement, counterElement);
+    } else {
+      // For small selections, render immediately
+      this.updateSelectedNodesUIImmediate(listElement);
+    }
+  }
+
+  /**
+   * Immediate rendering for small selections
+   */
+  private updateSelectedNodesUIImmediate(listElement: HTMLElement): void {
+    const fragment = document.createDocumentFragment();
+
+    for (const index of this.selectedNodeIndices) {
       const node = this.nodes[index];
-      if (!node) return;
+      if (!node) continue;
 
-      const nodeDiv = document.createElement('div');
-      nodeDiv.className = 'selected-node-item';
-      nodeDiv.dataset.index = index.toString();
+      const nodeDiv = this.createSelectedNodeElement(node, index);
+      fragment.appendChild(nodeDiv);
+    }
 
-      let html = `
-        <div class="selected-node-header">
-          Node #${node.id}
-          <button class="selected-node-remove" data-index="${index}">×</button>
-        </div>
-        <div class="selected-node-property">Position: (${node.x.toFixed(2)}, ${node.y.toFixed(2)})</div>
-        <div class="selected-node-property">Cluster: ${node.cluster}</div>
-        <div class="selected-node-property">Type: ${node.type}</div>
-      `;
+    listElement.appendChild(fragment);
+  }
 
-      // Add parameters by category
-      Object.keys(node.parameters).forEach((category: string) => {
-        html += `<div class="selected-node-category">${category}</div>`;
-        html += `<div class="selected-node-params-container">`;
-        Object.keys(node.parameters[category]).forEach((parameter: string) => {
-          const value = node.parameters[category][parameter];
-          html += `<span class="selected-node-param-tag">${parameter}: ${value.toString()}</span>`;
-        });
-        html += `</div>`;
-      });
+  /**
+   * Progressive rendering for large selections (>100 nodes)
+   * Updates counter every 100 nodes and yields to browser between batches
+   */
+  private async updateSelectedNodesUIProgressive(listElement: HTMLElement, counterElement: HTMLElement | null): Promise<void> {
+    const indices = Array.from(this.selectedNodeIndices);
+    const totalCount = indices.length;
+    const BATCH_SIZE = 100;
+    let processedCount = 0;
 
-      nodeDiv.innerHTML = html;
-      listElement.appendChild(nodeDiv);
+    // Show loading message
+    listElement.innerHTML = '<div class="no-selection-message">Loading selected nodes...</div>';
 
-      // Add click handler for remove button
-      const removeBtn = nodeDiv.querySelector('.selected-node-remove') as HTMLButtonElement;
-      if (removeBtn) {
-        removeBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.deselectNode(index);
-        });
+    // Process in batches
+    for (let i = 0; i < indices.length; i += BATCH_SIZE) {
+      const batch = indices.slice(i, Math.min(i + BATCH_SIZE, indices.length));
+      const fragment = document.createDocumentFragment();
+
+      // Process batch
+      for (const index of batch) {
+        const node = this.nodes[index];
+        if (!node) continue;
+
+        const nodeDiv = this.createSelectedNodeElement(node, index);
+        fragment.appendChild(nodeDiv);
       }
 
-      // Add click handler to focus on node
-      nodeDiv.addEventListener('click', () => {
-        this.focusOnNode(index);
+      // Clear loading message on first batch
+      if (i === 0) {
+        listElement.innerHTML = '';
+      }
+
+      // Append batch
+      listElement.appendChild(fragment);
+
+      processedCount += batch.length;
+
+      // Update counter
+      if (counterElement) {
+        counterElement.textContent = `${totalCount} node${totalCount !== 1 ? 's' : ''} selected (${processedCount} shown)`;
+      }
+
+      // Yield to browser to keep UI responsive
+      if (i + BATCH_SIZE < indices.length) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    // Final counter update
+    if (counterElement) {
+      counterElement.textContent = `${totalCount} node${totalCount !== 1 ? 's' : ''} selected`;
+    }
+  }
+
+  /**
+   * Create a DOM element for a selected node
+   * Optimized to minimize string concatenation and use efficient DOM methods
+   */
+  private createSelectedNodeElement(node: NodeData, index: number): HTMLDivElement {
+    const nodeDiv = document.createElement('div');
+    nodeDiv.className = 'selected-node-item';
+    nodeDiv.dataset.index = index.toString();
+
+    // Build HTML using array join for better performance
+    const htmlParts: string[] = [
+      '<div class="selected-node-header">',
+      `Node #${node.id}`,
+      `<button class="selected-node-remove" data-index="${index}">×</button>`,
+      '</div>',
+      `<div class="selected-node-property">Position: (${node.x.toFixed(2)}, ${node.y.toFixed(2)})</div>`,
+      `<div class="selected-node-property">Cluster: ${node.cluster}</div>`,
+      `<div class="selected-node-property">Type: ${node.type}</div>`
+    ];
+
+    // Add parameters by category (optimized)
+    for (const category in node.parameters) {
+      if (!node.parameters.hasOwnProperty(category)) continue;
+
+      htmlParts.push(`<div class="selected-node-category">${category}</div>`);
+      htmlParts.push('<div class="selected-node-params-container">');
+
+      const params = node.parameters[category];
+      for (const parameter in params) {
+        if (!params.hasOwnProperty(parameter)) continue;
+        const value = params[parameter];
+        htmlParts.push(`<span class="selected-node-param-tag">${parameter}: ${value.toString()}</span>`);
+      }
+
+      htmlParts.push('</div>');
+    }
+
+    nodeDiv.innerHTML = htmlParts.join('');
+
+    // Add click handler for remove button
+    const removeBtn = nodeDiv.querySelector('.selected-node-remove') as HTMLButtonElement;
+    if (removeBtn) {
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.deselectNode(index);
       });
+    }
+
+    // Add click handler to focus on node
+    nodeDiv.addEventListener('click', () => {
+      this.focusOnNode(index);
     });
+
+    return nodeDiv;
   }
 
   /**
@@ -3144,7 +3233,7 @@ export class Graph2D {
         const count = nodeIndices.length;
 
         // Create label sprite
-        const texture = this.createOverlapCountTexture(count.toString());
+        const { texture, aspectRatio } = this.createOverlapCountTexture(count.toString());
         const spriteMaterial = new THREE.SpriteMaterial({
           map: texture,
           transparent: true,
@@ -3169,10 +3258,11 @@ export class Graph2D {
 
         sprite.position.set(firstNode.x + offsetX, firstNode.y + offsetY, 1);
 
-        // Font size: 0.5vh in screen space
-        // Convert viewport height percentage to world space
-        const labelScale = viewHeight * 0.02; // 2% of view height for visibility
-        sprite.scale.set(labelScale, labelScale, 1);
+        // Scale sprite based on aspect ratio to prevent stretching/squishing
+        // Base height on viewport percentage
+        const labelHeight = viewHeight * 0.02; // 2% of view height for visibility
+        const labelWidth = labelHeight * aspectRatio; // Maintain aspect ratio
+        sprite.scale.set(labelWidth, labelHeight, 1);
 
         // Store node reference for position updates
         sprite.userData = { nodeIndex: nodeIndices[0], geometryIndex: geometryIndex };
@@ -3193,8 +3283,9 @@ export class Graph2D {
 
   /**
    * Create a texture for overlap count labels
+   * Returns both the texture and its aspect ratio to prevent stretching
    */
-  private createOverlapCountTexture(text: string): THREE.CanvasTexture {
+  private createOverlapCountTexture(text: string): { texture: THREE.CanvasTexture; aspectRatio: number } {
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d')!;
 
@@ -3204,10 +3295,13 @@ export class Graph2D {
     const metrics = context.measureText(text);
     const textWidth = metrics.width;
 
-    // Set canvas size with minimal padding
+    // Set canvas size with minimal padding - no minimum width to avoid squishing
     const padding = 8;
-    canvas.width = Math.max(96, textWidth + padding * 2);
+    canvas.width = textWidth + padding * 2;
     canvas.height = 96;
+
+    // Calculate aspect ratio (width / height)
+    const aspectRatio = canvas.width / canvas.height;
 
     // Clear background (transparent)
     context.clearRect(0, 0, canvas.width, canvas.height);
@@ -3221,7 +3315,7 @@ export class Graph2D {
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.needsUpdate = true;
-    return texture;
+    return { texture, aspectRatio };
   }
 
   /**
@@ -3429,21 +3523,15 @@ export class Graph2D {
     const visibleMinY = this.worldToParam(viewBottom, minValues.y, maxValues.y, spread);
     const visibleMaxY = this.worldToParam(viewTop, minValues.y, maxValues.y, spread);
 
-    // Use UNIFIED PARAMETER INTERVAL for both X and Y axes
+    // Calculate INDEPENDENT parameter intervals for X and Y axes
     // Calculate the visible parameter ranges
     const visibleXParamRange = visibleMaxX - visibleMinX;
     const visibleYParamRange = visibleMaxY - visibleMinY;
 
-    // Use the larger parameter range to determine interval
-    const maxParamRange = Math.max(visibleXParamRange, visibleYParamRange);
-
-    // Calculate a nice interval in parameter space using only 1, 2.5, 5 × 10^n
-    // This ensures both axes use the same increments
-    const paramInterval = this.calculateNiceParameterInterval(maxParamRange);
-
-    // Both axes use the same parameter interval
-    const xParamInterval = paramInterval;
-    const yParamInterval = paramInterval;
+    // Calculate nice intervals independently for each axis
+    // This allows each axis to choose its own optimal step size
+    const xParamInterval = this.calculateNiceParameterInterval(visibleXParamRange);
+    const yParamInterval = this.calculateNiceParameterInterval(visibleYParamRange);
 
     // Generate X-axis ticks starting from 0 (or nearest multiple below visible range)
     const xTicks: number[] = [];
@@ -3699,6 +3787,11 @@ export class Graph2D {
     const colors = this.pointCloud.geometry.attributes.color as THREE.BufferAttribute;
     const alphas = this.pointCloud.geometry.getAttribute('alpha') as THREE.BufferAttribute;
 
+    if (!alphas) {
+      console.error('[Parameter View] Alpha buffer not found');
+      return;
+    }
+
     // Determine which node types have both parameters
     const xNodeTypes = this.prismAPI.getParameterNodeTypes(xParam);
     const yNodeTypes = this.prismAPI.getParameterNodeTypes(yParam);
@@ -3732,7 +3825,11 @@ export class Graph2D {
     let visibleCount = 0;
     let hiddenCount = 0;
 
-    // First pass: filter nodes and find min/max values for parameters
+    // Create a map to track which geometry indices should be visible
+    // A geometry point should be visible if ANY of its stacked nodes should be visible
+    const geometryVisibility = new Map<number, boolean>();
+
+    // First pass: determine visibility for each node and track by geometry index
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
       const xVal = PrismAPI.getParameterValue(node, xParam);
@@ -3743,37 +3840,73 @@ export class Graph2D {
       const hasY = yVal !== null && yVal !== undefined && !isNaN(yVal);
       const isCorrectType = displayTypes.length === 0 || displayTypes.includes(node.type);
 
-      if (!hasX || !hasY || !isCorrectType) {
-        // Hide node
-        if (alphas) {
-          alphas.setX(i, 0.0);
-        }
+      const isVisible = hasX && hasY && isCorrectType;
+
+      if (!isVisible) {
         hiddenCount++;
-        continue;
+      } else {
+        visibleCount++;
       }
 
-      // Show node
-      if (alphas) {
-        alphas.setX(i, 1.0);
-      }
-      visibleCount++;
-
-      // Only update min/max if values are valid numbers
-      if (xVal !== null && xVal !== undefined && !isNaN(xVal)) {
-        minX = Math.min(minX, xVal);
-        maxX = Math.max(maxX, xVal);
-      }
-      if (yVal !== null && yVal !== undefined && !isNaN(yVal)) {
-        minY = Math.min(minY, yVal);
-        maxY = Math.max(maxY, yVal);
-      }
-
-      if (colorParamIndex) {
-        const colorVal = PrismAPI.getParameterValue(node, colorParamIndex);
-        if (colorVal !== null && colorVal !== undefined && !isNaN(colorVal)) {
-          minColor = Math.min(minColor, colorVal);
-          maxColor = Math.max(maxColor, colorVal);
+      // Find which geometry index this node belongs to
+      // Since we need to check all geometry indices, we'll build the visibility map
+      // A geometry point is visible if ANY of its nodes should be visible
+      for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
+        if (nodeIndices.includes(i)) {
+          // If this node is visible, mark the geometry as visible
+          if (isVisible) {
+            geometryVisibility.set(geometryIndex, true);
+          }
+          break;
         }
+      }
+    }
+
+    // Second pass: apply visibility to geometry points based on collected data
+    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
+      const shouldBeVisible = geometryVisibility.get(geometryIndex) === true;
+
+      if (alphas) {
+        alphas.setX(geometryIndex, shouldBeVisible ? 1.0 : 0.0);
+      }
+
+      // Update min/max only for visible nodes
+      if (shouldBeVisible) {
+        for (const nodeIndex of nodeIndices) {
+          const node = this.nodes[nodeIndex];
+          const xVal = PrismAPI.getParameterValue(node, xParam);
+          const yVal = PrismAPI.getParameterValue(node, yParam);
+
+          if (xVal !== null && xVal !== undefined && !isNaN(xVal)) {
+            minX = Math.min(minX, xVal);
+            maxX = Math.max(maxX, xVal);
+          }
+          if (yVal !== null && yVal !== undefined && !isNaN(yVal)) {
+            minY = Math.min(minY, yVal);
+            maxY = Math.max(maxY, yVal);
+          }
+
+          if (colorParamIndex) {
+            const colorVal = PrismAPI.getParameterValue(node, colorParamIndex);
+            if (colorVal !== null && colorVal !== undefined && !isNaN(colorVal)) {
+              minColor = Math.min(minColor, colorVal);
+              maxColor = Math.max(maxColor, colorVal);
+            }
+          }
+        }
+      }
+    }
+
+    // Recalculate counts based on geometry visibility
+    visibleCount = 0;
+    hiddenCount = 0;
+    for (const [geometryIndex, isVisible] of geometryVisibility.entries()) {
+      if (isVisible) {
+        const nodeIndices = this.geometryToNodesMap.get(geometryIndex) || [];
+        visibleCount += nodeIndices.length;
+      } else {
+        const nodeIndices = this.geometryToNodesMap.get(geometryIndex) || [];
+        hiddenCount += nodeIndices.length;
       }
     }
 
@@ -3802,28 +3935,35 @@ export class Graph2D {
     // For compatibility with existing code, use max spread
     const spread = Math.max(spreadX, spreadY);
 
-    // Second pass: update positions and colors using actual min/max values
-    for (let i = 0; i < this.nodes.length; i++) {
-      const node = this.nodes[i];
+    // Third pass: update positions and colors using actual min/max values
+    // Iterate through geometry points and update their positions based on visible nodes
+    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
+      if (nodeIndices.length === 0) continue;
+
+      // Use the first visible node in the stack as representative
+      let representativeNode = this.nodes[nodeIndices[0]];
       const newPosition = this.calculateParameterPosition(
-        node,
+        representativeNode,
         spread,
         { x: minX, y: minY },
         { x: maxX, y: maxY }
       );
 
-      // Update node data
-      node.x = newPosition.x;
-      node.y = newPosition.y;
+      // Update all nodes in this stack with the same position
+      for (const nodeIndex of nodeIndices) {
+        const node = this.nodes[nodeIndex];
+        node.x = newPosition.x;
+        node.y = newPosition.y;
+      }
 
-      // Update positions buffer
-      positions.setXYZ(i, newPosition.x, newPosition.y, 0);
+      // Update geometry positions buffer (uses geometry index)
+      positions.setXYZ(geometryIndex, newPosition.x, newPosition.y, 0);
 
       // Update colors if color parameter is specified
       if (colorParamIndex != "") {
-        const colorValue = PrismAPI.getParameterValue(node, colorParamIndex);
+        const colorValue = PrismAPI.getParameterValue(representativeNode, colorParamIndex);
         const color = this.getColorFromParameter(colorValue, minColor, maxColor);
-        colors.setXYZ(i, color.r, color.g, color.b);
+        colors.setXYZ(geometryIndex, color.r, color.g, color.b);
       }
     }
 
