@@ -3,6 +3,7 @@ import { UIManager } from './UIManager';
 import { PrismAPI } from './PrismAPI';
 import { ProjectManager } from './ProjectManager';
 import PCA from 'pca-js';
+import { PCA as MLPCA } from 'ml-pca';
 
 import type {
   NodeData,
@@ -36,6 +37,9 @@ export class Graph2D {
 
   // Overlap labels
   private overlapLabelsGroup: THREE.Group | null = null;
+
+  // Current filter function (for overlap label counting)
+  private currentFilterFn: ((node: NodeData) => boolean) | null = null;
 
   // Tooltip
   private tooltipElement: HTMLElement | null = null;
@@ -306,7 +310,11 @@ export class Graph2D {
       return;
     }
 
+    console.log('[Graph2D] ========== PCA-JS PERFORMANCE METRICS ==========');
     console.log('[Graph2D] Starting PCA with selected parameters:', selectedParams);
+
+    const perfStart = performance.now();
+    const memStart = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
 
     // 1. Clear existing PCA data from all nodes
     this.prismAPI.progressIndicator.setStatus('Clearing previous PCA data...');
@@ -336,7 +344,12 @@ export class Graph2D {
 
     // 4. Perform PCA
     this.prismAPI.progressIndicator.setStatus(`Computing eigenvectors for ${dataMatrix.length.toLocaleString()} nodes...`);
+    const pcaStart = performance.now();
     const vectors = PCA.getEigenVectors(dataMatrix);
+    const pcaEnd = performance.now();
+    console.log(`[Graph2D] [PERF] PCA computation time: ${(pcaEnd - pcaStart).toFixed(2)} ms`);
+    console.log(`[Graph2D] [PERF] Time per node: ${((pcaEnd - pcaStart) / dataMatrix.length).toFixed(4)} ms`);
+    console.log(`[Graph2D] [PERF] Time per parameter: ${((pcaEnd - pcaStart) / parameterNames.length).toFixed(4)} ms`);
 
     if (vectors.length < 3) {
       console.error('[Graph2D] Not enough principal components');
@@ -379,17 +392,26 @@ export class Graph2D {
     if (pcData.length === 3 && pcData[0].length === nodeIndices.length) {
       // Data is transposed, fix it
       console.log('[Graph2D] Transposing PC data from [3 x', nodeIndices.length, '] to [', nodeIndices.length, 'x 3]');
+      console.log('[Graph2D] Before transpose - first 3 values of each PC:');
+      console.log('[Graph2D]   PC1 array:', pcData[0].slice(0, 3));
+      console.log('[Graph2D]   PC2 array:', pcData[1].slice(0, 3));
+      console.log('[Graph2D]   PC3 array:', pcData[2].slice(0, 3));
+
       const transposed: number[][] = [];
       for (let i = 0; i < nodeIndices.length; i++) {
-        transposed.push([pcData[0][i], pcData[1][i], pcData[2][i]]);
+        // Note: Negating PC2 to match ml-pca sign convention
+        transposed.push([pcData[0][i], -pcData[1][i], pcData[2][i]]);
       }
       pcData = transposed;
+
+      console.log('[Graph2D] After transpose (with PC2 sign flip) - first 3 nodes:', pcData.slice(0, 3));
     }
 
     console.log('[Graph2D] PCA eigenvalues:', [pc1.eigenvalue, pc2.eigenvalue, pc3.eigenvalue]);
     const varianceExplained = PCA.computePercentageExplained(vectors, pc1, pc2, pc3);
     console.log('[Graph2D] Variance explained:', varianceExplained.toFixed(2) + '%');
     console.log('[Graph2D] Final PC data dimensions:', pcData.length, 'x', pcData[0]?.length);
+    console.log('[Graph2D] PCA-JS sample PC values (first 3 nodes):', pcData.slice(0, 3));
 
     // Store PCA results for display
     this.pcaResults = {
@@ -409,7 +431,162 @@ export class Graph2D {
     // 7. Update PCA eigenvectors display
     this.updatePCAEigenvectorsDisplay();
 
+    const perfEnd = performance.now();
+    const memEnd = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
+    const totalTime = perfEnd - perfStart;
+    const memUsed = memEnd - memStart;
+
+    console.log('[Graph2D] [PERF] ===== TOTAL PERFORMANCE SUMMARY (pca-js) =====');
+    console.log(`[Graph2D] [PERF] Total execution time: ${totalTime.toFixed(2)} ms`);
+    console.log(`[Graph2D] [PERF] Total time per node: ${(totalTime / dataMatrix.length).toFixed(4)} ms`);
+    console.log(`[Graph2D] [PERF] Total time per parameter: ${(totalTime / parameterNames.length).toFixed(4)} ms`);
+    if (memUsed > 0) {
+      console.log(`[Graph2D] [PERF] Memory delta: ${(memUsed / 1024 / 1024).toFixed(2)} MB`);
+      console.log(`[Graph2D] [PERF] Memory per node: ${(memUsed / dataMatrix.length).toFixed(2)} bytes`);
+    }
+    console.log('[Graph2D] [PERF] ================================================');
     console.log('[Graph2D] PCA complete');
+  }
+
+  /**
+   * Perform PCA using ml-pca library on selected parameters and node types
+   * @param selectedParams Array of parameter objects with category, paramName, and nodeTypes
+   */
+  public doMLPCAWithSelection(selectedParams: Array<{category: string, paramName: string, nodeTypes: Set<'s' | 't'>}>): void {
+    if (this.nodes.length === 0) {
+      console.warn('[Graph2D] No nodes available for PCA');
+      return;
+    }
+
+    if (selectedParams.length < 2) {
+      console.warn('[Graph2D] PCA requires at least 2 parameters');
+      alert('Please select at least 2 parameters for PCA');
+      return;
+    }
+
+    console.log('[Graph2D] ========== ML-PCA PERFORMANCE METRICS ==========');
+    console.log('[Graph2D] Starting ML-PCA with selected parameters:', selectedParams);
+
+    const perfStart = performance.now();
+    const memStart = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
+
+    // 1. Clear existing PCA data from all nodes
+    this.prismAPI.progressIndicator.setStatus('Clearing previous PCA data...');
+    this.clearPCAData();
+
+    // 2. Get selected node types from checkboxes
+    const sNodeCheckbox = document.getElementById('pca-node-type-s') as HTMLInputElement;
+    const tNodeCheckbox = document.getElementById('pca-node-type-t') as HTMLInputElement;
+    const includeS = sNodeCheckbox?.checked ?? true;
+    const includeT = tNodeCheckbox?.checked ?? true;
+
+    // 3. Build data matrix from selected nodes and parameters
+    this.prismAPI.progressIndicator.setStatus('Building data matrix...');
+    const { dataMatrix, nodeIndices, parameterNames } = this.buildPCADataMatrix(
+      selectedParams,
+      includeS,
+      includeT
+    );
+
+    if (dataMatrix.length === 0) {
+      console.warn('[Graph2D] No valid data for PCA');
+      alert('No valid numeric data found for selected parameters');
+      return;
+    }
+
+    console.log(`[Graph2D] PCA data matrix: ${dataMatrix.length} nodes × ${parameterNames.length} parameters`);
+
+    // 4. Perform PCA using ml-pca
+    this.prismAPI.progressIndicator.setStatus(`Computing PCA for ${dataMatrix.length.toLocaleString()} nodes...`);
+    const pcaStart = performance.now();
+
+    // ml-pca expects data in the format: rows = samples, columns = features
+    const mlpca = new MLPCA(dataMatrix, { center: true, scale: false });
+
+    const pcaEnd = performance.now();
+    console.log(`[Graph2D] [PERF] ML-PCA computation time: ${(pcaEnd - pcaStart).toFixed(2)} ms`);
+    console.log(`[Graph2D] [PERF] Time per node: ${((pcaEnd - pcaStart) / dataMatrix.length).toFixed(4)} ms`);
+    console.log(`[Graph2D] [PERF] Time per parameter: ${((pcaEnd - pcaStart) / parameterNames.length).toFixed(4)} ms`);
+
+    // Get the projected data (predict returns the data in PC space)
+    const pcData = mlpca.predict(dataMatrix);
+
+    // Get explained variance
+    const explainedVariance = mlpca.getExplainedVariance();
+    const cumulativeVariance = mlpca.getCumulativeVariance();
+    const eigenvalues = mlpca.getEigenvalues();
+    const eigenvectors = mlpca.getEigenvectors();
+
+    console.log('[Graph2D] ML-PCA eigenvalues:', eigenvalues.slice(0, 3));
+    console.log('[Graph2D] ML-PCA explained variance:', explainedVariance.slice(0, 3));
+    console.log('[Graph2D] ML-PCA cumulative variance:', cumulativeVariance.slice(0, 3));
+    const totalVariance = cumulativeVariance[Math.min(2, cumulativeVariance.length - 1)] * 100;
+    console.log('[Graph2D] Variance explained by first 3 PCs:', totalVariance.toFixed(2) + '%');
+
+    // Debug: check pcData structure
+    console.log('[Graph2D] ML-PCA pcData structure:', {
+      rows: pcData.rows,
+      columns: pcData.columns,
+      type: pcData.constructor.name,
+      firstRow: pcData.rows > 0 ? [pcData.get(0, 0), pcData.get(0, 1), pcData.get(0, 2)] : []
+    });
+
+    // Verify we have at least 3 principal components
+    if (pcData.columns < 3) {
+      console.error('[Graph2D] ML-PCA did not generate enough principal components');
+      alert('ML-PCA failed: not enough principal components generated');
+      return;
+    }
+
+    // Extract first 3 PCs for each node
+    const pcDataForNodes: number[][] = [];
+    for (let i = 0; i < pcData.rows; i++) {
+      const pc1 = pcData.get(i, 0);
+      const pc2 = pcData.get(i, 1);
+      const pc3 = pcData.get(i, 2);
+      pcDataForNodes.push([pc1, pc2, pc3]);
+    }
+
+    console.log('[Graph2D] ML-PCA PC data dimensions:', pcDataForNodes.length, 'x', pcDataForNodes[0]?.length);
+    console.log('[Graph2D] ML-PCA sample PC values (first 3 nodes):', pcDataForNodes.slice(0, 3));
+
+    // Store PCA results for display (format to match pca-js structure)
+    this.pcaResults = {
+      eigenvectors: [
+        { eigenvalue: eigenvalues[0], eigenvector: eigenvectors.getColumn(0) },
+        { eigenvalue: eigenvalues[1], eigenvector: eigenvectors.getColumn(1) },
+        { eigenvalue: eigenvalues[2], eigenvector: eigenvectors.getColumn(2) }
+      ],
+      parameterNames: parameterNames,
+      varianceExplained: totalVariance
+    };
+
+    // 5. Add PC values as parameters to nodes
+    this.prismAPI.progressIndicator.setStatus('Adding PC values to nodes...');
+    this.addPCParametersToNodes(nodeIndices, pcDataForNodes);
+
+    // 6. Apply parameter view with PC1 (x), PC2 (y), PC3 (color)
+    this.prismAPI.progressIndicator.setStatus('Applying PCA visualization...');
+    this.applyPCAView();
+
+    // 7. Update PCA eigenvectors display
+    this.updatePCAEigenvectorsDisplay();
+
+    const perfEnd = performance.now();
+    const memEnd = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
+    const totalTime = perfEnd - perfStart;
+    const memUsed = memEnd - memStart;
+
+    console.log('[Graph2D] [PERF] ===== TOTAL PERFORMANCE SUMMARY (ml-pca) =====');
+    console.log(`[Graph2D] [PERF] Total execution time: ${totalTime.toFixed(2)} ms`);
+    console.log(`[Graph2D] [PERF] Total time per node: ${(totalTime / dataMatrix.length).toFixed(4)} ms`);
+    console.log(`[Graph2D] [PERF] Total time per parameter: ${(totalTime / parameterNames.length).toFixed(4)} ms`);
+    if (memUsed > 0) {
+      console.log(`[Graph2D] [PERF] Memory delta: ${(memUsed / 1024 / 1024).toFixed(2)} MB`);
+      console.log(`[Graph2D] [PERF] Memory per node: ${(memUsed / dataMatrix.length).toFixed(2)} bytes`);
+    }
+    console.log('[Graph2D] [PERF] ================================================');
+    console.log('[Graph2D] ML-PCA complete');
   }
 
   /**
@@ -485,6 +662,9 @@ export class Graph2D {
       throw new Error('PCA data is empty');
     }
 
+    console.log(`[Graph2D] Adding PC parameters to ${nodeIndices.length} nodes`);
+    console.log(`[Graph2D] pcData length: ${pcData.length}, dimensions: ${pcData.length} x ${pcData[0]?.length}`);
+
     // First, add PCA parameters to nodes that were included in PCA
     for (let i = 0; i < nodeIndices.length; i++) {
       const nodeIdx = nodeIndices[i];
@@ -505,6 +685,11 @@ export class Graph2D {
       node.parameters['PCA']['PC1'] = pcData[i][0] ?? 0;
       node.parameters['PCA']['PC2'] = pcData[i][1] ?? 0;
       node.parameters['PCA']['PC3'] = pcData[i][2] ?? 0;
+
+      // Log first few nodes for debugging
+      if (i < 3) {
+        console.log(`[Graph2D] Node ${nodeIdx} (${node.id}): PC1=${node.parameters['PCA']['PC1']}, PC2=${node.parameters['PCA']['PC2']}, PC3=${node.parameters['PCA']['PC3']}`);
+      }
     }
 
     // Add default PCA values (0, 0, 0) to nodes NOT included in PCA
@@ -529,6 +714,16 @@ export class Graph2D {
    * Apply parameter view with PC1 (x-axis), PC2 (y-axis), PC3 (color)
    */
   private applyPCAView(): void {
+    console.log('[Graph2D] Applying PCA view...');
+
+    // Check a few nodes to verify PCA data was added
+    for (let i = 0; i < Math.min(3, this.nodes.length); i++) {
+      const node = this.nodes[i];
+      if (node.parameters['PCA']) {
+        console.log(`[Graph2D] Sample node ${i} (${node.id}) PCA values:`, node.parameters['PCA']);
+      }
+    }
+
     // Update parameter metadata to include PCA parameters
     const metadata = this.prismAPI.getParameterMetadata();
     if (metadata) {
@@ -557,9 +752,13 @@ export class Graph2D {
     const allNodes = this.nodes;
     this.prismAPI.recalculateParameterMinMax(allNodes);
 
-    // Update UI dropdowns with new PCA parameters
+    // Update UI dropdowns with new PCA parameters and select them
     const paramLabels = this.prismAPI.getParameterLabels('s');
-    this.ui.updateParameterSelections(paramLabels);
+    this.ui.updateParameterSelections(paramLabels, {
+      x: 'PCA::PC1',
+      y: 'PCA::PC2',
+      color: 'PCA::PC3'
+    });
 
     // Apply parameter view with PC1 (x), PC2 (y), PC3 (color)
     this.rearrangeByParameters('PCA::PC1', 'PCA::PC2', 'PCA::PC3');
@@ -570,28 +769,73 @@ export class Graph2D {
 
   public filterNodes(filterFn: (node: NodeData) => boolean): void{
     const alphas = this.pointCloud?.geometry.getAttribute('alpha') as THREE.BufferAttribute;
-    let nodesHidden = 0;
-    let nodesVisible = 0;
 
     if (!alphas) return;
 
-    for (let i = 0; i < this.nodes.length; i++){
-      const node = this.nodes[i];
-      const isVisible = !filterFn(node);
+    // Store the filter function for overlap label counting
+    this.currentFilterFn = filterFn;
 
-      if(!isVisible){
-        // Hide by making completely transparent
-        alphas.setX(i, 0.0);
-        nodesHidden++;
+    // Show progress indicator for large datasets
+    const showProgress = this.geometryToNodesMap.size > 1000;
+    if (showProgress) {
+      this.prismAPI.progressIndicator.show({ title: 'Filtering nodes' });
+      this.prismAPI.progressIndicator.setIndeterminate('Applying filter...');
+    }
+
+    let geometryPointsHidden = 0;
+    let geometryPointsVisible = 0;
+    let nodesHidden = 0;
+    let nodesVisible = 0;
+
+    // Iterate over geometry points (stacks), not individual nodes
+    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
+      if (nodeIndices.length === 0) continue;
+
+      // Check all nodes in this stack
+      let allHidden = true;
+      let hiddenCount = 0;
+
+      for (const nodeIndex of nodeIndices) {
+        const node = this.nodes[nodeIndex];
+        const shouldHide = filterFn(node);
+
+        if (shouldHide) {
+          hiddenCount++;
+        } else {
+          allHidden = false;
+        }
+      }
+
+      // Only hide the geometry point if ALL nodes in the stack should be hidden
+      if (allHidden) {
+        alphas.setX(geometryIndex, 0.0);
+        geometryPointsHidden++;
+        nodesHidden += hiddenCount;
       } else {
-        // Make fully opaque
-        alphas.setX(i, 1.0);
-        nodesVisible++;
+        alphas.setX(geometryIndex, 1.0);
+        geometryPointsVisible++;
+        // All nodes in this visible stack are counted as visible
+        // (even if some match the filter criteria, they're still rendered)
+        nodesVisible += nodeIndices.length;
       }
     }
-    //console.log(`[Filter Nodes] Visible: ${nodesVisible}, Hidden: ${nodesHidden} (total: ${this.nodes.length})`);
+
     alphas.needsUpdate = true;
+
+    // Update visible node counter
+    this.updateVisibleNodeCounter(nodesVisible);
+
+    console.log(`[Filter Nodes] Visible: ${nodesVisible} nodes in ${geometryPointsVisible} geometry points`);
+    console.log(`[Filter Nodes] Hidden: ${nodesHidden} nodes in ${geometryPointsHidden} fully-hidden geometry points`);
+
     this.renderer?.render(this.scene, this.camera);
+
+    // Update overlap labels to reflect filtered counts
+    this.updateOverlapLabels();
+
+    if (showProgress) {
+      this.prismAPI.progressIndicator.hide();
+    }
   }
 
 
@@ -636,6 +880,7 @@ export class Graph2D {
       // Update state
       this.nodeCount = count;
       this.ui.updateNodeCount(count);
+      this.updateVisibleNodeCounter(count);
       this.resetView();
 
       this.ui.updateStatus(`${count.toLocaleString()} 2D nodes ready`);
@@ -817,6 +1062,7 @@ export class Graph2D {
       const cloudStart = performance.now();
       this.createPointCloud(geometry, positions, colors, sizes);
       this.ui.updateNodeCount(nodeCount);
+      this.updateVisibleNodeCounter(nodeCount);
       this.resetView();
       console.log(`[Performance] Point cloud creation: ${(performance.now() - cloudStart).toFixed(2)}ms`);
 
@@ -2502,7 +2748,9 @@ export class Graph2D {
    */
   public async removeTransitionNodes(): Promise<void> {
     this.ui.updateStatus('Removing transition nodes...');
-    this.ui.updateProgress(0);
+    this.prismAPI.progressIndicator.show({ title: 'Removing Transition Nodes' });
+    this.prismAPI.progressIndicator.updateProgress(0);
+    this.prismAPI.progressIndicator.setStatus('Building node map...');
 
     try {
       // Build a map of node IDs to their indices for quick lookup
@@ -2522,7 +2770,8 @@ export class Graph2D {
         }
       }
 
-      this.ui.updateProgress(20);
+      this.prismAPI.progressIndicator.updateProgress(20);
+      this.prismAPI.progressIndicator.setStatus(`Found ${tNodeIndices.size.toLocaleString()} transition nodes, categorizing edges...`);
 
       // Categorize edges by t-nodes
       for (const edge of this.edges) {
@@ -2538,7 +2787,8 @@ export class Graph2D {
         }
       }
 
-      this.ui.updateProgress(40);
+      this.prismAPI.progressIndicator.updateProgress(40);
+      this.prismAPI.progressIndicator.setStatus('Creating new direct edges between state nodes...');
 
       // Create new edges connecting s-nodes that were connected via t-nodes
       const newEdges: EdgeData[] = [];
@@ -2564,7 +2814,13 @@ export class Graph2D {
         }
       }
 
-      this.ui.updateProgress(60);
+      this.prismAPI.progressIndicator.updateProgress(60);
+      this.prismAPI.progressIndicator.setStatus(`Filtering nodes and edges (${newEdges.length.toLocaleString()} new edges created)...`);
+
+      // Log warning if generating excessive edges
+      if (newEdges.length > 100000) {
+        console.warn(`[Remove Transition Nodes] Creating ${newEdges.length.toLocaleString()} new edges - this may take some time`);
+      }
 
       // Filter out t-nodes and edges involving t-nodes
       const filteredNodes = this.nodes.filter(node => node.type === 's');
@@ -2574,14 +2830,18 @@ export class Graph2D {
         return fromNode?.type === 's' && toNode?.type === 's';
       });
 
-      // Add new edges
-      filteredEdges.push(...newEdges);
+      // Add new edges (avoid spread operator for large arrays to prevent stack overflow)
+      for (const edge of newEdges) {
+        filteredEdges.push(edge);
+      }
 
-      // Re-index nodes
+      // Re-index nodes - use the existing nodeIdToIndex map to avoid O(n²) findIndex calls
       const oldIndexToNewIndex = new Map<number, number>();
       for (let i = 0; i < filteredNodes.length; i++) {
-        const oldIndex = this.nodes.findIndex(n => n.id === filteredNodes[i].id);
-        oldIndexToNewIndex.set(oldIndex, i);
+        const oldIndex = nodeIdToIndex.get(filteredNodes[i].id);
+        if (oldIndex !== undefined) {
+          oldIndexToNewIndex.set(oldIndex, i);
+        }
         filteredNodes[i].index = i;
       }
 
@@ -2597,18 +2857,20 @@ export class Graph2D {
         return result;
       });
 
-      this.ui.updateProgress(80);
+      this.prismAPI.progressIndicator.updateProgress(80);
+      this.prismAPI.progressIndicator.setStatus('Reloading graph with filtered data...');
 
       // Clear selection and reload graph with filtered data
       this.clearSelection();
       await this.loadGraph('0', filteredNodes, reindexedEdges);
 
-      this.ui.updateProgress(100);
-      this.ui.updateStatus(`Removed ${tNodeIndices.size} transition nodes, added ${newEdges.length} new edges`);
+      this.prismAPI.progressIndicator.updateProgress(100);
+      this.prismAPI.progressIndicator.hide();
+      this.ui.updateStatus(`Removed ${tNodeIndices.size.toLocaleString()} transition nodes, added ${newEdges.length.toLocaleString()} new edges`);
     } catch (error) {
       console.error('Error removing transition nodes:', error);
+      this.prismAPI.progressIndicator.hide();
       this.ui.showError('Failed to remove transition nodes');
-      this.ui.updateProgress(100);
     }
   }
 
@@ -2617,7 +2879,9 @@ export class Graph2D {
    */
   public async removeStateNodes(): Promise<void> {
     this.ui.updateStatus('Removing state nodes...');
-    this.ui.updateProgress(0);
+    this.prismAPI.progressIndicator.show({ title: 'Removing State Nodes' });
+    this.prismAPI.progressIndicator.updateProgress(0);
+    this.prismAPI.progressIndicator.setStatus('Building node map...');
 
     try {
       // Build a map of node IDs to their indices for quick lookup
@@ -2637,7 +2901,8 @@ export class Graph2D {
         }
       }
 
-      this.ui.updateProgress(20);
+      this.prismAPI.progressIndicator.updateProgress(20);
+      this.prismAPI.progressIndicator.setStatus(`Found ${sNodeIndices.size.toLocaleString()} state nodes, categorizing edges...`);
 
       // Categorize edges by s-nodes
       for (const edge of this.edges) {
@@ -2653,7 +2918,8 @@ export class Graph2D {
         }
       }
 
-      this.ui.updateProgress(40);
+      this.prismAPI.progressIndicator.updateProgress(40);
+      this.prismAPI.progressIndicator.setStatus('Creating new direct edges between transition nodes...');
 
       // Create new edges connecting t-nodes that were connected via s-nodes
       const newEdges: EdgeData[] = [];
@@ -2679,7 +2945,13 @@ export class Graph2D {
         }
       }
 
-      this.ui.updateProgress(60);
+      this.prismAPI.progressIndicator.updateProgress(60);
+      this.prismAPI.progressIndicator.setStatus(`Filtering nodes and edges (${newEdges.length.toLocaleString()} new edges created)...`);
+
+      // Log warning if generating excessive edges
+      if (newEdges.length > 100000) {
+        console.warn(`[Remove State Nodes] Creating ${newEdges.length.toLocaleString()} new edges - this may take some time`);
+      }
 
       // Filter out s-nodes and edges involving s-nodes
       const filteredNodes = this.nodes.filter(node => node.type === 't');
@@ -2689,14 +2961,18 @@ export class Graph2D {
         return fromNode?.type === 't' && toNode?.type === 't';
       });
 
-      // Add new edges
-      filteredEdges.push(...newEdges);
+      // Add new edges (avoid spread operator for large arrays to prevent stack overflow)
+      for (const edge of newEdges) {
+        filteredEdges.push(edge);
+      }
 
-      // Re-index nodes
+      // Re-index nodes - use the existing nodeIdToIndex map to avoid O(n²) findIndex calls
       const oldIndexToNewIndex = new Map<number, number>();
       for (let i = 0; i < filteredNodes.length; i++) {
-        const oldIndex = this.nodes.findIndex(n => n.id === filteredNodes[i].id);
-        oldIndexToNewIndex.set(oldIndex, i);
+        const oldIndex = nodeIdToIndex.get(filteredNodes[i].id);
+        if (oldIndex !== undefined) {
+          oldIndexToNewIndex.set(oldIndex, i);
+        }
         filteredNodes[i].index = i;
       }
 
@@ -2712,18 +2988,30 @@ export class Graph2D {
         return result;
       });
 
-      this.ui.updateProgress(80);
+      this.prismAPI.progressIndicator.updateProgress(80);
+      this.prismAPI.progressIndicator.setStatus('Reloading graph with filtered data...');
 
       // Clear selection and reload graph with filtered data
       this.clearSelection();
       await this.loadGraph('0', filteredNodes, reindexedEdges);
 
-      this.ui.updateProgress(100);
-      this.ui.updateStatus(`Removed ${sNodeIndices.size} state nodes, added ${newEdges.length} new edges`);
+      this.prismAPI.progressIndicator.updateProgress(100);
+      this.prismAPI.progressIndicator.hide();
+      this.ui.updateStatus(`Removed ${sNodeIndices.size.toLocaleString()} state nodes, added ${newEdges.length.toLocaleString()} new edges`);
     } catch (error) {
       console.error('Error removing state nodes:', error);
+      this.prismAPI.progressIndicator.hide();
       this.ui.showError('Failed to remove state nodes');
-      this.ui.updateProgress(100);
+    }
+  }
+
+  /**
+   * Update the visible node counter in the navbar
+   */
+  private updateVisibleNodeCounter(visibleCount: number): void {
+    const counterElement = document.getElementById('visible-node-counter');
+    if (counterElement) {
+      counterElement.textContent = `${visibleCount.toLocaleString()} node${visibleCount !== 1 ? 's' : ''} visible`;
     }
   }
 
@@ -3227,10 +3515,16 @@ export class Graph2D {
         return; // Skip invisible nodes
       }
 
-      if (nodeIndices.length > 1) {
+      // Count only nodes that don't match the filter (i.e., visible nodes)
+      let visibleCount = nodeIndices.length;
+      if (this.currentFilterFn) {
+        visibleCount = nodeIndices.filter(idx => !this.currentFilterFn!(this.nodes[idx])).length;
+      }
+
+      if (visibleCount > 1) {
         // Get position from first node
         const firstNode = this.nodes[nodeIndices[0]];
-        const count = nodeIndices.length;
+        const count = visibleCount;
 
         // Create label sprite
         const { texture, aspectRatio } = this.createOverlapCountTexture(count.toString());
@@ -3264,8 +3558,8 @@ export class Graph2D {
         const labelWidth = labelHeight * aspectRatio; // Maintain aspect ratio
         sprite.scale.set(labelWidth, labelHeight, 1);
 
-        // Store node reference for position updates
-        sprite.userData = { nodeIndex: nodeIndices[0], geometryIndex: geometryIndex };
+        // Store node reference and aspect ratio for position updates
+        sprite.userData = { nodeIndex: nodeIndices[0], geometryIndex: geometryIndex, aspectRatio: aspectRatio };
 
         if (this.overlapLabelsGroup) {
           this.overlapLabelsGroup.add(sprite);
@@ -3335,9 +3629,8 @@ export class Graph2D {
     const offsetY = (offsetYViewport / viewportHeight) * viewHeight;
     const offsetX = (offsetXViewport / viewportWidth) * viewWidth;
 
-    // Font size: 0.5vh in screen space
-    // Convert viewport height percentage to world space
-    const labelScale = viewHeight * 0.02; // 2% of view height for visibility
+    // Base height on viewport percentage
+    const labelHeight = viewHeight * 0.02; // 2% of view height for visibility
 
     // Update each sprite's position and scale
     this.overlapLabelsGroup.children.forEach((sprite) => {
@@ -3347,7 +3640,11 @@ export class Graph2D {
         if (node) {
           // Update position based on current node position and viewport offsets
           sprite.position.set(node.x + offsetX, node.y + offsetY, 1);
-          sprite.scale.set(labelScale, labelScale, 1);
+
+          // Use stored aspect ratio to maintain proper proportions
+          const aspectRatio = sprite.userData.aspectRatio as number || 1.0;
+          const labelWidth = labelHeight * aspectRatio;
+          sprite.scale.set(labelWidth, labelHeight, 1);
         }
       }
     });
@@ -3729,14 +4026,48 @@ export class Graph2D {
   public applyColorParameter(colorParamIndex: string): void {
     if (!this.pointCloud || this.nodes.length === 0) return;
 
-    if (colorParamIndex === "") {
-      this.ui.updateStatus('Invalid color parameter index');
+    if (colorParamIndex === "" || colorParamIndex === "-1") {
+      this.ui.updateStatus('No color parameter selected');
       return;
     }
 
     this.ui.updateStatus(`Applying color parameter ${colorParamIndex}...`);
 
     const colors = this.pointCloud.geometry.attributes.color as THREE.BufferAttribute;
+
+    // Handle special "__type__" color option
+    if (colorParamIndex === "__type__") {
+      // Color by node type: s = blue, t = grey, init = red
+      // Use geometryToNodesMap to properly map geometry indices
+      for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
+        if (nodeIndices.length === 0) continue;
+
+        // Use the first node in the stack as representative
+        const node = this.nodes[nodeIndices[0]];
+
+        // Check if node has init==true in Atomic Propositions
+        const initValue = node.parameters?.['Atomic Propositions']?.['init'];
+        const isInit = initValue === true || initValue === 'true' || initValue === 1;
+
+        if (isInit) {
+          // Red for init nodes
+          colors.setXYZ(geometryIndex, 1.0, 0.0, 0.0);
+        } else if (node.type === 's') {
+          // Blue for state nodes
+          colors.setXYZ(geometryIndex, 0.2, 0.4, 1.0);
+        } else if (node.type === 't') {
+          // Grey for transition nodes
+          colors.setXYZ(geometryIndex, 0.5, 0.5, 0.5);
+        } else {
+          // Default color for unknown types
+          colors.setXYZ(geometryIndex, 1.0, 1.0, 1.0);
+        }
+      }
+      colors.needsUpdate = true;
+      this.renderer?.render(this.scene, this.camera);
+      this.ui.updateStatus(`Colored by node type (s=blue, t=grey, init=red)`);
+      return;
+    }
 
     // Find min/max values for color mapping
     let minColor = Infinity, maxColor = -Infinity;
@@ -3792,31 +4123,11 @@ export class Graph2D {
       return;
     }
 
-    // Determine which node types have both parameters
-    const xNodeTypes = this.prismAPI.getParameterNodeTypes(xParam);
-    const yNodeTypes = this.prismAPI.getParameterNodeTypes(yParam);
-
-    // Find intersection of node types (nodes that have BOTH parameters)
-    let displayTypes: string[] = [];
-    if (xNodeTypes && yNodeTypes) {
-      const xTypes = xNodeTypes.includes('st') ? ['s', 't'] : [xNodeTypes];
-      const yTypes = yNodeTypes.includes('st') ? ['s', 't'] : [yNodeTypes];
-      displayTypes = xTypes.filter(t => yTypes.includes(t));
-    }
-
-    // Update display label
-    const labelElement = document.getElementById('param-view-display-label');
-    if (labelElement) {
-      if (displayTypes.length > 0) {
-        const typeStr = displayTypes.join(', ');
-        labelElement.textContent = `Displaying [${typeStr}] nodes`;
-        labelElement.classList.remove('hidden');
-      } else {
-        labelElement.classList.add('hidden');
-      }
-    }
-
-    console.log(`[Parameter View] Displaying node types: [${displayTypes.join(', ')}]`);
+    // We will display nodes that have BOTH X and Y parameter values, regardless of type
+    // The type restriction is automatically handled by checking if parameter values exist
+    console.log(`[Parameter View] X parameter: "${xParam}"`);
+    console.log(`[Parameter View] Y parameter: "${yParam}"`);
+    console.log(`[Parameter View] DEBUG: Total geometry points: ${this.geometryToNodesMap.size}`);
 
     // Track min and max parameter values for axis labels and color mapping
     let minX = Infinity, maxX = -Infinity;
@@ -3829,40 +4140,46 @@ export class Graph2D {
     // A geometry point should be visible if ANY of its stacked nodes should be visible
     const geometryVisibility = new Map<number, boolean>();
 
-    // First pass: determine visibility for each node and track by geometry index
-    for (let i = 0; i < this.nodes.length; i++) {
-      const node = this.nodes[i];
-      const xVal = PrismAPI.getParameterValue(node, xParam);
-      const yVal = PrismAPI.getParameterValue(node, yParam);
+    // First pass: determine visibility for each geometry point
+    // Initialize all geometry points as invisible first
+    for (const geometryIndex of this.geometryToNodesMap.keys()) {
+      geometryVisibility.set(geometryIndex, false);
+    }
 
-      // Check if node should be visible (has both parameters)
-      const hasX = xVal !== null && xVal !== undefined && !isNaN(xVal);
-      const hasY = yVal !== null && yVal !== undefined && !isNaN(yVal);
-      const isCorrectType = displayTypes.length === 0 || displayTypes.includes(node.type);
+    // Check each geometry point's nodes to see if any should be visible
+    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
+      let hasVisibleNode = false;
 
-      const isVisible = hasX && hasY && isCorrectType;
+      for (const nodeIndex of nodeIndices) {
+        const node = this.nodes[nodeIndex];
+        const xVal = PrismAPI.getParameterValue(node, xParam);
+        const yVal = PrismAPI.getParameterValue(node, yParam);
 
-      if (!isVisible) {
-        hiddenCount++;
-      } else {
-        visibleCount++;
+        // Check if node should be visible: must have BOTH X and Y parameter values
+        const hasX = xVal !== null && xVal !== undefined && !isNaN(xVal);
+        const hasY = yVal !== null && yVal !== undefined && !isNaN(yVal);
+
+        if (hasX && hasY) {
+          hasVisibleNode = true;
+          visibleCount++;
+        } else {
+          hiddenCount++;
+          // Debug: log first few hidden nodes to understand why they're hidden
+          if (hiddenCount <= 5) {
+            console.log(`[Parameter View] DEBUG Hidden node ${node.id} (type=${node.type}): hasX=${hasX}, hasY=${hasY}`);
+          }
+        }
       }
 
-      // Find which geometry index this node belongs to
-      // Since we need to check all geometry indices, we'll build the visibility map
-      // A geometry point is visible if ANY of its nodes should be visible
-      for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
-        if (nodeIndices.includes(i)) {
-          // If this node is visible, mark the geometry as visible
-          if (isVisible) {
-            geometryVisibility.set(geometryIndex, true);
-          }
-          break;
-        }
+      // Mark geometry as visible if ANY of its nodes should be visible
+      if (hasVisibleNode) {
+        geometryVisibility.set(geometryIndex, true);
       }
     }
 
-    // Second pass: apply visibility to geometry points based on collected data
+    // Second pass: apply visibility to geometry points and calculate min/max for visible nodes
+    let geometriesHidden = 0;
+    let geometriesVisible = 0;
     for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
       const shouldBeVisible = geometryVisibility.get(geometryIndex) === true;
 
@@ -3870,8 +4187,10 @@ export class Graph2D {
         alphas.setX(geometryIndex, shouldBeVisible ? 1.0 : 0.0);
       }
 
-      // Update min/max only for visible nodes
       if (shouldBeVisible) {
+        geometriesVisible++;
+
+        // Update min/max only for visible nodes
         for (const nodeIndex of nodeIndices) {
           const node = this.nodes[nodeIndex];
           const xVal = PrismAPI.getParameterValue(node, xParam);
@@ -3886,7 +4205,7 @@ export class Graph2D {
             maxY = Math.max(maxY, yVal);
           }
 
-          if (colorParamIndex) {
+          if (colorParamIndex && colorParamIndex !== "__type__") {
             const colorVal = PrismAPI.getParameterValue(node, colorParamIndex);
             if (colorVal !== null && colorVal !== undefined && !isNaN(colorVal)) {
               minColor = Math.min(minColor, colorVal);
@@ -3894,8 +4213,12 @@ export class Graph2D {
             }
           }
         }
+      } else {
+        geometriesHidden++;
       }
     }
+
+    console.log(`[Parameter View] Geometry visibility: ${geometriesVisible} visible, ${geometriesHidden} hidden (${this.geometryToNodesMap.size} total)`);
 
     // Recalculate counts based on geometry visibility
     visibleCount = 0;
@@ -3915,12 +4238,19 @@ export class Graph2D {
       alphas.needsUpdate = true;
     }
 
+    // Update the visible node counter in the navbar
+    this.updateVisibleNodeCounter(visibleCount);
+
     // Log parameter ranges and filtering for debugging
     console.log(`[Parameter View] Visible: ${visibleCount}, Hidden: ${hiddenCount} (total: ${this.nodes.length})`);
     console.log(`[Parameter View] X range: ${minX} to ${maxX} (${xParam})`);
     console.log(`[Parameter View] Y range: ${minY} to ${maxY} (${yParam})`);
-    if (colorParamIndex) {
-      console.log(`[Parameter View] Color range: ${minColor} to ${maxColor} (${colorParamIndex})`);
+    if (colorParamIndex && colorParamIndex !== "-1") {
+      if (colorParamIndex === "__type__") {
+        console.log(`[Parameter View] Color: by node type (s=blue, t=grey)`);
+      } else {
+        console.log(`[Parameter View] Color range: ${minColor} to ${maxColor} (${colorParamIndex})`);
+      }
     }
 
     // Calculate spread independently for X and Y to maintain 1:1 aspect ratio
@@ -3937,8 +4267,25 @@ export class Graph2D {
 
     // Third pass: update positions and colors using actual min/max values
     // Iterate through geometry points and update their positions based on visible nodes
+    let hiddenGeometriesCount = 0;
+    let firstHiddenGeometry = -1;
     for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
       if (nodeIndices.length === 0) continue;
+
+      // Skip invisible geometry points - don't update their positions
+      const shouldBeVisible = geometryVisibility.get(geometryIndex) === true;
+      if (!shouldBeVisible) {
+        // For invisible nodes, move them far offscreen to ensure they're not visible
+        // Even though alpha=0, this prevents any potential rendering artifacts
+        positions.setXYZ(geometryIndex, -999999, -999999, 0);
+        hiddenGeometriesCount++;
+        if (firstHiddenGeometry === -1) {
+          firstHiddenGeometry = geometryIndex;
+          const hiddenNode = this.nodes[nodeIndices[0]];
+          console.log(`[Parameter View] DEBUG First hidden geometry ${geometryIndex}: node ${hiddenNode.id} (type=${hiddenNode.type}), moved to (-999999, -999999)`);
+        }
+        continue;
+      }
 
       // Use the first visible node in the stack as representative
       let representativeNode = this.nodes[nodeIndices[0]];
@@ -3960,17 +4307,40 @@ export class Graph2D {
       positions.setXYZ(geometryIndex, newPosition.x, newPosition.y, 0);
 
       // Update colors if color parameter is specified
-      if (colorParamIndex != "") {
-        const colorValue = PrismAPI.getParameterValue(representativeNode, colorParamIndex);
-        const color = this.getColorFromParameter(colorValue, minColor, maxColor);
-        colors.setXYZ(geometryIndex, color.r, color.g, color.b);
+      if (colorParamIndex != "" && colorParamIndex != "-1") {
+        if (colorParamIndex === "__type__") {
+          // Color by node type: s = blue, t = grey, init = red
+          // Check if node has init==true in Atomic Propositions
+          const initValue = representativeNode.parameters?.['Atomic Propositions']?.['init'];
+          const isInit = initValue === true || initValue === 'true' || initValue === 1;
+
+          if (isInit) {
+            // Red for init nodes
+            colors.setXYZ(geometryIndex, 1.0, 0.0, 0.0);
+          } else if (representativeNode.type === 's') {
+            // Blue for state nodes
+            colors.setXYZ(geometryIndex, 0.2, 0.4, 1.0);
+          } else if (representativeNode.type === 't') {
+            // Grey for transition nodes
+            colors.setXYZ(geometryIndex, 0.5, 0.5, 0.5);
+          } else {
+            // Default color for unknown types
+            colors.setXYZ(geometryIndex, 1.0, 1.0, 1.0);
+          }
+        } else {
+          const colorValue = PrismAPI.getParameterValue(representativeNode, colorParamIndex);
+          const color = this.getColorFromParameter(colorValue, minColor, maxColor);
+          colors.setXYZ(geometryIndex, color.r, color.g, color.b);
+        }
       }
     }
 
     positions.needsUpdate = true;
-    if (colorParamIndex != "") {
+    if (colorParamIndex != "" && colorParamIndex != "-1") {
       colors.needsUpdate = true;
     }
+
+    console.log(`[Parameter View] DEBUG Hidden geometries moved offscreen: ${hiddenGeometriesCount}`);
 
     // Redraw edge lines if they are visible
     console.log(`[Parameter View] Finished - ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
@@ -4036,6 +4406,9 @@ export class Graph2D {
     this.config.useParameterPositioning = false;
     this.clearAxisVisualization();
     this.ui.updateStatus("Reset to original layout mode");
+
+    // Update counter to show all nodes are visible again
+    this.updateVisibleNodeCounter(this.nodes.length);
 
     // Optionally regenerate layout
     if (this.nodes.length > 0) {
@@ -4209,6 +4582,43 @@ export class Graph2D {
   // Getters for debugging and monitoring
   public getNodeCount(): number {
     return this.nodeCount;
+  }
+
+  public getGeometryPointCount(): number {
+    return this.geometryToNodesMap.size;
+  }
+
+  /**
+   * Debug method to check if geometry points match expectations
+   */
+  public validateGeometryMapping(): {valid: boolean, details: string} {
+    if (!this.pointCloud) {
+      return {valid: false, details: 'No point cloud exists'};
+    }
+
+    const geometryPoints = this.pointCloud.geometry.attributes.position.count;
+    const mapSize = this.geometryToNodesMap.size;
+    const totalNodesInMap = Array.from(this.geometryToNodesMap.values())
+      .reduce((sum, nodeList) => sum + nodeList.length, 0);
+
+    if (geometryPoints !== mapSize) {
+      return {
+        valid: false,
+        details: `Mismatch: ${geometryPoints} geometry points but ${mapSize} entries in map`
+      };
+    }
+
+    if (totalNodesInMap !== this.nodes.length) {
+      return {
+        valid: false,
+        details: `Mismatch: ${totalNodesInMap} nodes in map but ${this.nodes.length} actual nodes`
+      };
+    }
+
+    return {
+      valid: true,
+      details: `✓ ${geometryPoints} geometry points, ${totalNodesInMap} nodes correctly mapped`
+    };
   }
 
   public getConfig(): Readonly<GraphConfig> {

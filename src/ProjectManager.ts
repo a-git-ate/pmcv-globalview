@@ -47,9 +47,13 @@ export class ProjectManager {
     // Toggle parameter status button
     this.toggleParamStatusButton?.addEventListener('click', () => this.toggleParameterStatus());
 
-    // Apply PCA button
+    // Apply PCA button (pca-js)
     const applyPCAButton = document.getElementById('btn-apply-pca');
     applyPCAButton?.addEventListener('click', () => this.handleApplyPCA());
+
+    // Apply ML-PCA button (ml-pca)
+    const applyMLPCAButton = document.getElementById('btn-apply-ml-pca');
+    applyMLPCAButton?.addEventListener('click', () => this.handleApplyMLPCA());
   }
 
   private async initialize(): Promise<void> {
@@ -596,6 +600,74 @@ export class ProjectManager {
 
       console.error('[ProjectManager] PCA failed:', error);
       alert('PCA failed: ' + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  /**
+   * Handle Apply ML-PCA button click
+   */
+  private handleApplyMLPCA(): void {
+    console.log('[ProjectManager] Apply ML-PCA clicked');
+
+    // Get all checked checkboxes
+    const checkedCheckboxes = document.querySelectorAll('.pca-param-checkbox:checked:not(:disabled)') as NodeListOf<HTMLInputElement>;
+
+    if (checkedCheckboxes.length < 2) {
+      alert('Please select at least 2 parameters for PCA');
+      return;
+    }
+
+    // Collect selected parameters
+    const selectedParams: Array<{category: string, paramName: string, nodeTypes: Set<'s' | 't'>}> = [];
+    const paramMap = new Map<string, Set<'s' | 't'>>();
+
+    checkedCheckboxes.forEach(checkbox => {
+      const category = checkbox.dataset.category;
+      const paramName = checkbox.dataset.paramName;
+      const nodeType = checkbox.dataset.nodeType as 's' | 't';
+
+      if (!category || !paramName || !nodeType) return;
+
+      const key = `${category}::${paramName}`;
+
+      if (!paramMap.has(key)) {
+        paramMap.set(key, new Set());
+      }
+      paramMap.get(key)!.add(nodeType);
+    });
+
+    // Convert map to array
+    paramMap.forEach((nodeTypes, key) => {
+      const [category, paramName] = key.split('::');
+      selectedParams.push({ category, paramName, nodeTypes });
+    });
+
+    console.log('[ProjectManager] Selected parameters for ML-PCA:', selectedParams);
+
+    // Show progress indicator
+    this.prismAPI.progressIndicator.show({ title: 'Applying ML-PCA' });
+    this.prismAPI.progressIndicator.setIndeterminate('Computing principal components with ml-pca...');
+
+    // Call the ML-PCA function on Graph2D
+    try {
+      this.graph.doMLPCAWithSelection(selectedParams);
+
+      // Hide progress indicator
+      this.prismAPI.progressIndicator.hide();
+
+      // Close PCA menu after successful application
+      const pcaMenu = document.getElementById('pca-menu');
+      if (pcaMenu) {
+        pcaMenu.classList.add('hidden');
+      }
+
+      this.graph.ui.updateStatus('ML-PCA applied successfully');
+    } catch (error) {
+      // Hide progress indicator on error
+      this.prismAPI.progressIndicator.hide();
+
+      console.error('[ProjectManager] ML-PCA failed:', error);
+      alert('ML-PCA failed: ' + (error instanceof Error ? error.message : String(error)));
     }
   }
 

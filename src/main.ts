@@ -152,7 +152,7 @@ function setupResizeHandle(): void {
     const newWidth = startWidth + deltaX;
 
     // Apply constraints
-    const minWidth = 200;
+    const minWidth = 300;
     const maxWidth = 600;
     const constrainedWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
 

@@ -64,6 +64,17 @@ body {
   font-weight: bold;
 }
 
+.node-counter {
+  color: #ecf0f1;
+  font-size: 13px;
+  font-weight: bold;
+  margin-left: 10px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
 .check-button {
   background: #27ae60;
   border: 1px solid #229954;
@@ -130,6 +141,8 @@ body {
 #param-status-content {
   padding: 5px;
   font-size: 11px;
+  /* Remove overflow to prevent unnecessary scrollbars */
+  overflow: visible;
 }
 
 .panel-header {
@@ -163,7 +176,7 @@ body {
 
 .param-category {
   margin-bottom: 10px;
-
+  overflow: visible;
 }
 
 .param-category-title {
@@ -184,9 +197,9 @@ body {
   background: #f8f9fa;
   border-radius: 2px;
   font-size: 10px;
-  max-width: 20rem;
-  max-height: 10rem;
-  overflow-x: auto;
+  /* Remove fixed dimensions and scrollbars - let content determine size */
+  width: 100%;
+  overflow: visible;
 }
 
 .param-name {
@@ -313,7 +326,7 @@ body {
   right: 0;
   bottom: 0;
   width: 300px;
-  min-width: 200px;
+  min-width: 300px;
   max-width: 600px;
   background: rgba(255, 255, 255, 0.98);
   border-left: 1px solid #ddd;
@@ -495,7 +508,7 @@ button[id*="toggle"] {
 }
 
 .param-max-input, .param-min-input {
-  width: 60px;
+  width: 30px;
   font-size: 11px;
   padding: 4px;
   margin-left: 5px;

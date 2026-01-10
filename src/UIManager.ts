@@ -303,7 +303,7 @@ export class UIManager {
       // Debug menu elements
       'btn-toggle-debug', 'debug-menu', 'btn-close-debug',
       'debug-status', 'debug-api-status', 'debug-model-info',
-      'debug-node-count', 'debug-edge-count', 'debug-layout',
+      'debug-node-count', 'debug-geometry-count', 'debug-edge-count', 'debug-layout',
       'debug-renderer-info', 'debug-memory-info',
       'debug-render-time', 'debug-fps',
       'debug-zoom', 'debug-pan',
@@ -654,12 +654,33 @@ export class UIManager {
       const layout = (this.graph as any).currentLayout || 'none';
       layoutElement.textContent = `Layout: ${layout}`;
     }
+
+    // Update geometry points count
+    const geometryCountElement = this.getElement('debug-geometry-count');
+    if (geometryCountElement) {
+      const geometryCount = this.graph.getGeometryPointCount();
+      const nodeCount = this.graph.getNodeCount();
+      const validation = this.graph.validateGeometryMapping();
+
+      if (validation.valid) {
+        geometryCountElement.textContent = `Geometry: ${geometryCount} points (${nodeCount} nodes)`;
+        geometryCountElement.style.color = '#4CAF50'; // Green for valid
+      } else {
+        geometryCountElement.textContent = `Geometry: ${geometryCount} ⚠️ ${validation.details}`;
+        geometryCountElement.style.color = '#FF5722'; // Red for error
+      }
+    }
   }
 
   /**
    * Update parameter selection dropdowns with actual parameter names
+   * @param paramLabels Parameter labels to populate dropdowns
+   * @param selections Optional selections to apply {x, y, color}
    */
-  public updateParameterSelections(paramLabels: Record<string, string[]>): void {
+  public updateParameterSelections(
+    paramLabels: Record<string, string[]>,
+    selections?: { x?: string; y?: string; color?: string }
+  ): void {
     const xSelect = this.getElement('param-x-select') as HTMLSelectElement;
     const ySelect = this.getElement('param-y-select') as HTMLSelectElement;
     const colorSelect = this.getElement('param-color-select') as HTMLSelectElement;
@@ -669,10 +690,10 @@ export class UIManager {
       return;
     }
 
-    // Store current selections
-    const currentX = xSelect.value;
-    const currentY = ySelect.value;
-    const currentColor = colorSelect.value;
+    // Store current selections or use provided selections
+    const currentX = selections?.x ?? xSelect.value;
+    const currentY = selections?.y ?? ySelect.value;
+    const currentColor = selections?.color ?? colorSelect.value;
 
     // Update X-axis dropdown
     this.populateParameterDropdown(xSelect, paramLabels);
@@ -682,8 +703,8 @@ export class UIManager {
     this.populateParameterDropdown(ySelect, paramLabels);
     ySelect.value = currentY;
 
-    // Update Color dropdown (includes "None" option)
-    colorSelect.innerHTML = '<option value="-1">None</option>';
+    // Update Color dropdown (includes "None" and "Type" options)
+    colorSelect.innerHTML = '<option value="-1">None</option><option value="__type__">Type (s=blue, t=grey, init=red)</option>';
     Object.values(paramLabels).forEach(value => {
       value.forEach(param => {
         // Get which node types have this parameter
