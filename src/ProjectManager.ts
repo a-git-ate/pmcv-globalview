@@ -47,11 +47,7 @@ export class ProjectManager {
     // Toggle parameter status button
     this.toggleParamStatusButton?.addEventListener('click', () => this.toggleParameterStatus());
 
-    // Apply PCA button (pca-js)
-    const applyPCAButton = document.getElementById('btn-apply-pca');
-    applyPCAButton?.addEventListener('click', () => this.handleApplyPCA());
-
-    // Apply ML-PCA button (ml-pca)
+    // Apply ML-PCA button
     const applyMLPCAButton = document.getElementById('btn-apply-ml-pca');
     applyMLPCAButton?.addEventListener('click', () => this.handleApplyMLPCA());
   }
@@ -290,8 +286,14 @@ export class ProjectManager {
 
     this.PCAOptionsContent.innerHTML = '';
 
-    // Collect all unique NUMERIC parameters from both s and t nodes
-    const allParameters = new Map<string, { inS: boolean; inT: boolean; category: string }>();
+    // Collect all unique NUMERIC and BOOLEAN parameters from both s and t nodes
+    const allParameters = new Map<string, {
+      inS: boolean;
+      inT: boolean;
+      category: string;
+      convertedFromNominal: boolean;
+      isBoolean: boolean;
+    }>();
 
     // Process s nodes
     if (status.info.s) {
@@ -299,12 +301,18 @@ export class ProjectManager {
         if (typeof categoryParams !== 'object' || categoryParams === null) continue;
 
         for (const [paramName, paramMeta] of Object.entries(categoryParams as Record<string, any>)) {
-          // Only include numeric parameters for PCA
-          if (paramMeta?.type !== 'number') continue;
+          // Include numeric and boolean parameters for PCA
+          if (paramMeta?.type !== 'number' && paramMeta?.type !== 'boolean') continue;
 
           const key = `${categoryName}::${paramName}`;
           if (!allParameters.has(key)) {
-            allParameters.set(key, { inS: true, inT: false, category: categoryName });
+            allParameters.set(key, {
+              inS: true,
+              inT: false,
+              category: categoryName,
+              convertedFromNominal: paramMeta.convertedFromNominal || false,
+              isBoolean: paramMeta.type === 'boolean'
+            });
           } else {
             allParameters.get(key)!.inS = true;
           }
@@ -318,12 +326,18 @@ export class ProjectManager {
         if (typeof categoryParams !== 'object' || categoryParams === null) continue;
 
         for (const [paramName, paramMeta] of Object.entries(categoryParams as Record<string, any>)) {
-          // Only include numeric parameters for PCA
-          if (paramMeta?.type !== 'number') continue;
+          // Include numeric and boolean parameters for PCA
+          if (paramMeta?.type !== 'number' && paramMeta?.type !== 'boolean') continue;
 
           const key = `${categoryName}::${paramName}`;
           if (!allParameters.has(key)) {
-            allParameters.set(key, { inS: false, inT: true, category: categoryName });
+            allParameters.set(key, {
+              inS: false,
+              inT: true,
+              category: categoryName,
+              convertedFromNominal: paramMeta.convertedFromNominal || false,
+              isBoolean: paramMeta.type === 'boolean'
+            });
           } else {
             allParameters.get(key)!.inT = true;
           }
@@ -332,7 +346,13 @@ export class ProjectManager {
     }
 
     // Group parameters by category
-    const paramsByCategory = new Map<string, Array<{ paramName: string; inS: boolean; inT: boolean }>>();
+    const paramsByCategory = new Map<string, Array<{
+      paramName: string;
+      inS: boolean;
+      inT: boolean;
+      convertedFromNominal: boolean;
+      isBoolean: boolean;
+    }>>();
 
     for (const [key, paramInfo] of allParameters.entries()) {
       const [categoryName, paramName] = key.split('::');
@@ -344,7 +364,9 @@ export class ProjectManager {
       paramsByCategory.get(categoryName)!.push({
         paramName,
         inS: paramInfo.inS,
-        inT: paramInfo.inT
+        inT: paramInfo.inT,
+        convertedFromNominal: paramInfo.convertedFromNominal,
+        isBoolean: paramInfo.isBoolean
       });
     }
 
@@ -372,7 +394,16 @@ export class ProjectManager {
         // Parameter name cell (indented)
         const nameCell = document.createElement('td');
         nameCell.className = 'pca-param-name';
-        nameCell.textContent = param.paramName;
+
+        // Build parameter name with labels
+        let displayName = param.paramName;
+        if (param.convertedFromNominal) {
+          displayName += ' [converted from nominal]';
+        } else if (param.isBoolean) {
+          displayName += ' [boolean]';
+        }
+
+        nameCell.textContent = displayName;
         row.appendChild(nameCell);
 
         // S node checkbox cell
@@ -526,7 +557,7 @@ export class ProjectManager {
    * Update the state of the Apply PCA button based on checked checkboxes
    */
   private updatePCAApplyButton(): void {
-    const applyButton = document.getElementById('btn-apply-pca') as HTMLButtonElement;
+    const applyButton = document.getElementById('btn-apply-ml-pca') as HTMLButtonElement;
     if (!applyButton) return;
 
     const checkedCheckboxes = document.querySelectorAll('.pca-param-checkbox:checked:not(:disabled)');
@@ -536,71 +567,44 @@ export class ProjectManager {
   }
 
   /**
-   * Handle Apply PCA button click
+   * Mark parameters with zero variance as red in the PCA selection dialog
+   * @param problematicParams Array of parameter names in format "category::paramName"
    */
-  private handleApplyPCA(): void {
-    console.log('[ProjectManager] Apply PCA clicked');
+  private markProblematicParameters(problematicParams: string[]): void {
+    if (!this.PCAOptionsContent) return;
 
-    // Get all checked checkboxes
-    const checkedCheckboxes = document.querySelectorAll('.pca-param-checkbox:checked:not(:disabled)') as NodeListOf<HTMLInputElement>;
+    console.log('[ProjectManager] Marking problematic parameters:', problematicParams);
 
-    if (checkedCheckboxes.length < 2) {
-      alert('Please select at least 2 parameters for PCA');
-      return;
-    }
+    // Get all parameter rows
+    const rows = this.PCAOptionsContent.querySelectorAll('tr.pca-param-row');
 
-    // Collect selected parameters
-    const selectedParams: Array<{category: string, paramName: string, nodeTypes: Set<'s' | 't'>}> = [];
-    const paramMap = new Map<string, Set<'s' | 't'>>();
+    rows.forEach(row => {
+      const rowElement = row as HTMLElement;
+      const nameCell = rowElement.querySelector('.pca-param-name') as HTMLElement;
 
-    checkedCheckboxes.forEach(checkbox => {
-      const category = checkbox.dataset.category;
-      const paramName = checkbox.dataset.paramName;
-      const nodeType = checkbox.dataset.nodeType as 's' | 't';
+      // Get checkboxes to extract category and param name
+      const checkbox = rowElement.querySelector('.pca-param-checkbox') as HTMLInputElement;
+      if (!checkbox) return;
 
-      if (!category || !paramName || !nodeType) return;
+      const category = checkbox.dataset.category || '';
+      const paramName = checkbox.dataset.paramName || '';
+      const fullParamName = `${category}::${paramName}`;
 
-      const key = `${category}::${paramName}`;
+      // Check if this parameter is in the problematic list
+      if (problematicParams.includes(fullParamName)) {
+        // Mark the row as problematic with red background
+        rowElement.style.backgroundColor = '#ffcccc';
+        nameCell.style.color = '#cc0000';
+        nameCell.style.fontWeight = 'bold';
 
-      if (!paramMap.has(key)) {
-        paramMap.set(key, new Set());
+        // Add a warning icon/text to the parameter name
+        if (!nameCell.textContent?.includes('⚠')) {
+          nameCell.textContent = '⚠ ' + nameCell.textContent + ' (zero variance)';
+        }
+
+        console.log(`[ProjectManager] Marked parameter as problematic: ${fullParamName}`);
       }
-      paramMap.get(key)!.add(nodeType);
     });
-
-    // Convert map to array
-    paramMap.forEach((nodeTypes, key) => {
-      const [category, paramName] = key.split('::');
-      selectedParams.push({ category, paramName, nodeTypes });
-    });
-
-    console.log('[ProjectManager] Selected parameters for PCA:', selectedParams);
-
-    // Show progress indicator
-    this.prismAPI.progressIndicator.show({ title: 'Applying PCA' });
-    this.prismAPI.progressIndicator.setIndeterminate('Computing principal components...');
-
-    // Call the PCA function on Graph2D
-    try {
-      this.graph.doPCAWithSelection(selectedParams);
-
-      // Hide progress indicator
-      this.prismAPI.progressIndicator.hide();
-
-      // Close PCA menu after successful application
-      const pcaMenu = document.getElementById('pca-menu');
-      if (pcaMenu) {
-        pcaMenu.classList.add('hidden');
-      }
-
-      this.graph.ui.updateStatus('PCA applied successfully');
-    } catch (error) {
-      // Hide progress indicator on error
-      this.prismAPI.progressIndicator.hide();
-
-      console.error('[ProjectManager] PCA failed:', error);
-      alert('PCA failed: ' + (error instanceof Error ? error.message : String(error)));
-    }
   }
 
   /**
@@ -644,13 +648,21 @@ export class ProjectManager {
 
     console.log('[ProjectManager] Selected parameters for ML-PCA:', selectedParams);
 
+    // Get center and scale options from checkboxes
+    const centerCheckbox = document.getElementById('pca-center') as HTMLInputElement;
+    const scaleCheckbox = document.getElementById('pca-scale') as HTMLInputElement;
+    const center = centerCheckbox ? centerCheckbox.checked : true;
+    const scale = scaleCheckbox ? scaleCheckbox.checked : true;
+
+    console.log('[ProjectManager] PCA options - center:', center, 'scale:', scale);
+
     // Show progress indicator
-    this.prismAPI.progressIndicator.show({ title: 'Applying ML-PCA' });
-    this.prismAPI.progressIndicator.setIndeterminate('Computing principal components with ml-pca...');
+    this.prismAPI.progressIndicator.show({ title: 'Applying PCA' });
+    this.prismAPI.progressIndicator.setIndeterminate('Computing principal components...');
 
     // Call the ML-PCA function on Graph2D
     try {
-      this.graph.doMLPCAWithSelection(selectedParams);
+      this.graph.doMLPCAWithSelection(selectedParams, center, scale);
 
       // Hide progress indicator
       this.prismAPI.progressIndicator.hide();
@@ -667,7 +679,23 @@ export class ProjectManager {
       this.prismAPI.progressIndicator.hide();
 
       console.error('[ProjectManager] ML-PCA failed:', error);
-      alert('ML-PCA failed: ' + (error instanceof Error ? error.message : String(error)));
+
+      const errorMsg = error instanceof Error ? error.message : String(error);
+
+      // Check if error contains list of problematic parameters (separated by |||)
+      if (errorMsg.includes('|||')) {
+        const parts = errorMsg.split('|||');
+        const userMessage = parts[0];
+        const problematicParams = parts.slice(1).filter(p => p.length > 0);
+
+        // Mark problematic parameters as red in the PCA selection dialog
+        this.markProblematicParameters(problematicParams);
+
+        // Show user-friendly alert with just the main message
+        alert(userMessage);
+      } else {
+        alert('ML-PCA failed: ' + errorMsg);
+      }
     }
   }
 
@@ -1169,13 +1197,15 @@ export class ProjectManager {
         if (prevLabels[i] !== currLabels[i]) {
           return true;
         }
-        Object.keys(previous[key]).forEach((paramName: string) => {
-          if (!current[key].includes(paramName)) {
-            return true;
-          }
-        });
       }
-      
+
+      // Check if parameter names have changed
+      const prevParamNames = Object.keys(previous[key]);
+      for (const paramName of prevParamNames) {
+        if (!current[key].includes(paramName)) {
+          return true;
+        }
+      }
     }
 
     return false;

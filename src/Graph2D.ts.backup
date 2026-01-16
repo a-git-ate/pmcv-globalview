@@ -14,9 +14,9 @@ import type {
 import { min } from 'three/examples/jsm/nodes/Nodes.js';
 
 // Global logging configuration
-const DEBUG = true;        // Enable/disable debug logs
-const PERFORMANCE = true;  // Enable/disable performance logs
-const STATUS = false;        // Enable/disable status logs
+const DEBUG = false;        // Enable/disable debug logs
+const PERFORMANCE = false;  // Enable/disable performance logs
+const STATUS = true;        // Enable/disable status logs
 
 export class Graph2D {
   // Three.js core
@@ -102,7 +102,7 @@ export class Graph2D {
       maxVisibleNodes: 10000,
       renderDistance: 500,
       minZoom: 0.001, // Allow zooming out much further (was 0.1)
-      maxZoom: 10000.0, // Allow extreme zoom in (was 100.0)
+      maxZoom: 100.0, // Increased max zoom as well (was 50.0)
       lodEnabled: true,
       edgesVisible: true, // Show edges by default
       clusterMode: false,
@@ -320,8 +320,8 @@ export class Graph2D {
       return;
     }
 
-    if (STATUS) console.log('[Graph2D] ========== ML-PCA PERFORMANCE METRICS ==========');
-    if (STATUS) console.log('[Graph2D] Starting ML-PCA with selected parameters:', selectedParams);
+    console.log('[Graph2D] ========== ML-PCA PERFORMANCE METRICS ==========');
+    console.log('[Graph2D] Starting ML-PCA with selected parameters:', selectedParams);
 
     const perfStart = performance.now();
     const memStart = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
@@ -350,13 +350,13 @@ export class Graph2D {
       return;
     }
 
-    if (DEBUG) console.log(`[Graph2D] PCA data matrix: ${dataMatrix.length} nodes × ${parameterNames.length} parameters`);
+    console.log(`[Graph2D] PCA data matrix: ${dataMatrix.length} nodes × ${parameterNames.length} parameters`);
 
     // DEBUG: Check data matrix for NaN or invalid values
     let nanCount = 0;
     let infCount = 0;
     for (let i = 0; i < Math.min(5, dataMatrix.length); i++) {
-      if (DEBUG) console.log(`[Graph2D] DEBUG data matrix row ${i}:`, dataMatrix[i]);
+      console.log(`[Graph2D] DEBUG data matrix row ${i}:`, dataMatrix[i]);
       for (let j = 0; j < dataMatrix[i].length; j++) {
         if (isNaN(dataMatrix[i][j])) nanCount++;
         if (!isFinite(dataMatrix[i][j])) infCount++;
@@ -364,9 +364,6 @@ export class Graph2D {
     }
     if (nanCount > 0 || infCount > 0) {
       console.error(`[Graph2D] ERROR: Data matrix contains ${nanCount} NaN values and ${infCount} infinite values!`);
-      alert(`PCA data validation failed: Found ${nanCount} NaN and ${infCount} infinite values in the data matrix. Please check your parameter selections.`);
-      this.prismAPI.progressIndicator.hide();
-      return;
     }
 
     // Check data variance
@@ -375,16 +372,7 @@ export class Graph2D {
       const mean = values.reduce((a, b) => a + b, 0) / values.length;
       const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length;
       const stdDev = Math.sqrt(variance);
-
-      // Find min/max without using spread operator (which causes stack overflow on large arrays)
-      let min = values[0];
-      let max = values[0];
-      for (let i = 1; i < values.length; i++) {
-        if (values[i] < min) min = values[i];
-        if (values[i] > max) max = values[i];
-      }
-
-      if (DEBUG) console.log(`[Graph2D] DEBUG param "${parameterNames[col]}": mean=${mean.toFixed(4)}, std=${stdDev.toFixed(4)}, min=${min.toFixed(4)}, max=${max.toFixed(4)}`);
+      console.log(`[Graph2D] DEBUG param "${parameterNames[col]}": mean=${mean.toFixed(4)}, std=${stdDev.toFixed(4)}, min=${Math.min(...values).toFixed(4)}, max=${Math.max(...values).toFixed(4)}`);
     }
 
     // 4. Perform PCA using ml-pca
@@ -428,9 +416,9 @@ export class Graph2D {
     }
 
     const pcaEnd = performance.now();
-    if (PERFORMANCE) console.log(`[Graph2D] [PERF] ML-PCA computation time: ${(pcaEnd - pcaStart).toFixed(2)} ms`);
-    if (PERFORMANCE) console.log(`[Graph2D] [PERF] Time per node: ${((pcaEnd - pcaStart) / dataMatrix.length).toFixed(4)} ms`);
-    if (PERFORMANCE) console.log(`[Graph2D] [PERF] Time per parameter: ${((pcaEnd - pcaStart) / parameterNames.length).toFixed(4)} ms`);
+    console.log(`[Graph2D] [PERF] ML-PCA computation time: ${(pcaEnd - pcaStart).toFixed(2)} ms`);
+    console.log(`[Graph2D] [PERF] Time per node: ${((pcaEnd - pcaStart) / dataMatrix.length).toFixed(4)} ms`);
+    console.log(`[Graph2D] [PERF] Time per parameter: ${((pcaEnd - pcaStart) / parameterNames.length).toFixed(4)} ms`);
 
     // Get the projected data (predict returns the data in PC space)
     const pcData = mlpca.predict(dataMatrix);
@@ -441,19 +429,19 @@ export class Graph2D {
     const eigenvalues = mlpca.getEigenvalues();
     const eigenvectors = mlpca.getEigenvectors();
 
-    if (STATUS) console.log('[Graph2D] ML-PCA eigenvalues:', eigenvalues.slice(0, 3));
-    if (STATUS) console.log('[Graph2D] ML-PCA explained variance:', explainedVariance.slice(0, 3));
-    if (STATUS) console.log('[Graph2D] ML-PCA cumulative variance:', cumulativeVariance.slice(0, 3));
+    console.log('[Graph2D] ML-PCA eigenvalues:', eigenvalues.slice(0, 3));
+    console.log('[Graph2D] ML-PCA explained variance:', explainedVariance.slice(0, 3));
+    console.log('[Graph2D] ML-PCA cumulative variance:', cumulativeVariance.slice(0, 3));
 
     // DEBUG: Check eigenvectors structure
-    if (DEBUG) console.log('[Graph2D] DEBUG eigenvectors structure:', {
+    console.log('[Graph2D] DEBUG eigenvectors structure:', {
       rows: eigenvectors.rows,
       columns: eigenvectors.columns,
       type: eigenvectors.constructor.name
     });
-    if (DEBUG) console.log('[Graph2D] DEBUG eigenvectors column 0 (first 5):', eigenvectors.getColumn(0).slice(0, 5));
-    if (DEBUG) console.log('[Graph2D] DEBUG eigenvectors column 1 (first 5):', eigenvectors.getColumn(1).slice(0, 5));
-    if (DEBUG) console.log('[Graph2D] DEBUG eigenvectors column 2 (first 5):', eigenvectors.getColumn(2).slice(0, 5));
+    console.log('[Graph2D] DEBUG eigenvectors column 0 (first 5):', eigenvectors.getColumn(0).slice(0, 5));
+    console.log('[Graph2D] DEBUG eigenvectors column 1 (first 5):', eigenvectors.getColumn(1).slice(0, 5));
+    console.log('[Graph2D] DEBUG eigenvectors column 2 (first 5):', eigenvectors.getColumn(2).slice(0, 5));
 
     // Check for NaN or invalid eigenvalues
     const hasInvalidEigenvalues = eigenvalues.some((ev: number) => isNaN(ev) || !isFinite(ev));
@@ -481,10 +469,10 @@ export class Graph2D {
     }
 
     const totalVariance = cumulativeVariance[Math.min(2, cumulativeVariance.length - 1)] * 100;
-    if (STATUS) console.log('[Graph2D] Variance explained by first 3 PCs:', totalVariance.toFixed(2) + '%');
+    console.log('[Graph2D] Variance explained by first 3 PCs:', totalVariance.toFixed(2) + '%');
 
     // Debug: check pcData structure
-    if (STATUS) console.log('[Graph2D] ML-PCA pcData structure:', {
+    console.log('[Graph2D] ML-PCA pcData structure:', {
       rows: pcData.rows,
       columns: pcData.columns,
       type: pcData.constructor.name,
@@ -524,8 +512,8 @@ export class Graph2D {
       return;
     }
 
-    if (STATUS) console.log('[Graph2D] ML-PCA PC data dimensions:', pcDataForNodes.length, 'x', pcDataForNodes[0]?.length);
-    if (STATUS) console.log('[Graph2D] ML-PCA sample PC values (first 3 nodes):', pcDataForNodes.slice(0, 3));
+    console.log('[Graph2D] ML-PCA PC data dimensions:', pcDataForNodes.length, 'x', pcDataForNodes[0]?.length);
+    console.log('[Graph2D] ML-PCA sample PC values (first 3 nodes):', pcDataForNodes.slice(0, 3));
 
     // Store PCA results for display (format to match pca-js structure)
     this.pcaResults = {
@@ -554,16 +542,16 @@ export class Graph2D {
     const totalTime = perfEnd - perfStart;
     const memUsed = memEnd - memStart;
 
-    if (PERFORMANCE) console.log('[Graph2D] [PERF] ===== TOTAL PERFORMANCE SUMMARY (ml-pca) =====');
-    if (PERFORMANCE) console.log(`[Graph2D] [PERF] Total execution time: ${totalTime.toFixed(2)} ms`);
-    if (PERFORMANCE) console.log(`[Graph2D] [PERF] Total time per node: ${(totalTime / dataMatrix.length).toFixed(4)} ms`);
-    if (PERFORMANCE) console.log(`[Graph2D] [PERF] Total time per parameter: ${(totalTime / parameterNames.length).toFixed(4)} ms`);
+    console.log('[Graph2D] [PERF] ===== TOTAL PERFORMANCE SUMMARY (ml-pca) =====');
+    console.log(`[Graph2D] [PERF] Total execution time: ${totalTime.toFixed(2)} ms`);
+    console.log(`[Graph2D] [PERF] Total time per node: ${(totalTime / dataMatrix.length).toFixed(4)} ms`);
+    console.log(`[Graph2D] [PERF] Total time per parameter: ${(totalTime / parameterNames.length).toFixed(4)} ms`);
     if (memUsed > 0) {
-      if (PERFORMANCE) console.log(`[Graph2D] [PERF] Memory delta: ${(memUsed / 1024 / 1024).toFixed(2)} MB`);
-      if (PERFORMANCE) console.log(`[Graph2D] [PERF] Memory per node: ${(memUsed / dataMatrix.length).toFixed(2)} bytes`);
+      console.log(`[Graph2D] [PERF] Memory delta: ${(memUsed / 1024 / 1024).toFixed(2)} MB`);
+      console.log(`[Graph2D] [PERF] Memory per node: ${(memUsed / dataMatrix.length).toFixed(2)} bytes`);
     }
-    if (PERFORMANCE) console.log('[Graph2D] [PERF] ================================================');
-    if (STATUS) console.log('[Graph2D] ML-PCA complete');
+    console.log('[Graph2D] [PERF] ================================================');
+    console.log('[Graph2D] ML-PCA complete');
   }
 
   /**
@@ -583,15 +571,15 @@ export class Graph2D {
     if (metadata) {
       if (metadata.s && metadata.s['PCA']) {
         delete metadata.s['PCA'];
-        if (STATUS) console.log('[Graph2D] Cleared PCA from S node metadata');
+        console.log('[Graph2D] Cleared PCA from S node metadata');
       }
       if (metadata.t && metadata.t['PCA']) {
         delete metadata.t['PCA'];
-        if (STATUS) console.log('[Graph2D] Cleared PCA from T node metadata');
+        console.log('[Graph2D] Cleared PCA from T node metadata');
       }
     }
 
-    if (STATUS) console.log('[Graph2D] Cleared existing PCA data from nodes and metadata');
+    console.log('[Graph2D] Cleared existing PCA data from nodes and metadata');
   }
 
   /**
@@ -669,14 +657,13 @@ export class Graph2D {
     const nodeIndices: number[] = [];
     const parameterNames: string[] = selectedParams.map(p => `${p.category}::${p.paramName}`);
 
-    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Processing ${this.nodes.length} nodes`);
-    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: includeS=${includeS}, includeT=${includeT}`);
-    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: selectedParams=`, selectedParams);
+    console.log(`[Graph2D] buildPCADataMatrix: Processing ${this.nodes.length} nodes`);
+    console.log(`[Graph2D] buildPCADataMatrix: includeS=${includeS}, includeT=${includeT}`);
+    console.log(`[Graph2D] buildPCADataMatrix: selectedParams=`, selectedParams);
 
     let skippedByType = 0;
     let skippedByParamType = 0;
     let skippedByMissingValue = 0;
-    let skippedByInfinite = 0;
 
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
@@ -716,19 +703,10 @@ export class Graph2D {
           numValue = parseFloat(value);
         }
 
-        // Check for NaN values
         if (isNaN(numValue)) {
           validRow = false;
           skipReason = `param ${param.paramName} has invalid value: ${value} (type: ${typeof value})`;
           skippedByMissingValue++;
-          break;
-        }
-
-        // Check for infinite values
-        if (!isFinite(numValue)) {
-          validRow = false;
-          skipReason = `param ${param.paramName} has infinite value: ${numValue}`;
-          skippedByInfinite++;
           break;
         }
 
@@ -740,20 +718,14 @@ export class Graph2D {
         nodeIndices.push(i);
       } else if (i < 3) {
         // Log first few skipped nodes for debugging
-        if (STATUS) console.log(`[Graph2D] Skipped node ${i}: ${skipReason}`);
+        console.log(`[Graph2D] Skipped node ${i}: ${skipReason}`);
       }
     }
 
-    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Result: ${dataMatrix.length} valid nodes`);
-    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Skipped by type: ${skippedByType}`);
-    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Skipped by param type: ${skippedByParamType}`);
-    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Skipped by missing/invalid value: ${skippedByMissingValue}`);
-    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Skipped by infinite value: ${skippedByInfinite}`);
-
-    // Warn if many nodes were skipped due to infinite values
-    if (skippedByInfinite > 0) {
-      console.warn(`[Graph2D] Warning: ${skippedByInfinite} nodes were excluded from PCA due to infinite parameter values. Consider filtering or transforming these parameters.`);
-    }
+    console.log(`[Graph2D] buildPCADataMatrix: Result: ${dataMatrix.length} valid nodes`);
+    console.log(`[Graph2D] buildPCADataMatrix: Skipped by type: ${skippedByType}`);
+    console.log(`[Graph2D] buildPCADataMatrix: Skipped by param type: ${skippedByParamType}`);
+    console.log(`[Graph2D] buildPCADataMatrix: Skipped by missing/invalid value: ${skippedByMissingValue}`);
 
     return { dataMatrix, nodeIndices, parameterNames };
   }
@@ -771,8 +743,8 @@ export class Graph2D {
       throw new Error('PCA data is empty');
     }
 
-    if (STATUS) console.log(`[Graph2D] Adding PC parameters to ${nodeIndices.length} nodes (includeS=${includeS}, includeT=${includeT})`);
-    if (STATUS) console.log(`[Graph2D] pcData length: ${pcData.length}, dimensions: ${pcData.length} x ${pcData[0]?.length}`);
+    console.log(`[Graph2D] Adding PC parameters to ${nodeIndices.length} nodes (includeS=${includeS}, includeT=${includeT})`);
+    console.log(`[Graph2D] pcData length: ${pcData.length}, dimensions: ${pcData.length} x ${pcData[0]?.length}`);
 
     // First, add PCA parameters to nodes that were included in PCA
     for (let i = 0; i < nodeIndices.length; i++) {
@@ -804,11 +776,11 @@ export class Graph2D {
 
       // Log first few nodes for debugging
       if (i < 3) {
-        if (STATUS) console.log(`[Graph2D] Node ${nodeIdx} (${node.id}, type=${node.type}): PC1=${node.parameters['PCA']['PC1']}, PC2=${node.parameters['PCA']['PC2']}, PC3=${node.parameters['PCA']['PC3']}`);
+        console.log(`[Graph2D] Node ${nodeIdx} (${node.id}, type=${node.type}): PC1=${node.parameters['PCA']['PC1']}, PC2=${node.parameters['PCA']['PC2']}, PC3=${node.parameters['PCA']['PC3']}`);
       }
     }
 
-    if (STATUS) console.log(`[Graph2D] Added PC1, PC2, PC3 parameters to nodes`);
+    console.log(`[Graph2D] Added PC1, PC2, PC3 parameters to nodes`);
   }
 
   /**
@@ -817,13 +789,13 @@ export class Graph2D {
    * @param includeT Whether T nodes were included in PCA
    */
   private applyPCAView(includeS: boolean, includeT: boolean): void {
-    if (STATUS) console.log(`[Graph2D] Applying PCA view (includeS=${includeS}, includeT=${includeT})...`);
+    console.log(`[Graph2D] Applying PCA view (includeS=${includeS}, includeT=${includeT})...`);
 
     // Check a few nodes to verify PCA data was added
     for (let i = 0; i < Math.min(3, this.nodes.length); i++) {
       const node = this.nodes[i];
       if (node.parameters['PCA']) {
-        if (STATUS) console.log(`[Graph2D] Sample node ${i} (${node.id}, type=${node.type}) PCA values:`, node.parameters['PCA']);
+        console.log(`[Graph2D] Sample node ${i} (${node.id}, type=${node.type}) PCA values:`, node.parameters['PCA']);
       }
     }
 
@@ -842,7 +814,7 @@ export class Graph2D {
         if (!metadata.s) metadata.s = {};
         if (!metadata.s['PCA']) {
           metadata.s['PCA'] = pcaParamDef;
-          if (STATUS) console.log('[Graph2D] Added PCA parameters to S node metadata');
+          console.log('[Graph2D] Added PCA parameters to S node metadata');
         }
       }
 
@@ -851,7 +823,7 @@ export class Graph2D {
         if (!metadata.t) metadata.t = {};
         if (!metadata.t['PCA']) {
           metadata.t['PCA'] = pcaParamDef;
-          if (STATUS) console.log('[Graph2D] Added PCA parameters to T node metadata');
+          console.log('[Graph2D] Added PCA parameters to T node metadata');
         }
       }
     }
@@ -873,7 +845,7 @@ export class Graph2D {
     // Apply parameter view with PC1 (x), PC2 (y), PC3 (color)
     this.rearrangeByParameters('PCA::PC1', 'PCA::PC2', 'PCA::PC3');
 
-    if (STATUS) console.log('[Graph2D] Applied PCA view (PC1=X, PC2=Y, PC3=Color)');
+    console.log('[Graph2D] Applied PCA view (PC1=X, PC2=Y, PC3=Color)');
   }
 
 
@@ -935,8 +907,8 @@ export class Graph2D {
     // Update visible node counter
     this.updateVisibleNodeCounter(nodesVisible);
 
-    if (STATUS) console.log(`[Filter Nodes] Visible: ${nodesVisible} nodes in ${geometryPointsVisible} geometry points`);
-    if (STATUS) console.log(`[Filter Nodes] Hidden: ${nodesHidden} nodes in ${geometryPointsHidden} fully-hidden geometry points`);
+    console.log(`[Filter Nodes] Visible: ${nodesVisible} nodes in ${geometryPointsVisible} geometry points`);
+    console.log(`[Filter Nodes] Hidden: ${nodesHidden} nodes in ${geometryPointsHidden} fully-hidden geometry points`);
 
     this.renderer?.render(this.scene, this.camera);
 
@@ -971,7 +943,7 @@ export class Graph2D {
 
       // Generate random edges first
       this.generateRandomEdges(count);
-      if (STATUS) console.log(`[Generate Nodes] Created ${this.edges.length} random edges for ${count} nodes`);
+      console.log(`[Generate Nodes] Created ${this.edges.length} random edges for ${count} nodes`);
       
       // Generate layout based on connectivity
       await this.generateLayout(count, positions, colors, sizes);
@@ -981,7 +953,7 @@ export class Graph2D {
       if (this.config.edgesVisible) {
         this.createEdgeLines();
       } else {
-        if (STATUS) console.log(`[Generate Nodes] ${this.edges.length} edges created but hidden (use Toggle Edges to show)`);
+        console.log(`[Generate Nodes] ${this.edges.length} edges created but hidden (use Toggle Edges to show)`);
       }
 
       // Create point cloud
@@ -1022,7 +994,7 @@ export class Graph2D {
         // Fetch graph data using PrismAPI
         const fetchStart = performance.now();
         const graphData = await this.prismAPI.fetchSimpleGraph(graphId);
-        //if (PERFORMANCE) console.log(`[Performance] API fetch: ${(performance.now() - fetchStart).toFixed(2)}ms`);
+        //console.log(`[Performance] API fetch: ${(performance.now() - fetchStart).toFixed(2)}ms`);
         this.nodes = graphData.nodes;
         this.edges = graphData.edges;
         this.fullNodes = graphData.nodes;
@@ -1045,7 +1017,7 @@ export class Graph2D {
       // Populate geometry arrays directly from loaded nodes (no recreation)
       const layoutStart = performance.now();
       await this.populateGeometryFromNodes(positions, colors, sizes);
-      //if (PERFORMANCE) console.log(`[Performance] Layout population: ${(performance.now() - layoutStart).toFixed(2)}ms`);
+      //console.log(`[Performance] Layout population: ${(performance.now() - layoutStart).toFixed(2)}ms`);
 
       // Create point cloud first for visual feedback
       const cloudStart = performance.now();
@@ -1053,7 +1025,7 @@ export class Graph2D {
       this.nodeCount = nodeCount;
       this.ui.updateNodeCount(nodeCount);
       this.resetView();
-      if (PERFORMANCE) console.log(`[Performance] Point cloud creation: ${(performance.now() - cloudStart).toFixed(2)}ms`);
+      console.log(`[Performance] Point cloud creation: ${(performance.now() - cloudStart).toFixed(2)}ms`);
 
       // Update UI with basic info
       const paramLabels = this.prismAPI.getParameterLabels('s');
@@ -1078,7 +1050,7 @@ export class Graph2D {
 
         this.createEdgeLines();
         this.updateArrowScales();
-        if (PERFORMANCE) console.log(`[Performance] Edge rendering: ${(performance.now() - edgeStart).toFixed(2)}ms`);
+        console.log(`[Performance] Edge rendering: ${(performance.now() - edgeStart).toFixed(2)}ms`);
       }
 
       // Update overlap labels (deferred for large graphs)
@@ -1090,7 +1062,7 @@ export class Graph2D {
       }
 
       const totalTime = (performance.now() - startTime).toFixed(2);
-      //if (PERFORMANCE) console.log(`[Performance] Total load time: ${totalTime}ms`);
+      //console.log(`[Performance] Total load time: ${totalTime}ms`);
       this.ui.updateStatus(`Loaded ${nodeCount.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API (${totalTime}ms)`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load graph from API';
@@ -1119,7 +1091,7 @@ export class Graph2D {
       // Fetch graph data using PrismAPI
       const fetchStart = performance.now();
       const graphData = await this.prismAPI.fetchSimpleGraph(graphId);
-      if (PERFORMANCE) console.log(`[Performance] API fetch: ${(performance.now() - fetchStart).toFixed(2)}ms`);
+      console.log(`[Performance] API fetch: ${(performance.now() - fetchStart).toFixed(2)}ms`);
 
       // Store the data but don't render yet
       this.nodes = graphData.nodes;
@@ -1172,46 +1144,15 @@ export class Graph2D {
       // Populate geometry arrays from loaded nodes
       const layoutStart = performance.now();
       await this.populateGeometryFromNodes(positions, colors, sizes);
-      if (PERFORMANCE) console.log(`[Performance] Layout population: ${(performance.now() - layoutStart).toFixed(2)}ms`);
+      console.log(`[Performance] Layout population: ${(performance.now() - layoutStart).toFixed(2)}ms`);
 
       // Create point cloud
       const cloudStart = performance.now();
       this.createPointCloud(geometry, positions, colors, sizes);
       this.ui.updateNodeCount(nodeCount);
-
-      // If using parameter positioning, set alpha values for visibility
-      if (this.config.useParameterPositioning && this.config.parameterXAxis && this.config.parameterYAxis) {
-        const xParam = this.config.parameterXAxis;
-        const yParam = this.config.parameterYAxis;
-        const alphas = this.pointCloud?.geometry.getAttribute('alpha') as THREE.BufferAttribute;
-
-        if (alphas) {
-          let visibleCount = 0;
-          // Set alpha based on node visibility for each geometry point
-          for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
-            let hasVisibleNode = false;
-
-            for (const nodeIndex of nodeIndices) {
-              const node = this.nodes[nodeIndex];
-              if (this.isNodeVisibleForParameters(node, xParam, yParam)) {
-                hasVisibleNode = true;
-                visibleCount++;
-              }
-            }
-
-            alphas.setX(geometryIndex, hasVisibleNode ? 1.0 : 0.0);
-          }
-
-          alphas.needsUpdate = true;
-          this.updateVisibleNodeCounter(visibleCount);
-          if (DEBUG) console.log(`[renderLoadedData] Set visibility: ${visibleCount} visible nodes`);
-        }
-      } else {
-        this.updateVisibleNodeCounter(nodeCount);
-      }
-
+      this.updateVisibleNodeCounter(nodeCount);
       this.resetView();
-      if (PERFORMANCE) console.log(`[Performance] Point cloud creation: ${(performance.now() - cloudStart).toFixed(2)}ms`);
+      console.log(`[Performance] Point cloud creation: ${(performance.now() - cloudStart).toFixed(2)}ms`);
 
       // Create edge lines if edges are visible
       if (this.config.edgesVisible && this.edges.length > 0) {
@@ -1224,7 +1165,7 @@ export class Graph2D {
 
         this.createEdgeLines();
         this.updateArrowScales();
-        if (PERFORMANCE) console.log(`[Performance] Edge rendering: ${(performance.now() - edgeStart).toFixed(2)}ms`);
+        console.log(`[Performance] Edge rendering: ${(performance.now() - edgeStart).toFixed(2)}ms`);
       }
 
       // Apply default type-based coloring
@@ -1356,28 +1297,14 @@ export class Graph2D {
         // Calculate position based on parameters or use existing position
         let position: THREE.Vector2;
         if (this.config.useParameterPositioning) {
-          const xParam = this.config.parameterXAxis ?? "";
-          const yParam = this.config.parameterYAxis ?? "";
-
-          // Check if node should be visible for these parameters
-          const isVisible = this.isNodeVisibleForParameters(nodeData, xParam, yParam);
-
-          if (isVisible) {
-            position = this.calculateParameterPosition(
-              nodeData,
-              spread,
-              { x: minX, y: minY },
-              { x: maxX, y: maxY }
-            );
-            nodeData.x = position.x;
-            nodeData.y = position.y;
-          } else {
-            // For invisible nodes, position them far off-screen
-            // This prevents them from clustering at (0, 0)
-            position = new THREE.Vector2(-999999, -999999);
-            nodeData.x = position.x;
-            nodeData.y = position.y;
-          }
+          position = this.calculateParameterPosition(
+            nodeData,
+            spread,
+            { x: minX, y: minY },
+            { x: maxX, y: maxY }
+          );
+          nodeData.x = position.x;
+          nodeData.y = position.y;
         } else if (nodeData.x === 0 && nodeData.y === 0) {
           // Only calculate position if node doesn't have one
           position = this.calculateNodePosition(i, count, spread);
@@ -1807,7 +1734,7 @@ export class Graph2D {
       edgesCreated++;
     }
 
-    if (STATUS) console.log(`[generateRandomEdges] Successfully created ${edgesCreated} edges for ${nodeCount} nodes`);
+    console.log(`[generateRandomEdges] Successfully created ${edgesCreated} edges for ${nodeCount} nodes`);
 
     // Convert Sets back to arrays for node data
     this.nodes.forEach((node, index) => {
@@ -2258,9 +2185,9 @@ export class Graph2D {
       }
 
       this.edgeLines = null;
-      if (STATUS) console.log(`[clearEdgeLines] COMPLETED - edgeLines set to null`);
+      console.log(`[clearEdgeLines] COMPLETED - edgeLines set to null`);
     } else {
-      if (STATUS) console.log(`[clearEdgeLines] Nothing to clear - edgeLines was already null`);
+      console.log(`[clearEdgeLines] Nothing to clear - edgeLines was already null`);
     }
   }
 
@@ -2330,7 +2257,7 @@ export class Graph2D {
       geometryIndex++;
     }
 
-    if (STATUS) console.log(`[Deduplication] ${nodeCount} nodes → ${uniquePositionCount} geometry points (${nodeCount - uniquePositionCount} duplicates removed)`);
+    console.log(`[Deduplication] ${nodeCount} nodes → ${uniquePositionCount} geometry points (${nodeCount - uniquePositionCount} duplicates removed)`);
 
     return {
       positions: deduplicatedPositions,
@@ -2506,13 +2433,13 @@ export class Graph2D {
     sizes.needsUpdate = true;
 
     // Redraw edges if visible
-    if (STATUS) console.log(`[relayoutExistingNodes] Before edge redraw: ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}, edgeLines exists: ${!!this.edgeLines}`);
+    console.log(`[relayoutExistingNodes] Before edge redraw: ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}, edgeLines exists: ${!!this.edgeLines}`);
     if (this.config.edgesVisible && this.edges.length > 0) {
       this.clearEdgeLines();
       this.createEdgeLines();
       this.updateArrowScales();
     } else {
-      if (STATUS) console.log(`[relayoutExistingNodes] Skipping edge creation (edgesVisible=${this.config.edgesVisible}, edges.length=${this.edges.length})`);
+      console.log(`[relayoutExistingNodes] Skipping edge creation (edgesVisible=${this.config.edgesVisible}, edges.length=${this.edges.length})`);
     }
 
     this.resetView();
@@ -3479,7 +3406,7 @@ export class Graph2D {
 
     contentElement.innerHTML = html;
 
-    if (STATUS) console.log('[Graph2D] Updated PCA eigenvectors display');
+    console.log('[Graph2D] Updated PCA eigenvectors display');
   }
 
   public toggleGrid(): void {
@@ -3522,8 +3449,8 @@ export class Graph2D {
         const padding = 1.2; // 20% padding
         this.zoomLevel = (viewSize * 2) / (maxRange * padding);
 
-        //if (STATUS) console.log(`[resetView] Node extent: X[${minX.toFixed(1)}, ${maxX.toFixed(1)}], Y[${minY.toFixed(1)}, ${maxY.toFixed(1)}]`);
-        //if (STATUS) console.log(`[resetView] Setting zoom to ${this.zoomLevel.toFixed(3)}x to fit range ${maxRange.toFixed(1)}`);
+        //console.log(`[resetView] Node extent: X[${minX.toFixed(1)}, ${maxX.toFixed(1)}], Y[${minY.toFixed(1)}, ${maxY.toFixed(1)}]`);
+        //console.log(`[resetView] Setting zoom to ${this.zoomLevel.toFixed(3)}x to fit range ${maxRange.toFixed(1)}`);
       } else {
         this.zoomLevel = 1.0;
       }
@@ -3765,9 +3692,9 @@ export class Graph2D {
 
     if (this.overlapLabelsGroup && this.overlapLabelsGroup.children.length > 0) {
       this.scene.add(this.overlapLabelsGroup);
-      if (STATUS) console.log(`Created ${this.overlapLabelsGroup.children.length} overlap labels`);
+      console.log(`Created ${this.overlapLabelsGroup.children.length} overlap labels`);
     } else {
-      if (STATUS) console.log('No overlapping nodes found');
+      console.log('No overlapping nodes found');
     }
   }
 
@@ -4199,7 +4126,7 @@ export class Graph2D {
       opacity: 1.0,
       sizeAttenuation: false
     });
-    if (STATUS) console.log(`x: ${xParamLabel}, y: ${yParamLabel}`);
+    console.log(`x: ${xParamLabel}, y: ${yParamLabel}`);
     const yTitle = new THREE.Sprite(yTitleMaterial);
     const yTitleY = (xAxisY + maxYWorldPos) / 2; // Center of screen
     yTitle.position.set(yAxisX + labelScale * -2.0, yTitleY, 0);
@@ -4329,7 +4256,7 @@ export class Graph2D {
       return;
     }
 
-    if (STATUS) console.log(`[Parameter View] Starting with ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
+    console.log(`[Parameter View] Starting with ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
     this.ui.updateStatus(`Rearranging nodes by parameters ${xParam} and ${yParam}...`);
 
     // Update configuration
@@ -4350,9 +4277,9 @@ export class Graph2D {
     const xParamTypes = this.prismAPI.getParameterNodeTypes(xParam);
     const yParamTypes = this.prismAPI.getParameterNodeTypes(yParam);
 
-    if (STATUS) console.log(`[Parameter View] X parameter: "${xParam}" (types: ${xParamTypes})`);
-    if (STATUS) console.log(`[Parameter View] Y parameter: "${yParam}" (types: ${yParamTypes})`);
-    if (DEBUG) console.log(`[Parameter View] DEBUG: Total geometry points: ${this.geometryToNodesMap.size}`);
+    console.log(`[Parameter View] X parameter: "${xParam}" (types: ${xParamTypes})`);
+    console.log(`[Parameter View] Y parameter: "${yParam}" (types: ${yParamTypes})`);
+    console.log(`[Parameter View] DEBUG: Total geometry points: ${this.geometryToNodesMap.size}`);
 
     // Determine which node types should be visible
     // Only show nodes that have BOTH parameters
@@ -4370,7 +4297,7 @@ export class Graph2D {
       }
     }
 
-    if (STATUS) console.log(`[Parameter View] Visible node types:`, Array.from(visibleNodeTypes));
+    console.log(`[Parameter View] Visible node types:`, Array.from(visibleNodeTypes));
 
     // Update UI label
     this.updateParameterViewLabel(visibleNodeTypes);
@@ -4413,7 +4340,7 @@ export class Graph2D {
             const yVal = PrismAPI.getParameterValue(node, yParam);
             const xNum = this.convertParameterValueToNumber(xVal);
             const yNum = this.convertParameterValueToNumber(yVal);
-            if (DEBUG) console.log(`[Parameter View] DEBUG Hidden node ${node.id} (type=${node.type}): xVal=${xVal} (${xNum}), yVal=${yVal} (${yNum})`);
+            console.log(`[Parameter View] DEBUG Hidden node ${node.id} (type=${node.type}): xVal=${xVal} (${xNum}), yVal=${yVal} (${yNum})`);
           }
         }
       }
@@ -4465,7 +4392,7 @@ export class Graph2D {
       }
     }
 
-    if (STATUS) console.log(`[Parameter View] Geometry visibility: ${geometriesVisible} visible, ${geometriesHidden} hidden (${this.geometryToNodesMap.size} total)`);
+    console.log(`[Parameter View] Geometry visibility: ${geometriesVisible} visible, ${geometriesHidden} hidden (${this.geometryToNodesMap.size} total)`);
 
     // Recalculate counts based on geometry visibility
     visibleCount = 0;
@@ -4494,14 +4421,14 @@ export class Graph2D {
     this.updateVisibleNodeCounter(visibleCount);
 
     // Log parameter ranges and filtering for debugging
-    if (STATUS) console.log(`[Parameter View] Visible: ${visibleCount}, Hidden: ${hiddenCount} (total: ${this.nodes.length})`);
-    if (STATUS) console.log(`[Parameter View] X range: ${minX} to ${maxX} (${xParam})`);
-    if (STATUS) console.log(`[Parameter View] Y range: ${minY} to ${maxY} (${yParam})`);
+    console.log(`[Parameter View] Visible: ${visibleCount}, Hidden: ${hiddenCount} (total: ${this.nodes.length})`);
+    console.log(`[Parameter View] X range: ${minX} to ${maxX} (${xParam})`);
+    console.log(`[Parameter View] Y range: ${minY} to ${maxY} (${yParam})`);
     if (colorParamIndex && colorParamIndex !== "-1") {
       if (colorParamIndex === "__type__") {
-        if (STATUS) console.log(`[Parameter View] Color: by node type (s=blue, t=grey)`);
+        console.log(`[Parameter View] Color: by node type (s=blue, t=grey)`);
       } else {
-        if (STATUS) console.log(`[Parameter View] Color range: ${minColor} to ${maxColor} (${colorParamIndex})`);
+        console.log(`[Parameter View] Color range: ${minColor} to ${maxColor} (${colorParamIndex})`);
       }
     }
 
@@ -4534,7 +4461,7 @@ export class Graph2D {
         if (firstHiddenGeometry === -1) {
           firstHiddenGeometry = geometryIndex;
           const hiddenNode = this.nodes[nodeIndices[0]];
-          if (DEBUG) console.log(`[Parameter View] DEBUG First hidden geometry ${geometryIndex}: node ${hiddenNode.id} (type=${hiddenNode.type}), moved to (-999999, -999999)`);
+          console.log(`[Parameter View] DEBUG First hidden geometry ${geometryIndex}: node ${hiddenNode.id} (type=${hiddenNode.type}), moved to (-999999, -999999)`);
         }
         continue;
       }
@@ -4601,12 +4528,12 @@ export class Graph2D {
       colors.needsUpdate = true;
     }
 
-    if (DEBUG) console.log(`[Parameter View] DEBUG Hidden geometries moved offscreen: ${hiddenGeometriesCount}`);
+    console.log(`[Parameter View] DEBUG Hidden geometries moved offscreen: ${hiddenGeometriesCount}`);
 
     // Redraw edge lines if they are visible
-    if (STATUS) console.log(`[Parameter View] Finished - ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
+    console.log(`[Parameter View] Finished - ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
     if (this.config.edgesVisible && this.edges.length > 0) {
-      if (STATUS) console.log(`[Parameter View] Redrawing ${this.edges.length} edge lines`);
+      console.log(`[Parameter View] Redrawing ${this.edges.length} edge lines`);
       this.clearEdgeLines();
       this.createEdgeLines();
       this.updateArrowScales();
@@ -4897,202 +4824,5 @@ export class Graph2D {
 
   public getLastRenderTime(): number {
     return this.lastRenderTime;
-  }
-
-  /**
-   * Update the size of node points in the visualization
-   * @param size The new point size (1-18)
-   */
-  public setNodePointSize(size: number): void {
-    if (!this.pointCloud) {
-      console.warn('[Graph2D] Cannot set node point size: no point cloud exists');
-      return;
-    }
-
-    const material = this.pointCloud.material as THREE.ShaderMaterial;
-    if (material.uniforms && material.uniforms.pointSize) {
-      material.uniforms.pointSize.value = size;
-      material.needsUpdate = true;
-      if (DEBUG) console.log(`[Graph2D] Node point size set to: ${size}`);
-    }
-  }
-
-  /**
-   * Update the font size of stack overlap labels
-   * @param fontSize The new font size (20-140)
-   */
-  public setStackLabelSize(fontSize: number): void {
-    if (!this.overlapLabelsGroup || this.overlapLabelsGroup.children.length === 0) {
-      console.warn('[Graph2D] Cannot set label size: no overlap labels exist');
-      return;
-    }
-
-    // Recreate all overlap labels with new font size
-    this.recreateOverlapLabelsWithFontSize(fontSize);
-
-    if (DEBUG) console.log(`[Graph2D] Stack label size set to: ${fontSize}`);
-  }
-
-  /**
-   * Recreate overlap labels with a new font size
-   * This method properly extracts the geometryIndex from existing labels,
-   * recalculates the visible counts, and recreates labels while maintaining
-   * compatibility with updateOverlapLabelPositions()
-   * @param fontSize The new font size
-   */
-  private recreateOverlapLabelsWithFontSize(fontSize: number): void {
-    if (!this.overlapLabelsGroup) {
-      console.warn('[Graph2D] No overlap labels to recreate');
-      return;
-    }
-
-    // Extract geometry indices from existing labels
-    const geometryIndices = new Set<number>();
-    this.overlapLabelsGroup.children.forEach((sprite) => {
-      if (sprite instanceof THREE.Sprite && sprite.userData.geometryIndex !== undefined) {
-        geometryIndices.add(sprite.userData.geometryIndex as number);
-      }
-    });
-
-    if (geometryIndices.size === 0) {
-      console.warn('[Graph2D] No valid geometry indices found in existing labels');
-      return;
-    }
-
-    // Clear existing labels (this sets overlapLabelsGroup to null and removes from scene)
-    this.clearOverlapLabels();
-
-    // Recreate the overlap labels group
-    this.overlapLabelsGroup = new THREE.Group();
-
-    // Get necessary data for label creation
-    const positions = this.pointCloud?.geometry.attributes.position as THREE.BufferAttribute;
-    const alphas = this.pointCloud?.geometry.getAttribute('alpha') as THREE.BufferAttribute;
-    if (!positions || !alphas) {
-      console.warn('[Graph2D] Cannot recreate labels: missing position or alpha buffers');
-      return;
-    }
-
-    // Calculate viewport offsets
-    const viewportHeight = window.innerHeight;
-    const viewportWidth = window.innerWidth;
-    const offsetYViewport = viewportHeight * 0.01; // 1vh
-    const offsetXViewport = viewportWidth * 0.01; // 1vw
-
-    const viewHeight = this.camera.top - this.camera.bottom;
-    const viewWidth = this.camera.right - this.camera.left;
-    const offsetY = (offsetYViewport / viewportHeight) * viewHeight;
-    const offsetX = (offsetXViewport / viewportWidth) * viewWidth;
-
-    // Target: 20 pixels high on screen (same as original)
-    const targetPixelHeight = 20;
-    const labelHeight = (targetPixelHeight / viewportHeight) * viewHeight;
-
-    // Recreate labels for each geometry index
-    geometryIndices.forEach((geometryIndex) => {
-      // Check if this geometry point is still visible
-      if (alphas.getX(geometryIndex) === 0) {
-        return; // Skip invisible nodes
-      }
-
-      // Recalculate visible count from geometryToNodesMap
-      const nodeIndices = this.geometryToNodesMap.get(geometryIndex);
-      if (!nodeIndices || nodeIndices.length === 0) {
-        return;
-      }
-
-      // Count visible nodes (same logic as updateOverlapLabels)
-      let visibleCount = 0;
-      for (const idx of nodeIndices) {
-        const node = this.nodes[idx];
-
-        // Check filter function
-        if (this.currentFilterFn && this.currentFilterFn(node)) {
-          continue; // Node is filtered out
-        }
-
-        // If using parameter positioning, check if node is visible for current parameters
-        if (this.config.useParameterPositioning && this.config.parameterXAxis && this.config.parameterYAxis) {
-          if (!this.isNodeVisibleForParameters(node, this.config.parameterXAxis, this.config.parameterYAxis)) {
-            continue; // Node doesn't meet visibility criteria
-          }
-        }
-
-        visibleCount++;
-      }
-
-      // Only create label if multiple nodes are visible
-      if (visibleCount > 1) {
-        const posX = positions.getX(geometryIndex);
-        const posY = positions.getY(geometryIndex);
-
-        // Create texture with custom font size
-        const { texture, aspectRatio } = this.createOverlapCountTextureWithSize(visibleCount.toString(), fontSize);
-        const spriteMaterial = new THREE.SpriteMaterial({
-          map: texture,
-          transparent: true,
-          opacity: 0.95,
-          sizeAttenuation: false, // Use screen-space sizing
-          depthTest: false // Always render on top
-        });
-
-        const sprite = new THREE.Sprite(spriteMaterial);
-        sprite.raycast = () => {}; // Disable raycasting for labels
-
-        sprite.position.set(posX + offsetX, posY + offsetY, 1);
-
-        const labelWidth = labelHeight * aspectRatio;
-        sprite.scale.set(labelWidth, labelHeight, 1);
-
-        // Store userData in the same format as original updateOverlapLabels
-        // This ensures compatibility with updateOverlapLabelPositions()
-        sprite.userData = { geometryIndex: geometryIndex, aspectRatio: aspectRatio };
-
-        if (this.overlapLabelsGroup) {
-          this.overlapLabelsGroup.add(sprite);
-        }
-      }
-    });
-
-    // Add the group back to the scene
-    if (this.overlapLabelsGroup && this.overlapLabelsGroup.children.length > 0) {
-      this.scene.add(this.overlapLabelsGroup);
-      if (DEBUG) console.log(`[Graph2D] Recreated ${this.overlapLabelsGroup.children.length} overlap labels with font size ${fontSize}`);
-    } else {
-      if (DEBUG) console.log('[Graph2D] No overlap labels needed after recreation');
-    }
-  }
-
-  /**
-   * Create a texture for overlap count labels with a specific font size
-   * @param text The text to display
-   * @param fontSize The font size to use
-   * @returns texture and aspect ratio
-   */
-  private createOverlapCountTextureWithSize(text: string, fontSize: number): { texture: THREE.CanvasTexture; aspectRatio: number } {
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d')!;
-
-    context.font = `bold ${fontSize}px Arial`;
-    const metrics = context.measureText(text);
-    const textWidth = metrics.width;
-
-    // Use same padding strategy as original
-    const padding = 8;
-    canvas.width = textWidth + padding * 2;
-    canvas.height = (fontSize * 96 / 80) + padding; // Scale height proportionally to original (96 for fontSize 80)
-
-    const aspectRatio = canvas.width / canvas.height;
-
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.font = `bold ${fontSize}px Arial`;
-    context.fillStyle = 'rgba(0, 0, 0, 1.0)'; // Black text like original
-    context.textAlign = 'center';
-    context.textBaseline = 'middle';
-    context.fillText(text, canvas.width / 2, canvas.height / 2);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.needsUpdate = true;
-    return { texture, aspectRatio };
   }
 }

@@ -325,6 +325,12 @@ export class UIManager {
         console.warn(`Element with id '${id}' not found`);
       }
     });
+
+    // Cache slider elements
+    const nodeSizeSlider = document.getElementById('node-size-slider');
+    const labelSizeSlider = document.getElementById('label-size-slider');
+    if (nodeSizeSlider) this.elements.set('node-size-slider', nodeSizeSlider);
+    if (labelSizeSlider) this.elements.set('label-size-slider', labelSizeSlider);
   }
 
   private getElement(id: string): HTMLElement | null {
@@ -373,6 +379,9 @@ export class UIManager {
     this.addClickListener('btn-remove-t-nodes', () => this.graph.removeTransitionNodes());
     this.addClickListener('btn-remove-s-nodes', () => this.graph.removeStateNodes());
 
+    // Slider controls
+    this.setupSliders();
+
     // Setup collapsible sections
     this.setupCollapsibleSections();
   }
@@ -404,6 +413,32 @@ export class UIManager {
         }
       });
     });
+  }
+
+  private setupSliders(): void {
+    // Node size slider
+    const nodeSizeSlider = document.getElementById('node-size-slider') as HTMLInputElement;
+    const nodeSizeValue = document.getElementById('node-size-value');
+
+    if (nodeSizeSlider && nodeSizeValue) {
+      nodeSizeSlider.addEventListener('input', () => {
+        const size = parseFloat(nodeSizeSlider.value);
+        nodeSizeValue.textContent = size.toFixed(1);
+        this.graph.setNodePointSize(size);
+      });
+    }
+
+    // Label size slider
+    const labelSizeSlider = document.getElementById('label-size-slider') as HTMLInputElement;
+    const labelSizeValue = document.getElementById('label-size-value');
+
+    if (labelSizeSlider && labelSizeValue) {
+      labelSizeSlider.addEventListener('input', () => {
+        const size = parseInt(labelSizeSlider.value);
+        labelSizeValue.textContent = size.toString();
+        this.graph.setStackLabelSize(size);
+      });
+    }
   }
 
   private addClickListener(elementId: string, handler: () => void): void {
@@ -691,9 +726,10 @@ export class UIManager {
     }
 
     // Store current selections or use provided selections
+    // Default to "__type__" for color if no selection provided and no current value
     const currentX = selections?.x ?? xSelect.value;
     const currentY = selections?.y ?? ySelect.value;
-    const currentColor = selections?.color ?? colorSelect.value;
+    const currentColor = selections?.color ?? (colorSelect.value || '__type__');
 
     // Update X-axis dropdown
     this.populateParameterDropdown(xSelect, paramLabels);
@@ -750,6 +786,33 @@ export class UIManager {
         select.appendChild(option);
       });
     });
+  }
+
+  /**
+   * Update parameter view label to show which node types are currently visible
+   */
+  public updateParameterViewLabel(visibleNodeTypes: Set<'s' | 't'>): void {
+    const label = document.getElementById('param-view-display-label');
+    if (!label) return;
+
+    if (visibleNodeTypes.size === 0) {
+      // No nodes visible
+      label.textContent = 'No nodes match the selected parameters';
+      label.className = 'param-view-label';
+      label.classList.remove('hidden');
+    } else if (visibleNodeTypes.size === 1) {
+      // Only one type visible
+      const type = Array.from(visibleNodeTypes)[0];
+      const typeName = type === 's' ? 'State nodes' : 'Transition nodes';
+      label.textContent = `Visible: ${typeName} only`;
+      label.className = 'param-view-label';
+      label.classList.remove('hidden');
+    } else {
+      // Both types visible
+      label.textContent = 'Visible: State and Transition nodes';
+      label.className = 'param-view-label';
+      label.classList.remove('hidden');
+    }
   }
 
   // Cleanup method for proper disposal

@@ -8,6 +8,7 @@ export interface ParameterMetadata {
   max: number | string;
   identifier?: string;
   possibleValues?: string[];
+  convertedFromNominal?: boolean;
 }
 
 export interface NodeTypeInfo {
@@ -141,7 +142,17 @@ export class PrismAPI {
       this.progressIndicator.setTitle('Processing Graph Data');
       this.progressIndicator.setStatus('Converting node data...');
 
+      // Performance tracking: Start timer for local processing
+      const PERFORMANCE = true;
+      const processingStartTime = PERFORMANCE ? performance.now() : 0;
+
       const result = await this.convertNewFormatToInternal(data);
+
+      // Performance tracking: End timer for local processing
+      if (PERFORMANCE) {
+        const processingTime = performance.now() - processingStartTime;
+        console.log(`[Performance] Local processing (model preprocessing): ${processingTime.toFixed(2)}ms`);
+      }
 
       // Clear abort controller and hide progress indicator when done
       this.currentAbortController = null;
@@ -252,6 +263,7 @@ export class PrismAPI {
 
         // Process metadata on main thread (these methods access class state)
         this.addNominalValuesToParameterMetadata(nodes);
+        this.convertNumericNominalParameters();
         this.calculateParameterMinMax(nodes);
 
         resolve({ nodes, edges });
@@ -335,6 +347,7 @@ export class PrismAPI {
     }
 
     this.addNominalValuesToParameterMetadata(nodes);
+    this.convertNumericNominalParameters();
 
     // Calculate and cache min/max values for all numeric parameters
     this.calculateParameterMinMax(nodes);
@@ -513,6 +526,77 @@ export class PrismAPI {
   }
 
   /**
+   * Convert nominal parameters to number type if all their possible values are numeric
+   * This should be called after addNominalValuesToParameterMetadata
+   */
+  private convertNumericNominalParameters(): void {
+    if (!this.parameterMetadata) return;
+
+    const DEBUG = false;
+    if (DEBUG) console.log('[PrismAPI] convertNumericNominalParameters - START');
+
+    // Check both s and t node types
+    for (const type of ['s', 't'] as const) {
+      const nodeInfo = this.parameterMetadata[type];
+      if (!nodeInfo) continue;
+
+      // Iterate through categories
+      for (const categoryName in nodeInfo) {
+        if (!nodeInfo.hasOwnProperty(categoryName)) continue;
+
+        const params = nodeInfo[categoryName];
+        if (!params || typeof params !== 'object') continue;
+
+        // Check each parameter
+        for (const paramName in params) {
+          if (!params.hasOwnProperty(paramName)) continue;
+
+          const paramMeta = params[paramName] as ParameterMetadata;
+
+          // Only process nominal parameters with possibleValues
+          if (paramMeta.type !== 'nominal' || !paramMeta.possibleValues || paramMeta.possibleValues.length === 0) {
+            continue;
+          }
+
+          // Check if all possible values (excluding 'undefined') are numeric
+          const numericValues: number[] = [];
+          let allNumeric = true;
+
+          for (const val of paramMeta.possibleValues) {
+            if (val === 'undefined') continue; // Skip 'undefined' values
+
+            const numVal = parseFloat(val);
+            if (isNaN(numVal)) {
+              allNumeric = false;
+              break;
+            }
+            numericValues.push(numVal);
+          }
+
+          // If all values are numeric, convert the parameter type to 'number'
+          if (allNumeric && numericValues.length > 0) {
+            const min = Math.min(...numericValues);
+            const max = Math.max(...numericValues);
+
+            if (DEBUG) {
+              console.log(`[PrismAPI] Converting ${type}/${categoryName}/${paramName} from nominal to number (min=${min}, max=${max})`);
+            }
+
+            // Convert to number type
+            paramMeta.type = 'number';
+            paramMeta.min = min;
+            paramMeta.max = max;
+            // Keep possibleValues for reference if needed, but mark as converted
+            (paramMeta as any).convertedFromNominal = true;
+          }
+        }
+      }
+    }
+
+    if (DEBUG) console.log('[PrismAPI] convertNumericNominalParameters - END');
+  }
+
+  /**
    * Calculate actual min/max values for all numeric parameters from node data
    * and update the parameterMetadata cache
    */
@@ -654,6 +738,7 @@ export class PrismAPI {
   /**
    * Check which node types (s, t, or both) have a specific parameter
    * Returns 's', 't', 'st', or null
+   * @param paramName Parameter name, can be in "category::paramName" format or just "paramName"
    */
   public getParameterNodeTypes(paramName: string): string | null {
     if (!this.parameterMetadata) return null;
@@ -661,22 +746,38 @@ export class PrismAPI {
     let hasS = false;
     let hasT = false;
 
-    // Check in 's' nodes
-    if (this.parameterMetadata.s) {
-      for (const category of Object.keys(this.parameterMetadata.s)) {
-        if (this.parameterMetadata.s[category][paramName]) {
-          hasS = true;
-          break;
+    // Handle "category::paramName" format
+    if (paramName.includes('::')) {
+      const [category, name] = paramName.split('::');
+
+      // Check in 's' nodes
+      if (this.parameterMetadata.s && this.parameterMetadata.s[category] && this.parameterMetadata.s[category][name]) {
+        hasS = true;
+      }
+
+      // Check in 't' nodes
+      if (this.parameterMetadata.t && this.parameterMetadata.t[category] && this.parameterMetadata.t[category][name]) {
+        hasT = true;
+      }
+    } else {
+      // Original behavior: search all categories for the parameter
+      // Check in 's' nodes
+      if (this.parameterMetadata.s) {
+        for (const category of Object.keys(this.parameterMetadata.s)) {
+          if (this.parameterMetadata.s[category][paramName]) {
+            hasS = true;
+            break;
+          }
         }
       }
-    }
 
-    // Check in 't' nodes
-    if (this.parameterMetadata.t) {
-      for (const category of Object.keys(this.parameterMetadata.t)) {
-        if (this.parameterMetadata.t[category][paramName]) {
-          hasT = true;
-          break;
+      // Check in 't' nodes
+      if (this.parameterMetadata.t) {
+        for (const category of Object.keys(this.parameterMetadata.t)) {
+          if (this.parameterMetadata.t[category][paramName]) {
+            hasT = true;
+            break;
+          }
         }
       }
     }
