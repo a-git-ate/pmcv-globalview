@@ -2,6 +2,7 @@ import { appendFile } from 'fs';
 import type { Graph2D } from './Graph2D';
 import type { NodeData } from './types';
 import type { PrismAPI, ParameterMetadata } from './PrismAPI';
+import { JSONParser } from '@streamparser/json';
 
 export class ProjectManager {
   private graph: Graph2D;
@@ -12,6 +13,7 @@ export class ProjectManager {
   private readonly POLL_INTERVAL_MS = 2000; // Poll every 2 seconds
   private cachedParameterStructure: any = null; // Cache the initial parameter structure
   private cachedStatus: any = null;
+  private hasLoggedFilters: boolean = false;
   // DOM Elements
   private projectTabsContainer: HTMLElement | null = null;
   private checkButton: HTMLButtonElement | null = null;
@@ -50,6 +52,24 @@ export class ProjectManager {
     // Apply ML-PCA button
     const applyMLPCAButton = document.getElementById('btn-apply-ml-pca');
     applyMLPCAButton?.addEventListener('click', () => this.handleApplyMLPCA());
+
+    // Upload JSON button
+    const uploadJsonButton = document.getElementById('btn-upload-json');
+    const jsonFileInput = document.getElementById('json-file-input') as HTMLInputElement;
+
+    uploadJsonButton?.addEventListener('click', () => {
+      jsonFileInput?.click();
+    });
+
+    jsonFileInput?.addEventListener('change', async (event) => {
+      const target = event.target as HTMLInputElement;
+      const file = target.files?.[0];
+      if (file) {
+        await this.handleJsonUpload(file);
+        // Reset the input so the same file can be uploaded again if needed
+        target.value = '';
+      }
+    });
   }
 
   private async initialize(): Promise<void> {
@@ -455,6 +475,8 @@ export class ProjectManager {
   private setupPCANodeTypeListeners(): void {
     const sNodeTypeCheckbox = document.getElementById('pca-node-type-s') as HTMLInputElement;
     const tNodeTypeCheckbox = document.getElementById('pca-node-type-t') as HTMLInputElement;
+    const sSelectAllCheckbox = document.getElementById('pca-select-all-s') as HTMLInputElement;
+    const tSelectAllCheckbox = document.getElementById('pca-select-all-t') as HTMLInputElement;
 
     if (sNodeTypeCheckbox) {
       sNodeTypeCheckbox.addEventListener('change', () => this.updatePCATableState());
@@ -462,6 +484,30 @@ export class ProjectManager {
 
     if (tNodeTypeCheckbox) {
       tNodeTypeCheckbox.addEventListener('change', () => this.updatePCATableState());
+    }
+
+    // Select All for S nodes
+    if (sSelectAllCheckbox) {
+      sSelectAllCheckbox.addEventListener('change', (e) => {
+        const isChecked = (e.target as HTMLInputElement).checked;
+        const sCheckboxes = document.querySelectorAll('.pca-param-checkbox[data-node-type="s"]:not(:disabled)') as NodeListOf<HTMLInputElement>;
+        sCheckboxes.forEach(checkbox => {
+          checkbox.checked = isChecked;
+        });
+        this.updatePCAApplyButton();
+      });
+    }
+
+    // Select All for T nodes
+    if (tSelectAllCheckbox) {
+      tSelectAllCheckbox.addEventListener('change', (e) => {
+        const isChecked = (e.target as HTMLInputElement).checked;
+        const tCheckboxes = document.querySelectorAll('.pca-param-checkbox[data-node-type="t"]:not(:disabled)') as NodeListOf<HTMLInputElement>;
+        tCheckboxes.forEach(checkbox => {
+          checkbox.checked = isChecked;
+        });
+        this.updatePCAApplyButton();
+      });
     }
   }
 
@@ -965,6 +1011,8 @@ export class ProjectManager {
    */
   private displayParameterRange(): void {
     console.log("[ProjectManager] Applying filters");
+    // Reset the flag so filters will be logged again
+    this.hasLoggedFilters = false;
     // Apply the filter function to all nodes in the graph
     // The nodeFilterFn will check all the input values and button states
     this.graph.filterNodes(this.nodeFilterFn.bind(this));
@@ -975,6 +1023,29 @@ export class ProjectManager {
     const minInputs = document.querySelectorAll('.param-min-input') as NodeListOf<HTMLInputElement>;
     const maxInputs = document.querySelectorAll('.param-max-input') as NodeListOf<HTMLInputElement>;
 
+    // First call: log all active filters
+    if (!this.hasLoggedFilters) {
+      console.log(`[Filter Debug] Active filters:`);
+      console.log(`  Min inputs: ${minInputs.length}`);
+      minInputs.forEach(input => {
+        console.log(`    ${input.dataset.category}::${input.dataset.paramName} >= ${input.value}`);
+      });
+      console.log(`  Max inputs: ${maxInputs.length}`);
+      maxInputs.forEach(input => {
+        console.log(`    ${input.dataset.category}::${input.dataset.paramName} <= ${input.value}`);
+      });
+      this.hasLoggedFilters = true;
+    }
+
+    let debugLog = false;
+    // Debug specific nodes that should be filtered
+    const debugNodeIds: (number | string)[] = [264, 266, 288, 422, 244, 246, 382, 328, 430, 1703, 630, 1903, 634, 1743, 434, 1943];
+    if (debugNodeIds.includes(node.id)) {
+      debugLog = true;
+      const prMaxEqual1 = node.parameters?.['Model Checking Results']?.['PrMax_equal_1'];
+      console.log(`[Filter Debug] Checking node ${node.id} (type=${node.type}), PrMax_equal_1=${prMaxEqual1}`);
+    }
+
     // Process min inputs - hide if value is LESS than min
     for (const input of Array.from(minInputs)) {
       const paramName = input.dataset.paramName;
@@ -984,8 +1055,17 @@ export class ProjectManager {
       if (paramName && category && minValue !== null) {
         const paramValue = node.parameters?.[category]?.[paramName];
         if (paramValue === undefined || paramValue === null) continue;
+
+        if (debugLog) {
+          console.log(`  Min filter: ${category}::${paramName} >= ${minValue}`);
+          console.log(`    Node value: ${paramValue}, hide=${paramValue < minValue}`);
+        }
+
         if (paramName == "edges") console.log(`minValue: ${minValue}, paramValue: ${paramValue}, result: ${paramValue > minValue}`);
-        if (paramValue < minValue) return true; // Hide if less than minimum
+        if (paramValue < minValue) {
+          if (debugLog) console.log(`  -> HIDING (below min)`);
+          return true; // Hide if less than minimum
+        }
       }
     }
 
@@ -998,7 +1078,16 @@ export class ProjectManager {
       if (paramName && category && maxValue !== null) {
         const paramValue = node.parameters?.[category]?.[paramName];
         if (paramValue === undefined || paramValue === null) continue;
-        if (paramValue > maxValue) return true; // Hide if greater than maximum
+
+        if (debugLog) {
+          console.log(`  Max filter: ${category}::${paramName} <= ${maxValue}`);
+          console.log(`    Node value: ${paramValue}, hide=${paramValue > maxValue}`);
+        }
+
+        if (paramValue > maxValue) {
+          if (debugLog) console.log(`  -> HIDING (above max)`);
+          return true; // Hide if greater than maximum
+        }
       }
     }
 
@@ -1027,14 +1116,27 @@ export class ProjectManager {
       for (const [key, valuesToFilter] of filtersByParam.entries()) {
         const [category, paramName] = key.split('::');
         const paramValue = node.parameters?.[category]?.[paramName];
-        //log result and node value
-        console.log(`[Filter Nodes] Checking node ${node.id} parameter ${category}::${paramName} with value: ${paramValue}`);
-        console.log("Result: " + valuesToFilter.has(String(paramValue)));
-        if ((paramValue === undefined || paramValue === null) && valuesToFilter.has('undefined')) return true;
-        if (valuesToFilter.has(String(paramValue))) return true;
+        //log result and node value (DISABLED - causes freeze with large datasets)
+        // console.log(`[Filter Nodes] Checking node ${node.id} parameter ${category}::${paramName} with value: ${paramValue}`);
+        // console.log("Result: " + valuesToFilter.has(String(paramValue)));
+
+        if (debugLog) {
+          console.log(`  Nominal filter: ${category}::${paramName} in [${Array.from(valuesToFilter).join(', ')}]`);
+          console.log(`    Node value: ${paramValue}, matches=${valuesToFilter.has(String(paramValue))}`);
+        }
+
+        if ((paramValue === undefined || paramValue === null) && valuesToFilter.has('undefined')) {
+          if (debugLog) console.log(`  -> HIDING (undefined and filtered)`);
+          return true;
+        }
+        if (valuesToFilter.has(String(paramValue))) {
+          if (debugLog) console.log(`  -> HIDING (matches nominal filter)`);
+          return true;
+        }
       }
     }
 
+    if (debugLog) console.log(`  -> SHOWING (passed all filters)`);
     return false;
   }
 
@@ -1209,6 +1311,246 @@ export class ProjectManager {
     }
 
     return false;
+  }
+
+  /**
+   * Handle JSON file upload with streaming for large files
+   */
+  private async handleJsonUpload(file: File): Promise<void> {
+    try {
+      const fileSizeMB = file.size / 1024 / 1024;
+      console.log(`[ProjectManager] Loading JSON file: ${file.name} (${fileSizeMB.toFixed(2)} MB)`);
+
+      // Show progress indicator
+      this.prismAPI.progressIndicator.show({
+        title: 'Loading JSON File',
+        showAbortButton: false
+      });
+      this.prismAPI.progressIndicator.setStatus(`Reading ${file.name}...`);
+
+      let data: any;
+
+      // For large files (> 100MB), use streaming approach
+      if (fileSizeMB > 100) {
+        console.log(`[ProjectManager] Large file detected, using streaming parser...`);
+        data = await this.readLargeJsonFile(file);
+      } else {
+        // For smaller files, use standard approach
+        this.prismAPI.progressIndicator.setStatus('Parsing JSON...');
+        const text = await file.text();
+        data = JSON.parse(text);
+      }
+
+      this.prismAPI.progressIndicator.setStatus('Validating data structure...');
+
+      // Validate structure
+      if (!data.nodes || !Array.isArray(data.nodes)) {
+        throw new Error('Invalid JSON: missing or invalid "nodes" array');
+      }
+      if (!data.edges || !Array.isArray(data.edges)) {
+        throw new Error('Invalid JSON: missing or invalid "edges" array');
+      }
+
+      console.log(`[ProjectManager] JSON loaded: ${data.nodes.length.toLocaleString()} nodes, ${data.edges.length.toLocaleString()} edges`);
+
+      // Log info object status
+      if (data.info) {
+        console.log('[ProjectManager] JSON contains info object with parameter metadata');
+      } else {
+        console.warn('[ProjectManager] JSON does NOT contain info object - parameter menus may be empty');
+      }
+
+      // Clear canvas before loading new project
+      this.graph.clearGraphCanvas();
+
+      // Clear current project
+      this.currentProjectId = `uploaded:${file.name}`;
+      this.cachedParameterStructure = null;
+
+      // Only clear parameter metadata if the data doesn't have info
+      // If data has info, convertNewFormatToInternal will set it
+      if (!data.info) {
+        console.warn('[ProjectManager] Clearing parameter metadata because data has no info');
+        this.prismAPI.clearParameterMetadata();
+      }
+
+      // Update tabs
+      const tabs = this.projectTabsContainer?.querySelectorAll('.project-tab');
+      tabs?.forEach(tab => tab.classList.remove('active'));
+
+      // Disable check/reset for uploaded files
+      if (this.checkButton) this.checkButton.disabled = true;
+      if (this.resetButton) this.resetButton.disabled = true;
+
+      // Process and load
+      this.prismAPI.progressIndicator.setStatus('Processing graph data...');
+      const result = await this.prismAPI.convertNewFormatToInternal(data);
+
+      this.prismAPI.progressIndicator.setStatus('Loading into visualization...');
+      await this.graph.loadGraphDataFromMemory(result.nodes, result.edges, file.name);
+
+      this.prismAPI.progressIndicator.hide();
+
+      // Populate UI components with parameter metadata (same as API flow)
+      // Get the metadata that was set by convertNewFormatToInternal
+      const metadata = this.prismAPI.getParameterMetadata();
+      if (metadata) {
+        console.log('[ProjectManager] Populating UI with parameter metadata from uploaded JSON');
+
+        // Cache the parameter structure for later use
+        if (!this.cachedParameterStructure) {
+          this.cachedParameterStructure = this.deepCloneParameterStructure(metadata);
+        }
+
+        // Create a status object that matches the expected format
+        const status = { info: metadata };
+
+        // Populate parameter status panel and PCA options
+        this.displayParameterStatus(status);
+        this.populatePCAOptions(status);
+        this.showParameterStatus();
+
+        // Update parameter dropdowns in the graph UI
+        const paramLabels = this.prismAPI.getParameterLabels('s');
+        this.graph.ui.updateParameterSelections(paramLabels);
+
+        console.log('[ProjectManager] Parameter UI populated successfully');
+      } else {
+        console.warn('[ProjectManager] No parameter metadata available to populate UI');
+      }
+
+      this.graph.ui.updateStatus(`Loaded ${result.nodes.length.toLocaleString()} nodes from ${file.name}. Select a layout to visualize.`);
+
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load JSON file';
+      console.error('[ProjectManager] JSON upload failed:', error);
+      this.prismAPI.progressIndicator.hide();
+
+      let userMessage = `Failed to load JSON: ${message}`;
+
+      if (message.includes('Invalid string length') || message.includes('string length')) {
+        const fileSizeMB = file.size / 1024 / 1024;
+        userMessage = `JavaScript string length limit exceeded (${fileSizeMB.toFixed(2)} MB file).\n\n`;
+        userMessage += 'Browser has a maximum string length of ~512MB-1GB.\n\n';
+        userMessage += 'Solutions:\n';
+        userMessage += '1. Split JSON into smaller parts (<500MB each)\n';
+        userMessage += '2. Use backend API instead\n';
+        userMessage += '3. Filter/reduce data before exporting';
+      }
+
+      this.graph.ui.showError(userMessage);
+    }
+  }
+
+  /**
+   * Stream-parse large JSON files using @streamparser/json library
+   */
+  private async readLargeJsonFile(file: File): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const CHUNK_SIZE = 16 * 1024 * 1024; // 16MB chunks
+      let offset = 0;
+      const result: any = { nodes: [], edges: [], info: null };
+
+      console.log(`[ProjectManager] Starting streaming parse with @streamparser/json (${CHUNK_SIZE / 1024 / 1024}MB chunks)`);
+
+      // Create parser with paths to extract only what we need
+      const parser = new JSONParser({
+        stringBufferSize: 64 * 1024, // 64KB buffer for large strings
+        paths: ['$.nodes.*', '$.edges.*', '$.info'],
+      });
+
+      // Handle parsed values
+      parser.onValue = ({ value, key, stack }) => {
+        // stack.length indicates depth
+        // For $.nodes.*, stack.length will be 2 (root, nodes array)
+        // For $.edges.*, stack.length will be 2 (root, edges array)
+        // For $.info, stack.length will be 1 (root)
+
+        if (key === 'info' && stack.length === 1) {
+          console.log('[ProjectManager] Captured info object from JSON');
+          result.info = value;
+        } else if (stack.length === 2) {
+          // We're inside an array at depth 2
+          const parentKey = stack[1]?.key;
+          if (parentKey === 'nodes') {
+            result.nodes.push(value);
+            if (result.nodes.length % 10000 === 0) {
+              console.log(`[ProjectManager] Parsed ${result.nodes.length} nodes...`);
+            }
+          } else if (parentKey === 'edges') {
+            result.edges.push(value);
+            if (result.edges.length % 10000 === 0) {
+              console.log(`[ProjectManager] Parsed ${result.edges.length} edges...`);
+            }
+          }
+        }
+      };
+
+      parser.onError = (error: Error) => {
+        console.error('[ProjectManager] Parser error:', error);
+        reject(error);
+      };
+
+      parser.onEnd = () => {
+        console.log(`[ProjectManager] Parsing complete: ${result.nodes.length} nodes, ${result.edges.length} edges`);
+        console.log(`[ProjectManager] Info object present: ${result.info ? 'YES' : 'NO'}`);
+        if (result.info) {
+          console.log('[ProjectManager] Info contains s types:', Object.keys(result.info.s || {}));
+          console.log('[ProjectManager] Info contains t types:', Object.keys(result.info.t || {}));
+        }
+        resolve(result);
+      };
+
+      const readNextChunk = () => {
+        if (offset >= file.size) {
+          // Finish parsing
+          try {
+            parser.end();
+          } catch (error) {
+            reject(error);
+          }
+          return;
+        }
+
+        const slice = file.slice(offset, offset + CHUNK_SIZE);
+        const reader = new FileReader();
+
+        reader.onload = (event) => {
+          try {
+            const arrayBuffer = event.target?.result as ArrayBuffer;
+            if (!arrayBuffer) {
+              reject(new Error('Failed to read chunk: ArrayBuffer is null'));
+              return;
+            }
+
+            // Pass the ArrayBuffer directly to the parser (more efficient than string)
+            parser.write(new Uint8Array(arrayBuffer));
+
+            offset += CHUNK_SIZE;
+            const progress = Math.min(100, (offset / file.size) * 100);
+            this.prismAPI.progressIndicator.updateProgress(progress);
+            this.prismAPI.progressIndicator.setStatus(
+              `Parsing JSON... ${progress.toFixed(0)}% (${result.nodes.length.toLocaleString()} nodes, ${result.edges.length.toLocaleString()} edges)`
+            );
+
+            // Read next chunk
+            setTimeout(readNextChunk, 0);
+          } catch (error) {
+            console.error('[ProjectManager] Error processing chunk:', error);
+            reject(error);
+          }
+        };
+
+        reader.onerror = () => {
+          console.error('[ProjectManager] FileReader error');
+          reject(new Error('Failed to read file'));
+        };
+
+        reader.readAsArrayBuffer(slice);
+      };
+
+      readNextChunk();
+    });
   }
 
   /**

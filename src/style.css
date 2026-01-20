@@ -75,6 +75,23 @@ body {
   white-space: nowrap;
 }
 
+.upload-json-button {
+  background: #3498db;
+  border: 1px solid #2980b9;
+  margin-left: 10px;
+  padding: 8px 20px;
+  font-weight: bold;
+  color: white;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.upload-json-button:hover {
+  background: #2980b9;
+}
+
 .check-button {
   background: #27ae60;
   border: 1px solid #229954;
@@ -1076,9 +1093,12 @@ button[id*="toggle"] {
   color: #721c24;
 }
 
-.pca-arrow {
-  font-weight: bold;
-  font-size: 12px;
+.pca-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
 }
 
 .pca-parameter-name {
