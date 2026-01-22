@@ -887,9 +887,8 @@ export class Graph2D {
     }
 
     // Update UI dropdowns with new PCA parameters and select them
-    // Use the node type that was included (prefer S if both are included)
-    const nodeTypeForLabels = includeS ? 's' : 't';
-    const paramLabels = this.prismAPI.getParameterLabels(nodeTypeForLabels);
+    // Get all parameter labels from both s and t node types
+    const paramLabels = this.prismAPI.getAllParameterLabels();
     this.ui.updateParameterSelections(paramLabels, {
       x: 'PCA::PC1',
       y: 'PCA::PC2',
@@ -1099,7 +1098,7 @@ export class Graph2D {
       if (PERFORMANCE) console.log(`[Performance] Point cloud creation: ${(performance.now() - cloudStart).toFixed(2)}ms`);
 
       // Update UI with basic info
-      const paramLabels = this.prismAPI.getParameterLabels('s');
+      const paramLabels = this.prismAPI.getAllParameterLabels();
       this.ui.updateParameterSelections(paramLabels);
       this.ui.updateModelInfo(graphId, nodeCount, this.edges.length);
       this.config.parameterXAxis = "";
@@ -1171,7 +1170,7 @@ export class Graph2D {
       this.nodeCount = this.nodes.length;
 
       // Update UI with basic info
-      const paramLabels = this.prismAPI.getParameterLabels('s');
+      const paramLabels = this.prismAPI.getAllParameterLabels();
       this.ui.updateParameterSelections(paramLabels);
       this.ui.updateModelInfo(graphId, this.nodes.length, this.edges.length);
       this.config.parameterXAxis = "";
@@ -1209,7 +1208,7 @@ export class Graph2D {
       this.nodeCount = this.nodes.length;
 
       // Update UI with basic info
-      const paramLabels = this.prismAPI.getParameterLabels('s');
+      const paramLabels = this.prismAPI.getAllParameterLabels();
       this.ui.updateParameterSelections(paramLabels);
       this.ui.updateModelInfo(projectName, this.nodes.length, this.edges.length);
       this.config.parameterXAxis = "";
@@ -1306,8 +1305,9 @@ export class Graph2D {
         if (PERFORMANCE) console.log(`[Performance] Edge rendering: ${(performance.now() - edgeStart).toFixed(2)}ms`);
       }
 
-      // Apply default type-based coloring
-      this.applyColorParameter('__type__');
+      // Apply color parameter (use configured color if set, otherwise default to type)
+      const colorParam = this.config.parameterColorAxis || '__type__';
+      this.applyColorParameter(colorParam);
 
       // Update overlap labels
       if (nodeCount < 50000) {
@@ -1372,8 +1372,20 @@ export class Graph2D {
   }
 
   /**
-   * Populate geometry arrays from already-loaded nodes (optimized path)
-   * This avoids recreating nodes that were already created by PrismAPI
+   * ============================================================================
+   * COMPLETE REWRITE: Node Placement System
+   * ============================================================================
+   *
+   * This method orchestrates the complete process of placing nodes in the
+   * coordinate system and preparing them for rendering.
+   *
+   * Process:
+   * 1. Determine coordinate system bounds (parameter-based or layout-based)
+   * 2. Position each node in the coordinate system
+   * 3. Apply optional force-directed layout
+   * 4. Generate visual attributes (colors, sizes)
+   *
+   * Note: Stack generation happens later in deduplicateStackedNodes()
    */
   private async populateGeometryFromNodes(
     positions: Float32Array,
@@ -1383,101 +1395,186 @@ export class Graph2D {
     const count = this.nodes.length;
     const spread = Math.sqrt(count) * 0.5;
 
-    // Calculate min/max parameter values if using parameter positioning
+    if (DEBUG) console.log(`[NodePlacement] Starting placement for ${count} nodes`);
+
+    // ============================================================
+    // STEP 1: Determine Coordinate System Bounds
+    // ============================================================
+    const coordinateSystem = this.determineCoordinateSystem(count, spread);
+
+    // Store for later use (e.g., axis rendering)
+    this.currentAxisInfo = coordinateSystem;
+
+    // ============================================================
+    // STEP 2: Position All Nodes
+    // ============================================================
+    await this.positionNodesInCoordinateSystem(
+      positions,
+      count,
+      spread,
+      coordinateSystem
+    );
+
+    // ============================================================
+    // STEP 3: Apply Force-Directed Layout (Optional)
+    // ============================================================
+    if (this.currentLayout === 'force' && count > 0) {
+      this.ui.updateStatus('Computing force-directed layout...');
+      this.applyForceDirectedLayout(count, positions, spread);
+    }
+
+    // ============================================================
+    // STEP 4: Generate Visual Attributes
+    // ============================================================
+    this.generateNodeVisualAttributes(colors, sizes, count);
+
+    if (DEBUG) console.log(`[NodePlacement] Placement complete`);
+  }
+
+  /**
+   * Determine the coordinate system bounds based on positioning mode
+   */
+  private determineCoordinateSystem(
+    _count: number,
+    spread: number
+  ): {
+    mode: 'parameter' | 'layout';
+    xParamIndex: string;
+    yParamIndex: string;
+    minValues: { x: number; y: number };
+    maxValues: { x: number; y: number };
+    spread: number;
+  } {
+    if (!this.config.useParameterPositioning) {
+      // Layout-based positioning (force, random, grid, etc.)
+      return {
+        mode: 'layout',
+        xParamIndex: '',
+        yParamIndex: '',
+        minValues: { x: -spread, y: -spread },
+        maxValues: { x: spread, y: spread },
+        spread
+      };
+    }
+
+    // Parameter-based positioning
+    const xParamIndex = this.config.parameterXAxis ?? "";
+    const yParamIndex = this.config.parameterYAxis ?? "";
+
+    if (DEBUG) console.log(`[CoordinateSystem] Parameter mode: X="${xParamIndex}", Y="${yParamIndex}"`);
+
+    // Get parameter ranges from PrismAPI cache
+    const xRange = this.prismAPI.getParameterMinMax(xParamIndex);
+    const yRange = this.prismAPI.getParameterMinMax(yParamIndex);
+
     let minX = 0, maxX = 100;
     let minY = 0, maxY = 100;
 
-    if (this.config.useParameterPositioning) {
-      const xParamIndex = this.config.parameterXAxis ?? "";
-      const yParamIndex = this.config.parameterYAxis ?? "";
+    // Use cached ranges or calculate from nodes
+    if (xRange) {
+      minX = xRange.min;
+      maxX = xRange.max;
+      if (DEBUG) console.log(`[CoordinateSystem] X range from cache: [${minX}, ${maxX}]`);
+    } else {
+      const calculated = this.calculateParameterRange(xParamIndex);
+      minX = calculated.min;
+      maxX = calculated.max;
+      if (DEBUG) console.log(`[CoordinateSystem] X range calculated: [${minX}, ${maxX}]`);
+    }
 
-      // Use cached min/max values from PrismAPI (calculated during data loading)
-      const xRange = this.prismAPI.getParameterMinMax(xParamIndex);
-      const yRange = this.prismAPI.getParameterMinMax(yParamIndex);
+    if (yRange) {
+      minY = yRange.min;
+      maxY = yRange.max;
+      if (DEBUG) console.log(`[CoordinateSystem] Y range from cache: [${minY}, ${maxY}]`);
+    } else {
+      const calculated = this.calculateParameterRange(yParamIndex);
+      minY = calculated.min;
+      maxY = calculated.max;
+      if (DEBUG) console.log(`[CoordinateSystem] Y range calculated: [${minY}, ${maxY}]`);
+    }
 
-      console.log(`[populateGeometryFromNodes] xParam="${xParamIndex}", xRange:`, xRange);
-      console.log(`[populateGeometryFromNodes] yParam="${yParamIndex}", yRange:`, yRange);
+    return {
+      mode: 'parameter',
+      xParamIndex,
+      yParamIndex,
+      minValues: { x: minX, y: minY },
+      maxValues: { x: maxX, y: maxY },
+      spread
+    };
+  }
 
-      if (xRange) {
-        minX = xRange.min;
-        maxX = xRange.max;
-        console.log(`[populateGeometryFromNodes] Using cached X range: ${minX} to ${maxX} (types: ${typeof minX}, ${typeof maxX})`);
-      } else {
-        // Fallback: calculate from nodes (shouldn't happen for API-loaded data)
-        minX = Infinity;
-        maxX = -Infinity;
-        for (let i = 0; i < count; i++) {
-          const valRaw = PrismAPI.getParameterValue(this.nodes[i], xParamIndex);
-          const val = this.convertParameterValueToNumber(valRaw);
-          if (!isNaN(val) && isFinite(val)) {
-            minX = Math.min(minX, val);
-            maxX = Math.max(maxX, val);
-          }
-        }
-      }
+  /**
+   * Calculate min/max range for a parameter across all nodes
+   */
+  private calculateParameterRange(paramIndex: string): { min: number; max: number } {
+    let min = Infinity;
+    let max = -Infinity;
 
-      if (yRange) {
-        minY = yRange.min;
-        maxY = yRange.max;
-      } else {
-        // Fallback: calculate from nodes (shouldn't happen for API-loaded data)
-        minY = Infinity;
-        maxY = -Infinity;
-        for (let i = 0; i < count; i++) {
-          const valRaw = PrismAPI.getParameterValue(this.nodes[i], yParamIndex);
-          const val = this.convertParameterValueToNumber(valRaw);
-          if (!isNaN(val) && isFinite(val)) {
-            minY = Math.min(minY, val);
-            maxY = Math.max(maxY, val);
-          }
-        }
+    for (const node of this.nodes) {
+      const valRaw = PrismAPI.getParameterValue(node, paramIndex);
+      const val = this.convertParameterValueToNumber(valRaw);
+      if (!isNaN(val) && isFinite(val)) {
+        min = Math.min(min, val);
+        max = Math.max(max, val);
       }
     }
 
-    // Position nodes and populate geometry arrays in a single pass
+    // Fallback if no valid values found
+    if (!isFinite(min) || !isFinite(max)) {
+      return { min: 0, max: 100 };
+    }
+
+    return { min, max };
+  }
+
+  /**
+   * Position all nodes in the coordinate system
+   * This is where each node gets its (x, y) coordinates
+   */
+  private async positionNodesInCoordinateSystem(
+    positions: Float32Array,
+    count: number,
+    spread: number,
+    coordinateSystem: {
+      mode: 'parameter' | 'layout';
+      xParamIndex: string;
+      yParamIndex: string;
+      minValues: { x: number; y: number };
+      maxValues: { x: number; y: number };
+      spread: number;
+    }
+  ): Promise<void> {
     const batchSize = 50000;
+    const isParameterMode = coordinateSystem.mode === 'parameter';
+
     for (let batch = 0; batch < count; batch += batchSize) {
       const end = Math.min(batch + batchSize, count);
 
       for (let i = batch; i < end; i++) {
         const nodeData = this.nodes[i];
-
-        // Calculate position based on parameters or use existing position
         let position: THREE.Vector2;
-        if (this.config.useParameterPositioning) {
-          const xParam = this.config.parameterXAxis ?? "";
-          const yParam = this.config.parameterYAxis ?? "";
 
-          // Check if node should be visible for these parameters
-          const isVisible = this.isNodeVisibleForParameters(nodeData, xParam, yParam);
-
-          if (isVisible) {
-            position = this.calculateParameterPosition(
-              nodeData,
-              spread,
-              { x: minX, y: minY },
-              { x: maxX, y: maxY }
-            );
-            nodeData.x = position.x;
-            nodeData.y = position.y;
-          } else {
-            // For invisible nodes, position them far off-screen
-            // This prevents them from clustering at (0, 0)
-            position = new THREE.Vector2(-999999, -999999);
-            nodeData.x = position.x;
-            nodeData.y = position.y;
-          }
-        } else if (nodeData.x === 0 && nodeData.y === 0) {
-          // Only calculate position if node doesn't have one
-          position = this.calculateNodePosition(i, count, spread);
-          nodeData.x = position.x;
-          nodeData.y = position.y;
+        if (isParameterMode) {
+          // Parameter-based positioning
+          position = this.positionNodeByParameters(
+            nodeData,
+            coordinateSystem
+          );
         } else {
-          // Use existing position from API
-          position = new THREE.Vector2(nodeData.x, nodeData.y);
+          // Layout-based positioning (random, force initial, etc.)
+          position = this.positionNodeByLayout(
+            nodeData,
+            i,
+            count,
+            spread
+          );
         }
 
-        // Set positions array
+        // Update node data
+        nodeData.x = position.x;
+        nodeData.y = position.y;
+
+        // Update positions array
         positions[i * 3] = position.x;
         positions[i * 3 + 1] = position.y;
         positions[i * 3 + 2] = 0;
@@ -1489,13 +1586,105 @@ export class Graph2D {
       }
     }
 
-    // Apply force-directed layout if selected
-    if (this.currentLayout === 'force' && count > 0) {
-      this.ui.updateStatus('Computing force-directed layout...');
-      this.applyForceDirectedLayout(count, positions, spread);
+    if (DEBUG) console.log(`[NodePlacement] Positioned ${count} nodes`);
+  }
+
+  /**
+   * Position a single node based on parameter values
+   */
+  private positionNodeByParameters(
+    node: NodeData,
+    coordinateSystem: {
+      xParamIndex: string;
+      yParamIndex: string;
+      minValues: { x: number; y: number };
+      maxValues: { x: number; y: number };
+      spread: number;
+    }
+  ): THREE.Vector2 {
+    const { xParamIndex, yParamIndex, minValues, maxValues, spread } = coordinateSystem;
+
+    // Check if node is visible (has valid parameter values)
+    const isVisible = this.isNodeVisibleForParameters(node, xParamIndex, yParamIndex);
+
+    if (!isVisible) {
+      // Hide invisible nodes off-screen
+      return new THREE.Vector2(-999999, -999999);
     }
 
-    // Pre-calculate color cache
+    // Get parameter values
+    const paramXRaw = PrismAPI.getParameterValue(node, xParamIndex);
+    const paramYRaw = PrismAPI.getParameterValue(node, yParamIndex);
+
+    // Convert to numbers
+    const paramX = this.convertParameterValueToNumber(paramXRaw);
+    const paramY = this.convertParameterValueToNumber(paramYRaw);
+
+    // Map parameter values to world coordinates
+    const worldX = this.mapParameterToWorldCoordinate(
+      paramX,
+      minValues.x,
+      maxValues.x,
+      spread
+    );
+    const worldY = this.mapParameterToWorldCoordinate(
+      paramY,
+      minValues.y,
+      maxValues.y,
+      spread
+    );
+
+    return new THREE.Vector2(worldX, worldY);
+  }
+
+  /**
+   * Map a parameter value to world coordinate
+   */
+  private mapParameterToWorldCoordinate(
+    paramValue: number,
+    minParam: number,
+    maxParam: number,
+    spread: number
+  ): number {
+    // Handle edge case: all parameters have same value
+    if (maxParam === minParam) {
+      return 0;
+    }
+
+    // Normalize parameter value to [0, 1]
+    const normalized = (paramValue - minParam) / (maxParam - minParam);
+
+    // Map to world coordinates: [0, 1] -> [-spread, +spread]
+    return (normalized * 2 - 1) * spread;
+  }
+
+  /**
+   * Position a single node based on layout algorithm
+   */
+  private positionNodeByLayout(
+    node: NodeData,
+    index: number,
+    count: number,
+    spread: number
+  ): THREE.Vector2 {
+    // If node already has a position from API, use it
+    if (node.x !== 0 || node.y !== 0) {
+      return new THREE.Vector2(node.x, node.y);
+    }
+
+    // Otherwise, calculate position based on current layout
+    return this.calculateNodePosition(index, count, spread);
+  }
+
+  /**
+   * Generate visual attributes (colors, sizes) for all nodes
+   */
+  private generateNodeVisualAttributes(
+    colors: Float32Array,
+    sizes: Float32Array,
+    count: number
+  ): void {
+    // Pre-calculate color cache for performance
     const colorCache = new Map<number, { r: number; g: number; b: number }>();
     const getColorForDegree = (degree: number): { r: number; g: number; b: number } => {
       const key = Math.min(degree, 20);
@@ -1507,11 +1696,10 @@ export class Graph2D {
       return colorCache.get(key)!;
     };
 
-    // Populate colors and sizes in a single pass
-    // Use pre-calculated degrees from NodeData (calculated during parsing in PrismAPI)
+    // Generate colors and sizes based on node degree
     for (let i = 0; i < count; i++) {
       const nodeData = this.nodes[i];
-      const degree = nodeData.degree ?? 0; // Use pre-calculated degree or 0 if not available
+      const degree = nodeData.degree ?? 0;
       const colorData = getColorForDegree(degree);
 
       colors[i * 3] = colorData.r;
@@ -2402,8 +2590,19 @@ export class Graph2D {
   }
 
   /**
-   * Deduplicate stacked nodes to create only one geometry point per unique position
-   * Returns deduplicated arrays and a mapping from geometry index to node indices
+   * ============================================================================
+   * COMPLETE REWRITE: Stack Generation System
+   * ============================================================================
+   *
+   * This method groups nodes that occupy the same position in the coordinate
+   * system into "stacks" and creates a single visual geometry point for each stack.
+   *
+   * Process:
+   * 1. Scan all nodes and group by position (within epsilon tolerance)
+   * 2. Create one geometry point per unique position
+   * 3. Build mapping from geometry index to all nodes at that position
+   *
+   * This is the core of the stack generation system.
    */
   private deduplicateStackedNodes(
     positions: Float32Array,
@@ -2415,59 +2614,140 @@ export class Graph2D {
     sizes: Float32Array;
     geometryToNodesMap: Map<number, number[]>;
   } {
-    const epsilon = 0.001; // Same tolerance as findStackedNodes
+    const startTime = performance.now();
     const nodeCount = positions.length / 3;
 
-    // Map from position key to list of node indices at that position
-    const positionMap = new Map<string, number[]>();
+    if (DEBUG) console.log(`[StackGeneration] Starting stack generation for ${nodeCount} nodes`);
 
-    // Build position map
-    for (let i = 0; i < nodeCount; i++) {
-      const x = positions[i * 3];
-      const y = positions[i * 3 + 1];
-      const z = positions[i * 3 + 2];
+    // ============================================================
+    // STEP 1: Group Nodes by Position
+    // ============================================================
+    const stacks = this.groupNodesByPosition(positions, nodeCount);
 
-      // Round to epsilon precision to group nearby positions
-      const key = `${Math.round(x / epsilon)}:${Math.round(y / epsilon)}:${Math.round(z / epsilon)}`;
-
-      if (!positionMap.has(key)) {
-        positionMap.set(key, []);
-      }
-      positionMap.get(key)!.push(i);
+    if (DEBUG) {
+      const stackCount = stacks.size;
+      const largestStack = Math.max(...Array.from(stacks.values()).map(nodes => nodes.length));
+      console.log(`[StackGeneration] Created ${stackCount} stacks from ${nodeCount} nodes`);
+      console.log(`[StackGeneration] Largest stack: ${largestStack} nodes`);
+      console.log(`[StackGeneration] Reduction: ${((1 - stackCount / nodeCount) * 100).toFixed(1)}%`);
     }
 
-    // Create deduplicated arrays
-    const uniquePositionCount = positionMap.size;
-    const deduplicatedPositions = new Float32Array(uniquePositionCount * 3);
-    const deduplicatedColors = new Float32Array(uniquePositionCount * 3);
-    const deduplicatedSizes = new Float32Array(uniquePositionCount);
+    // ============================================================
+    // STEP 2: Create Geometry for Each Stack
+    // ============================================================
+    const geometryData = this.createGeometryFromStacks(
+      stacks,
+      positions,
+      colors,
+      sizes
+    );
+
+    const elapsed = performance.now() - startTime;
+    if (PERFORMANCE && elapsed > 50) {
+      console.log(`[StackGeneration] Completed in ${elapsed.toFixed(0)}ms`);
+    }
+
+    return geometryData;
+  }
+
+  /**
+   * Group nodes by their position in the coordinate system
+   * Returns a map from position key to array of node indices
+   */
+  private groupNodesByPosition(
+    positions: Float32Array,
+    nodeCount: number
+  ): Map<string, number[]> {
+    // Epsilon defines how close two positions must be to be considered "the same"
+    // This allows for floating-point precision issues
+    const POSITION_EPSILON = 0.001;
+
+    const positionToNodesMap = new Map<string, number[]>();
+
+    for (let nodeIndex = 0; nodeIndex < nodeCount; nodeIndex++) {
+      const x = positions[nodeIndex * 3];
+      const y = positions[nodeIndex * 3 + 1];
+      const z = positions[nodeIndex * 3 + 2];
+
+      // Create a position key by rounding to epsilon precision
+      // This groups nearby positions together
+      const positionKey = this.createPositionKey(x, y, z, POSITION_EPSILON);
+
+      // Add node to the stack at this position
+      if (!positionToNodesMap.has(positionKey)) {
+        positionToNodesMap.set(positionKey, []);
+      }
+      positionToNodesMap.get(positionKey)!.push(nodeIndex);
+    }
+
+    return positionToNodesMap;
+  }
+
+  /**
+   * Create a unique string key for a position
+   * Positions within epsilon distance will have the same key
+   */
+  private createPositionKey(
+    x: number,
+    y: number,
+    z: number,
+    epsilon: number
+  ): string {
+    // Round each coordinate to epsilon precision
+    const roundedX = Math.round(x / epsilon);
+    const roundedY = Math.round(y / epsilon);
+    const roundedZ = Math.round(z / epsilon);
+
+    return `${roundedX}:${roundedY}:${roundedZ}`;
+  }
+
+  /**
+   * Create deduplicated geometry arrays from stacks
+   * Each stack becomes one geometry point
+   */
+  private createGeometryFromStacks(
+    stacks: Map<string, number[]>,
+    positions: Float32Array,
+    colors: Float32Array,
+    sizes: Float32Array
+  ): {
+    positions: Float32Array;
+    colors: Float32Array;
+    sizes: Float32Array;
+    geometryToNodesMap: Map<number, number[]>;
+  } {
+    const stackCount = stacks.size;
+
+    // Allocate arrays for deduplicated geometry
+    const deduplicatedPositions = new Float32Array(stackCount * 3);
+    const deduplicatedColors = new Float32Array(stackCount * 3);
+    const deduplicatedSizes = new Float32Array(stackCount);
     const geometryToNodesMap = new Map<number, number[]>();
 
     let geometryIndex = 0;
-    for (const nodeIndices of positionMap.values()) {
+
+    for (const nodeIndices of stacks.values()) {
       // Use the first node in the stack as the representative
-      const firstNodeIndex = nodeIndices[0];
+      const representativeNodeIndex = nodeIndices[0];
 
-      // Copy position
-      deduplicatedPositions[geometryIndex * 3] = positions[firstNodeIndex * 3];
-      deduplicatedPositions[geometryIndex * 3 + 1] = positions[firstNodeIndex * 3 + 1];
-      deduplicatedPositions[geometryIndex * 3 + 2] = positions[firstNodeIndex * 3 + 2];
+      // Copy position from representative node
+      deduplicatedPositions[geometryIndex * 3]     = positions[representativeNodeIndex * 3];
+      deduplicatedPositions[geometryIndex * 3 + 1] = positions[representativeNodeIndex * 3 + 1];
+      deduplicatedPositions[geometryIndex * 3 + 2] = positions[representativeNodeIndex * 3 + 2];
 
-      // Copy color
-      deduplicatedColors[geometryIndex * 3] = colors[firstNodeIndex * 3];
-      deduplicatedColors[geometryIndex * 3 + 1] = colors[firstNodeIndex * 3 + 1];
-      deduplicatedColors[geometryIndex * 3 + 2] = colors[firstNodeIndex * 3 + 2];
+      // Copy color from representative node
+      deduplicatedColors[geometryIndex * 3]     = colors[representativeNodeIndex * 3];
+      deduplicatedColors[geometryIndex * 3 + 1] = colors[representativeNodeIndex * 3 + 1];
+      deduplicatedColors[geometryIndex * 3 + 2] = colors[representativeNodeIndex * 3 + 2];
 
-      // Copy size (could average if stacked, but using first for now)
-      deduplicatedSizes[geometryIndex] = sizes[firstNodeIndex];
+      // Copy size from representative node
+      deduplicatedSizes[geometryIndex] = sizes[representativeNodeIndex];
 
-      // Store mapping
+      // Store the mapping: geometry index -> all nodes at this position
       geometryToNodesMap.set(geometryIndex, nodeIndices);
 
       geometryIndex++;
     }
-
-    if (STATUS) console.log(`[Deduplication] ${nodeCount} nodes → ${uniquePositionCount} geometry points (${nodeCount - uniquePositionCount} duplicates removed)`);
 
     return {
       positions: deduplicatedPositions,
@@ -2478,9 +2758,15 @@ export class Graph2D {
   }
 
   /**
-   * Re-deduplicate geometry points after parameter positioning.
-   * When nodes are repositioned based on parameters, multiple originally-separate stacks
-   * may end up at the same position. This function merges them into single stacks.
+   * ============================================================================
+   * Stack Re-Merging After Dynamic Repositioning
+   * ============================================================================
+   *
+   * When nodes are dynamically repositioned (e.g., parameter axis change),
+   * multiple stacks that were previously at different positions may now
+   * occupy the same position. This method detects and merges such stacks.
+   *
+   * This is called after parameter positioning to consolidate stacks.
    */
   private redeplicateGeometryByPosition(): void {
     if (!this.pointCloud || !this.geometryToNodesMap) return;
@@ -2490,97 +2776,126 @@ export class Graph2D {
     if (!positions || !alphas) return;
 
     const startTime = performance.now();
-    const epsilon = 0.001; // Same tolerance as deduplication
+    const POSITION_EPSILON = 0.001;
 
-    // Map from position key to list of geometry indices at that position
+    if (DEBUG) console.log(`[StackRemerge] Starting re-merge of geometry points`);
+
+    // ============================================================
+    // STEP 1: Group Geometry Points by Position
+    // ============================================================
+    const geometryStacksByPosition = this.groupGeometryPointsByPosition(
+      positions,
+      POSITION_EPSILON
+    );
+
+    // ============================================================
+    // STEP 2: Merge Stacks at Same Position
+    // ============================================================
+    const mergeResult = this.mergeGeometryStacks(
+      geometryStacksByPosition,
+      positions,
+      alphas
+    );
+
+    // Update the mapping
+    this.geometryToNodesMap = mergeResult.newGeometryToNodesMap;
+
+    // Mark alphas buffer as needing update
+    alphas.needsUpdate = true;
+
+    const elapsed = performance.now() - startTime;
+    if (PERFORMANCE && elapsed > 50) {
+      console.log(`[StackRemerge] Completed in ${elapsed.toFixed(0)}ms, merged ${mergeResult.mergeCount} positions`);
+    }
+
+    if (DEBUG) {
+      console.log(`[StackRemerge] Merged ${mergeResult.mergeCount} positions`);
+    }
+
+    if (mergeResult.skippedDueToLimit) {
+      console.warn('[StackRemerge] Merge limit reached - some stacks were not merged to prevent performance issues');
+    }
+  }
+
+  /**
+   * Group existing geometry points by their current position
+   * Returns map from position key to array of geometry indices
+   */
+  private groupGeometryPointsByPosition(
+    positions: THREE.BufferAttribute,
+    epsilon: number
+  ): Map<string, number[]> {
     const positionToGeometryMap = new Map<string, number[]>();
 
-    // Build position map for all geometry points
-    this.geometryToNodesMap.forEach((nodeIndices, geometryIndex) => {
+    this.geometryToNodesMap.forEach((_nodeIndices, geometryIndex) => {
       const x = positions.getX(geometryIndex);
       const y = positions.getY(geometryIndex);
       const z = positions.getZ(geometryIndex);
 
-      // Skip hidden nodes (moved to -999999)
+      // Skip hidden nodes (moved off-screen)
       if (x < -999000) return;
 
-      // Round to epsilon precision to group nearby positions
-      const key = `${Math.round(x / epsilon)}:${Math.round(y / epsilon)}:${Math.round(z / epsilon)}`;
+      // Create position key
+      const positionKey = this.createPositionKey(x, y, z, epsilon);
 
-      if (!positionToGeometryMap.has(key)) {
-        positionToGeometryMap.set(key, []);
+      // Add geometry index to this position
+      if (!positionToGeometryMap.has(positionKey)) {
+        positionToGeometryMap.set(positionKey, []);
       }
-      positionToGeometryMap.get(key)!.push(geometryIndex);
+      positionToGeometryMap.get(positionKey)!.push(geometryIndex);
     });
 
-    // Rebuild geometryToNodesMap by merging stacks at same position
-    const newGeometryToNodesMap = new Map<number, number[]>();
+    return positionToGeometryMap;
+  }
 
-    // Performance limit: If there are too many unique positions with too many stacks,
-    // limit the merging to prevent freeze
+  /**
+   * Merge geometry stacks that are at the same position
+   */
+  private mergeGeometryStacks(
+    geometryStacksByPosition: Map<string, number[]>,
+    _positions: THREE.BufferAttribute,
+    alphas: THREE.BufferAttribute
+  ): {
+    newGeometryToNodesMap: Map<number, number[]>;
+    mergeCount: number;
+    skippedDueToLimit: boolean;
+  } {
+    const newGeometryToNodesMap = new Map<number, number[]>();
     const MAX_MERGE_OPERATIONS = 10000;
     let mergeCount = 0;
     let skippedDueToLimit = false;
 
-    positionToGeometryMap.forEach((geometryIndices, posKey) => {
+    for (const geometryIndices of geometryStacksByPosition.values()) {
       if (geometryIndices.length === 1) {
-        // No merging needed - single geometry at this position
+        // Single geometry at this position - no merging needed
         const geometryIndex = geometryIndices[0];
         const nodeIndices = this.geometryToNodesMap.get(geometryIndex)!;
         newGeometryToNodesMap.set(geometryIndex, nodeIndices);
       } else {
-        // Check if we've exceeded merge limit
+        // Multiple geometries at same position - merge them
         if (mergeCount >= MAX_MERGE_OPERATIONS) {
-          // Keep them separate instead of merging
+          // Performance limit reached - keep separate
           for (const geoIdx of geometryIndices) {
             const nodeIndices = this.geometryToNodesMap.get(geoIdx)!;
             newGeometryToNodesMap.set(geoIdx, nodeIndices);
           }
           skippedDueToLimit = true;
-          return;
+          continue;
         }
 
-        // Multiple geometries at same position - merge them
-        // Use the first geometry index as the representative
+        // Merge all nodes from all geometries at this position
         const primaryGeometryIndex = geometryIndices[0];
         const mergedNodeIndices: number[] = [];
 
-        // Debug: Check if any of the nodes being merged are in our debug list
-        const debugNodeIds: (number | string)[] = [264, 266, 288, 422, 244, 246, 382, 328, 430, 1703, 630, 1903, 634, 1743, 434, 1943];
-        let shouldDebugMerge = false;
         for (const geoIdx of geometryIndices) {
           const nodeIndices = this.geometryToNodesMap.get(geoIdx)!;
-          for (const nodeIdx of nodeIndices) {
-            if (debugNodeIds.includes(this.nodes[nodeIdx].id)) {
-              shouldDebugMerge = true;
-              break;
-            }
-          }
-        }
-
-        if (shouldDebugMerge) {
-          const x = positions.getX(primaryGeometryIndex);
-          const y = positions.getY(primaryGeometryIndex);
-          console.log(`[Reduplicate Debug] Merging ${geometryIndices.length} geometries at position (${x.toFixed(6)}, ${y.toFixed(6)}):`);
-        }
-
-        // Collect all node indices from all geometries at this position
-        for (const geoIdx of geometryIndices) {
-          const nodeIndices = this.geometryToNodesMap.get(geoIdx)!;
-          if (shouldDebugMerge) {
-            for (const nodeIdx of nodeIndices) {
-              const node = this.nodes[nodeIdx];
-              const prMaxEqual1 = node.parameters?.['Model Checking Results']?.['PrMax_equal_1'];
-              console.log(`  Geo ${geoIdx}: Node ${node.id} (type=${node.type}), PrMax_equal_1=${prMaxEqual1}`);
-            }
-          }
           mergedNodeIndices.push(...nodeIndices);
         }
 
-        // Store merged nodes under the primary geometry index
+        // Store merged nodes under primary geometry index
         newGeometryToNodesMap.set(primaryGeometryIndex, mergedNodeIndices);
 
-        // Hide the other geometry points by setting their alpha to 0
+        // Hide secondary geometry points
         for (let i = 1; i < geometryIndices.length; i++) {
           const geoIdx = geometryIndices[i];
           alphas.setX(geoIdx, 0);
@@ -2588,26 +2903,13 @@ export class Graph2D {
 
         mergeCount++;
       }
-    });
-
-    // Update the mapping
-    this.geometryToNodesMap = newGeometryToNodesMap;
-
-    // Mark alphas buffer as needing update
-    alphas.needsUpdate = true;
-
-    const elapsed = performance.now() - startTime;
-    if (PERFORMANCE && elapsed > 50) {
-      console.log(`[redeplicateGeometryByPosition] Processing took ${elapsed.toFixed(0)}ms, merged ${mergeCount} positions`);
     }
 
-    if (DEBUG) {
-      console.log(`[redeplicateGeometryByPosition] Merged ${mergeCount} positions with multiple stacks${skippedDueToLimit ? ' (some merges skipped due to performance limit)' : ''}`);
-    }
-
-    if (skippedDueToLimit) {
-      console.warn('[redeplicateGeometryByPosition] Merge limit reached - some stacks were not merged to prevent performance issues');
-    }
+    return {
+      newGeometryToNodesMap,
+      mergeCount,
+      skippedDueToLimit
+    };
   }
 
   private createPointCloud(
@@ -2975,6 +3277,7 @@ export class Graph2D {
       const geometryIndex = intersects[0].index;
       if (geometryIndex !== undefined && geometryIndex !== this.hoveredNodeIndex) {
         this.hoveredNodeIndex = geometryIndex;
+
         // Get all node indices at this geometry position (handles stacked nodes)
         const nodeIndices = this.geometryToNodesMap.get(geometryIndex) || [geometryIndex];
         this.showNodeTooltip(nodeIndices, event.clientX, event.clientY);
@@ -3024,7 +3327,7 @@ export class Graph2D {
     const node = this.nodes[firstNodeIndex];
 
     // Get parameter labels from PRISM API
-    const paramLabels = this.prismAPI.getParameterLabels('s');
+    const paramLabels = this.prismAPI.getAllParameterLabels();
 
     // Build tooltip content
     let html = '';
@@ -4103,16 +4406,8 @@ export class Graph2D {
       // 2. Parameter positioning (if active) - nodes must have valid parameter values and correct type
       let visibleCount = 0;
 
-      // Performance optimization: Only count up to a reasonable limit
-      const MAX_COUNT_DISPLAY = 999; // Don't count beyond this for display
-
+      // Count all visible nodes
       for (const idx of nodeIndices) {
-        // Early exit if we've already counted enough nodes
-        if (visibleCount > MAX_COUNT_DISPLAY) {
-          visibleCount = MAX_COUNT_DISPLAY + 1; // Indicate "999+"
-          break;
-        }
-
         const node = this.nodes[idx];
 
         // Check filter function
@@ -4132,8 +4427,7 @@ export class Graph2D {
       }
 
       if (visibleCount > 1) {
-        const count = Math.min(visibleCount, MAX_COUNT_DISPLAY);
-        const displayText = visibleCount > MAX_COUNT_DISPLAY ? '999+' : count.toString();
+        const displayText = visibleCount.toString();
 
         // Create label sprite
         const { texture, aspectRatio } = this.createOverlapCountTexture(displayText);
@@ -4476,16 +4770,12 @@ export class Graph2D {
     const visibleXParamRange = visibleMaxX - visibleMinX;
     const visibleYParamRange = visibleMaxY - visibleMinY;
 
-    console.log(`[Axis Debug] visibleXParamRange: ${visibleXParamRange}, visibleYParamRange: ${visibleYParamRange}`);
-    console.log(`[Axis Debug] visibleMinX: ${visibleMinX}, visibleMaxX: ${visibleMaxX}`);
-    console.log(`[Axis Debug] visibleMinY: ${visibleMinY}, visibleMaxY: ${visibleMaxY}`);
 
     // Calculate nice intervals independently for each axis
     // This allows each axis to choose its own optimal step size
     const xParamInterval = this.calculateNiceParameterInterval(visibleXParamRange);
     const yParamInterval = this.calculateNiceParameterInterval(visibleYParamRange);
 
-    console.log(`[Axis Debug] xParamInterval: ${xParamInterval}, yParamInterval: ${yParamInterval}`);
 
     // Generate X-axis ticks starting from 0 (or nearest multiple below visible range)
     const xTicks: number[] = [];
@@ -4494,7 +4784,7 @@ export class Graph2D {
 
     // Safety check: ensure interval is valid
     if (!isFinite(xParamInterval) || xParamInterval <= 0) {
-      console.error(`[Axis Debug] Invalid xParamInterval: ${xParamInterval}`);
+      //console.error(`[Axis Debug] Invalid xParamInterval: ${xParamInterval}`);
       return;
     }
 
@@ -4503,12 +4793,11 @@ export class Graph2D {
     const xStartMultiplier = Math.floor(visibleMinX / xParamInterval);
     const xEndMultiplier = Math.ceil(visibleMaxX / xParamInterval);
 
-    console.log(`[Axis Debug] X tick range: mult ${xStartMultiplier} to ${xEndMultiplier} (total: ${xEndMultiplier - xStartMultiplier + 1})`);
 
     // Safety check: prevent infinite loops
     const maxTicks = 1000;
     if (xEndMultiplier - xStartMultiplier > maxTicks) {
-      console.error(`[Axis Debug] Too many X ticks would be generated: ${xEndMultiplier - xStartMultiplier}`);
+      //console.error(`[Axis Debug] Too many X ticks would be generated: ${xEndMultiplier - xStartMultiplier}`);
       return;
     }
 
@@ -4572,7 +4861,7 @@ export class Graph2D {
 
     // Safety check: ensure interval is valid
     if (!isFinite(yParamInterval) || yParamInterval <= 0) {
-      console.error(`[Axis Debug] Invalid yParamInterval: ${yParamInterval}`);
+      //console.error(`[Axis Debug] Invalid yParamInterval: ${yParamInterval}`);
       return;
     }
 
@@ -4580,11 +4869,10 @@ export class Graph2D {
     const yStartMultiplier = Math.floor(visibleMinY / yParamInterval);
     const yEndMultiplier = Math.ceil(visibleMaxY / yParamInterval);
 
-    console.log(`[Axis Debug] Y tick range: mult ${yStartMultiplier} to ${yEndMultiplier} (total: ${yEndMultiplier - yStartMultiplier + 1})`);
 
     // Safety check: prevent infinite loops
     if (yEndMultiplier - yStartMultiplier > maxTicks) {
-      console.error(`[Axis Debug] Too many Y ticks would be generated: ${yEndMultiplier - yStartMultiplier}`);
+      //console.error(`[Axis Debug] Too many Y ticks would be generated: ${yEndMultiplier - yStartMultiplier}`);
       return;
     }
 
@@ -4642,7 +4930,7 @@ export class Graph2D {
 
     // Add axis titles positioned at screen edges
     // Get parameter names from API metadata
-    const paramLabels = this.prismAPI.getParameterLabels('s');
+    const paramLabels = this.prismAPI.getAllParameterLabels();
     const xParamLabel = xParamIndex;
     const yParamLabel = yParamIndex;
 
@@ -4789,411 +5077,37 @@ export class Graph2D {
   }
 
   public rearrangeByParameters(xParam: string, yParam: string, colorParamIndex: string = ""): void {
-    // If data is loaded but not yet rendered, render it first with parameter view
-    if (!this.pointCloud && this.nodes.length > 0) {
-      this.config.parameterXAxis = xParam;
-      this.config.parameterYAxis = yParam;
-      this.config.useParameterPositioning = true;
-      this.currentLayout = 'grid'; // Use grid as base for parameter view
-      this.ui.updateStatus(`Rendering with parameter view...`);
-      this.renderLoadedData();
-      return;
-    }
-
-    if (!this.pointCloud || this.nodes.length === 0) {
+    // Validation
+    if (this.nodes.length === 0) {
       this.ui.updateStatus("Load a project first!");
       return;
     }
 
-    if (STATUS) console.log(`[Parameter View] Starting with ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
+    if (STATUS) console.log(`[Parameter View] Rebuilding visualization for parameters ${xParam} and ${yParam}...`);
     this.ui.updateStatus(`Rearranging nodes by parameters ${xParam} and ${yParam}...`);
 
-    // Update configuration
+    // Store configuration for rebuild
     this.config.parameterXAxis = xParam;
     this.config.parameterYAxis = yParam;
+    this.config.parameterColorAxis = colorParamIndex;
     this.config.useParameterPositioning = true;
+    this.currentLayout = 'grid'; // Use grid as base for parameter view
 
-    const positions = this.pointCloud.geometry.attributes.position as THREE.BufferAttribute;
-    const colors = this.pointCloud.geometry.attributes.color as THREE.BufferAttribute;
-    const alphas = this.pointCloud.geometry.getAttribute('alpha') as THREE.BufferAttribute;
+    // BUGFIX: Clear and rebuild point cloud to ensure correct stack assignments
+    // The old approach of updating positions in-place caused nodes with different
+    // parameter values to be incorrectly grouped in the same stack.
+    // By rebuilding from scratch, we ensure geometryToNodesMap is correctly
+    // constructed based on the actual parameter-based positions.
+    this.clearPointCloud();
 
-    if (!alphas) {
-      console.error('[Parameter View] Alpha buffer not found');
-      return;
+    // Re-render with new parameters
+    // This will recalculate all positions and rebuild geometryToNodesMap correctly
+    this.renderLoadedData();
+
+    // Apply color parameter after rendering if specified
+    if (colorParamIndex && colorParamIndex !== "" && colorParamIndex !== "-1") {
+      this.applyColorParameter(colorParamIndex);
     }
-
-    // Determine which node types should be visible based on parameter applicability
-    const xParamTypes = this.prismAPI.getParameterNodeTypes(xParam);
-    const yParamTypes = this.prismAPI.getParameterNodeTypes(yParam);
-
-    if (STATUS) console.log(`[Parameter View] X parameter: "${xParam}" (types: ${xParamTypes})`);
-    if (STATUS) console.log(`[Parameter View] Y parameter: "${yParam}" (types: ${yParamTypes})`);
-    if (DEBUG) console.log(`[Parameter View] DEBUG: Total geometry points: ${this.geometryToNodesMap.size}`);
-
-    // Determine which node types should be visible
-    // Only show nodes that have BOTH parameters
-    let visibleNodeTypes: Set<'s' | 't'> = new Set();
-
-    if (xParamTypes && yParamTypes) {
-      // Find intersection of node types for both parameters
-      const xTypes = new Set(xParamTypes.split('') as Array<'s' | 't'>);
-      const yTypes = new Set(yParamTypes.split('') as Array<'s' | 't'>);
-
-      for (const type of xTypes) {
-        if (yTypes.has(type)) {
-          visibleNodeTypes.add(type);
-        }
-      }
-    } else {
-      // ROBUST FIX: If parameter types are not in metadata (e.g., dynamically computed parameters like PCA),
-      // determine visible node types by checking which nodes actually have these parameters with valid values
-      if (STATUS) console.log(`[Parameter View] Parameter types not in metadata, scanning nodes for parameters...`);
-
-      for (let i = 0; i < this.nodes.length; i++) {
-        const node = this.nodes[i];
-        const xVal = PrismAPI.getParameterValue(node, xParam);
-        const yVal = PrismAPI.getParameterValue(node, yParam);
-
-        const xNum = this.convertParameterValueToNumber(xVal);
-        const yNum = this.convertParameterValueToNumber(yVal);
-
-        // If node has valid values for both parameters, its type should be visible
-        if (!isNaN(xNum) && !isNaN(yNum) && isFinite(xNum) && isFinite(yNum)) {
-          visibleNodeTypes.add(node.type);
-        }
-      }
-
-      if (STATUS) console.log(`[Parameter View] Detected visible node types from parameter values:`, Array.from(visibleNodeTypes));
-    }
-
-    if (STATUS) console.log(`[Parameter View] Visible node types:`, Array.from(visibleNodeTypes));
-
-    // Update UI label
-    this.updateParameterViewLabel(visibleNodeTypes);
-
-    // Track min and max parameter values for axis labels and color mapping
-    let minX = Infinity, maxX = -Infinity;
-    let minY = Infinity, maxY = -Infinity;
-    let minColor = Infinity, maxColor = -Infinity;
-    let visibleCount = 0;
-    let hiddenCount = 0;
-
-    // Create a map to track which geometry indices should be visible
-    // A geometry point should be visible if ANY of its stacked nodes should be visible
-    const geometryVisibility = new Map<number, boolean>();
-
-    // First pass: determine visibility for each geometry point
-    // Initialize all geometry points as invisible first
-    for (const geometryIndex of this.geometryToNodesMap.keys()) {
-      geometryVisibility.set(geometryIndex, false);
-    }
-
-    // Check each geometry point's nodes to see if any should be visible
-    console.log(`[Parameter View] Pass 1: Checking visibility for ${this.geometryToNodesMap.size} geometry points...`);
-    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
-      let hasVisibleNode = false;
-
-      for (const nodeIndex of nodeIndices) {
-        const node = this.nodes[nodeIndex];
-
-        // Check filter function first - if node is filtered out, skip it
-        const isFilteredOut = this.currentFilterFn && this.currentFilterFn(node);
-        if (isFilteredOut) {
-          hiddenCount++;
-          if (node.id === 384 || node.id === 640 || node.id === 264 || node.id === 266) {
-            console.log(`[Param View Pass 1] Node ${node.id} filtered out by filter function`);
-          }
-          continue; // Node is filtered out
-        }
-
-        // Use helper function to check if node should be visible based on parameters
-        const isVisible = this.isNodeVisibleForParameters(node, xParam, yParam);
-
-        if (isVisible) {
-          hasVisibleNode = true;
-          visibleCount++;
-          if (node.id === 384 || node.id === 640 || node.id === 264 || node.id === 266) {
-            console.log(`[Param View Pass 1] Node ${node.id} visible (has both params)`);
-          }
-        } else {
-          hiddenCount++;
-          // Debug: log first few hidden nodes to understand why they're hidden
-          if (hiddenCount <= 5) {
-            const xVal = PrismAPI.getParameterValue(node, xParam);
-            const yVal = PrismAPI.getParameterValue(node, yParam);
-            const xNum = this.convertParameterValueToNumber(xVal);
-            const yNum = this.convertParameterValueToNumber(yVal);
-            if (DEBUG) console.log(`[Parameter View] DEBUG Hidden node ${node.id} (type=${node.type}): xVal=${xVal} (${xNum}), yVal=${yVal} (${yNum})`);
-          }
-        }
-      }
-
-      // Mark geometry as visible if ANY of its nodes should be visible
-      if (hasVisibleNode) {
-        geometryVisibility.set(geometryIndex, true);
-      }
-    }
-
-    // Second pass: apply visibility to geometry points and calculate min/max for visible nodes
-    console.log(`[Parameter View] Pass 2: Applying visibility and calculating min/max for ${this.geometryToNodesMap.size} geometry points...`);
-    let geometriesHidden = 0;
-    let geometriesVisible = 0;
-    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
-      const shouldBeVisible = geometryVisibility.get(geometryIndex) === true;
-
-      if (alphas) {
-        alphas.setX(geometryIndex, shouldBeVisible ? 1.0 : 0.0);
-      }
-
-      if (shouldBeVisible) {
-        geometriesVisible++;
-
-        // Update min/max only for visible nodes (respecting filters)
-        for (const nodeIndex of nodeIndices) {
-          const node = this.nodes[nodeIndex];
-
-          // Skip filtered nodes when calculating min/max
-          if (this.currentFilterFn && this.currentFilterFn(node)) {
-            continue;
-          }
-
-          // Also check parameter visibility
-          if (!this.isNodeVisibleForParameters(node, xParam, yParam)) {
-            continue;
-          }
-
-          const xVal = PrismAPI.getParameterValue(node, xParam);
-          const yVal = PrismAPI.getParameterValue(node, yParam);
-
-          // BUGFIX: Convert parameter values to numbers before using them in min/max calculations
-          // Raw parameter values might be strings, booleans, or other types
-          const xNum = this.convertParameterValueToNumber(xVal);
-          const yNum = this.convertParameterValueToNumber(yVal);
-
-          // Debug first few nodes to trace the issue
-          if (geometriesVisible <= 3) {
-            console.log(`[MinMax Debug] Node ${node.id}: xVal=${xVal} (type=${typeof xVal}) -> xNum=${xNum}, yVal=${yVal} (type=${typeof yVal}) -> yNum=${yNum}`);
-          }
-
-          if (!isNaN(xNum) && isFinite(xNum)) {
-            minX = Math.min(minX, xNum);
-            maxX = Math.max(maxX, xNum);
-          }
-          if (!isNaN(yNum) && isFinite(yNum)) {
-            minY = Math.min(minY, yNum);
-            maxY = Math.max(maxY, yNum);
-          }
-
-          if (colorParamIndex && colorParamIndex !== "__type__") {
-            const colorVal = PrismAPI.getParameterValue(node, colorParamIndex);
-            const colorNum = this.convertParameterValueToNumber(colorVal);
-            if (!isNaN(colorNum) && isFinite(colorNum)) {
-              minColor = Math.min(minColor, colorNum);
-              maxColor = Math.max(maxColor, colorNum);
-            }
-          }
-        }
-      } else {
-        geometriesHidden++;
-      }
-    }
-
-    if (STATUS) console.log(`[Parameter View] Geometry visibility: ${geometriesVisible} visible, ${geometriesHidden} hidden (${this.geometryToNodesMap.size} total)`);
-
-    // Recalculate counts based on geometry visibility
-    visibleCount = 0;
-    hiddenCount = 0;
-    for (const [geometryIndex, isVisible] of geometryVisibility.entries()) {
-      if (isVisible) {
-        const nodeIndices = this.geometryToNodesMap.get(geometryIndex) || [];
-        visibleCount += nodeIndices.length;
-      } else {
-        const nodeIndices = this.geometryToNodesMap.get(geometryIndex) || [];
-        hiddenCount += nodeIndices.length;
-      }
-    }
-
-    // Update alpha buffer immediately to hide invisible nodes
-    if (alphas) {
-      alphas.needsUpdate = true;
-    }
-
-    // Force a render to ensure alpha changes are applied before continuing
-    if (this.renderer) {
-      this.renderer.render(this.scene, this.camera);
-    }
-
-    // Update the visible node counter in the navbar
-    this.updateVisibleNodeCounter(visibleCount);
-
-    // Log parameter ranges and filtering for debugging
-    if (STATUS) console.log(`[Parameter View] Visible: ${visibleCount}, Hidden: ${hiddenCount} (total: ${this.nodes.length})`);
-    if (STATUS) console.log(`[Parameter View] X range: ${minX} to ${maxX} (${xParam})`);
-    if (STATUS) console.log(`[Parameter View] Y range: ${minY} to ${maxY} (${yParam})`);
-    if (colorParamIndex && colorParamIndex !== "-1") {
-      if (colorParamIndex === "__type__") {
-        if (STATUS) console.log(`[Parameter View] Color: by node type (s=blue, t=grey)`);
-      } else {
-        if (STATUS) console.log(`[Parameter View] Color range: ${minColor} to ${maxColor} (${colorParamIndex})`);
-      }
-    }
-
-    // Calculate spread independently for X and Y to maintain 1:1 aspect ratio
-    const xRange = maxX - minX;
-    const yRange = maxY - minY;
-
-    // Each spread maps to world coordinates with 1:1 ratio
-    // Use the actual ranges to preserve aspect ratio
-    const spreadX = xRange > 0 ? xRange * 0.5 : 50;
-    const spreadY = yRange > 0 ? yRange * 0.5 : 50;
-
-    // For compatibility with existing code, use max spread
-    const spread = Math.max(spreadX, spreadY);
-
-    // Third pass: update positions and colors using actual min/max values
-    // Iterate through geometry points and update their positions based on visible nodes
-    console.log(`[Parameter View] Pass 3: Updating positions and colors for ${this.geometryToNodesMap.size} geometry points...`);
-    let hiddenGeometriesCount = 0;
-    let firstHiddenGeometry = -1;
-    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
-      if (nodeIndices.length === 0) continue;
-
-      // Skip invisible geometry points - don't update their positions
-      const shouldBeVisible = geometryVisibility.get(geometryIndex) === true;
-      if (!shouldBeVisible) {
-        // For invisible nodes, move them far offscreen to ensure they're not visible
-        // Even though alpha=0, this prevents any potential rendering artifacts
-        positions.setXYZ(geometryIndex, -999999, -999999, 0);
-        hiddenGeometriesCount++;
-        if (firstHiddenGeometry === -1) {
-          firstHiddenGeometry = geometryIndex;
-          const hiddenNode = this.nodes[nodeIndices[0]];
-          if (DEBUG) console.log(`[Parameter View] DEBUG First hidden geometry ${geometryIndex}: node ${hiddenNode.id} (type=${hiddenNode.type}), moved to (-999999, -999999)`);
-        }
-        continue;
-      }
-
-      // Find first visible node in the stack to use as representative for positioning
-      // Must respect both filter and parameter visibility
-      let representativeNode = this.nodes[nodeIndices[0]]; // fallback
-
-      for (const nodeIndex of nodeIndices) {
-        const node = this.nodes[nodeIndex];
-
-        // Skip filtered nodes
-        if (this.currentFilterFn && this.currentFilterFn(node)) {
-          continue;
-        }
-
-        // Check parameter visibility
-        if (this.isNodeVisibleForParameters(node, xParam, yParam)) {
-          representativeNode = node;
-          break;
-        }
-      }
-
-      const newPosition = this.calculateParameterPosition(
-        representativeNode,
-        spread,
-        { x: minX, y: minY },
-        { x: maxX, y: maxY }
-      );
-
-      // Debug: Log specific nodes
-      const debugNodeIds: (number | string)[] = [264, 266, 288, 422, 244, 246, 382, 328, 430, 1703, 630, 1903, 634, 1743, 434, 1943];
-      if (debugNodeIds.includes(representativeNode.id)) {
-        const xVal = PrismAPI.getParameterValue(representativeNode, xParam);
-        const yVal = PrismAPI.getParameterValue(representativeNode, yParam);
-        console.log(`[Position Debug] Node ${representativeNode.id} (type=${representativeNode.type}): ${xParam}=${xVal}, ${yParam}=${yVal} -> world (${newPosition.x.toFixed(6)}, ${newPosition.y.toFixed(6)})`);
-        console.log(`[Position Debug]   minX=${minX}, maxX=${maxX}, minY=${minY}, maxY=${maxY}, spread=${spread}`);
-      }
-
-      // Update all nodes in this stack with the same position
-      for (const nodeIndex of nodeIndices) {
-        const node = this.nodes[nodeIndex];
-        node.x = newPosition.x;
-        node.y = newPosition.y;
-      }
-
-      // Update geometry positions buffer (uses geometry index)
-      positions.setXYZ(geometryIndex, newPosition.x, newPosition.y, 0);
-
-      // Update colors if color parameter is specified
-      if (colorParamIndex != "" && colorParamIndex != "-1") {
-        if (colorParamIndex === "__type__") {
-          // Color by node type: s = blue, t = grey, init = red
-          // Check if node has init==true in Atomic Propositions
-          const initValue = representativeNode.parameters?.['Atomic Propositions']?.['init'];
-          const isInit = initValue === true || initValue === 'true' || initValue === 1;
-
-          if (isInit) {
-            // Red for init nodes
-            colors.setXYZ(geometryIndex, 1.0, 0.0, 0.0);
-          } else if (representativeNode.type === 's') {
-            // Blue for state nodes
-            colors.setXYZ(geometryIndex, 0.2, 0.4, 1.0);
-          } else if (representativeNode.type === 't') {
-            // Grey for transition nodes
-            colors.setXYZ(geometryIndex, 0.5, 0.5, 0.5);
-          } else {
-            // Default color for unknown types
-            colors.setXYZ(geometryIndex, 1.0, 1.0, 1.0);
-          }
-        } else {
-          const colorValueRaw = PrismAPI.getParameterValue(representativeNode, colorParamIndex);
-          const colorValue = this.convertParameterValueToNumber(colorValueRaw);
-          const color = this.getColorFromParameter(colorValue, minColor, maxColor);
-          colors.setXYZ(geometryIndex, color.r, color.g, color.b);
-        }
-      }
-    }
-
-    positions.needsUpdate = true;
-    if (colorParamIndex != "" && colorParamIndex != "-1") {
-      colors.needsUpdate = true;
-    }
-
-    if (DEBUG) console.log(`[Parameter View] DEBUG Hidden geometries moved offscreen: ${hiddenGeometriesCount}`);
-
-    console.log('[Parameter View] Step 1: About to redraw edges...');
-    // Redraw edge lines if they are visible
-    if (STATUS) console.log(`[Parameter View] Finished - ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}`);
-    if (this.config.edgesVisible && this.edges.length > 0) {
-      if (STATUS) console.log(`[Parameter View] Redrawing ${this.edges.length} edge lines`);
-      this.clearEdgeLines();
-      console.log('[Parameter View] Step 1a: Cleared edge lines');
-      this.createEdgeLines();
-      console.log('[Parameter View] Step 1b: Created edge lines');
-      this.updateArrowScales();
-      console.log('[Parameter View] Step 1c: Updated arrow scales');
-    }
-
-    console.log('[Parameter View] Step 2: About to create axis visualization...');
-    // Create axis visualization in Three.js scene
-    this.createAxisVisualization(
-      xParam,
-      yParam,
-      { x: minX, y: minY },
-      { x: maxX, y: maxY },
-      spread
-    );
-
-    console.log('[Parameter View] Step 3: About to fit view to parameter range...');
-    // Adjust camera view to fit all nodes with some padding
-    this.fitViewToParameterRange(spread);
-
-    console.log('[Parameter View] Step 4: About to reduplicate geometry...');
-    // Re-deduplicate geometry points that ended up at the same position after parameter positioning
-    // This merges separate stacks that have identical parameter values
-    this.redeplicateGeometryByPosition();
-
-    console.log('[Parameter View] Step 5: About to update overlap labels...');
-    // Update overlap labels after rearrangement
-    this.updateOverlapLabels();
-
-    console.log('[Parameter View] Step 6: Complete!');
-    const colorMsg = colorParamIndex != "" ? `, colored by P${colorParamIndex}` : '';
-    this.ui.updateStatus(`Nodes rearranged by parameters ${xParam} (X) and ${yParam} (Y)${colorMsg}`);
   }
 
   /**
@@ -5365,7 +5279,7 @@ export class Graph2D {
       this.resetView();
 
       // Update parameter selection dropdowns with actual parameter names
-      const paramLabels = this.prismAPI.getParameterLabels('s');
+      const paramLabels = this.prismAPI.getAllParameterLabels();
       this.ui.updateParameterSelections(paramLabels);
 
       // Apply default type-based coloring

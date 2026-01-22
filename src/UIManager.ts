@@ -741,19 +741,26 @@ export class UIManager {
 
     // Update Color dropdown (includes "None" and "Type" options)
     colorSelect.innerHTML = '<option value="-1">None</option><option value="__type__">Type (s=blue, t=grey, init=red)</option>';
-    Object.values(paramLabels).forEach(value => {
-      value.forEach(param => {
+    // Filter out Action Parameter category from color dropdown
+    Object.entries(paramLabels).forEach(([category, params]) => {
+      if (category === 'Action Parameter') {
+        return; // Skip Action Parameter category
+      }
+      params.forEach(param => {
+        // Use full "category::param" format for option value (internal use)
+        const fullParamName = `${category}::${param}`;
+
         // Get which node types have this parameter
-        const nodeTypes = this.graph.prismAPI.getParameterNodeTypes(param);
+        const nodeTypes = this.graph.prismAPI.getParameterNodeTypes(fullParamName);
         let prefix = '';
         if (nodeTypes === 'st') prefix = '[s,t] ';
         else if (nodeTypes === 's') prefix = '[s] ';
         else if (nodeTypes === 't') prefix = '[t] ';
 
         const option = document.createElement('option');
-        option.value = param;
-        option.textContent = prefix + param;
-        option.title = param;
+        option.value = fullParamName; // Internal value includes category
+        option.textContent = prefix + param; // Display only shows param name
+        option.title = fullParamName; // Tooltip shows full name
         colorSelect.appendChild(option);
       });
     });
@@ -770,19 +777,26 @@ export class UIManager {
     paramLabels: Record<string, string[]>
   ): void {
     select.innerHTML = '';
-    Object.values(paramLabels).forEach(value => {
-      value.forEach(param => {
+    // Filter out Action Parameter category from plotting dropdowns
+    Object.entries(paramLabels).forEach(([category, params]) => {
+      if (category === 'Action Parameter') {
+        return; // Skip Action Parameter category
+      }
+      params.forEach(param => {
+        // Use full "category::param" format for option value (internal use)
+        const fullParamName = `${category}::${param}`;
+
         // Get which node types have this parameter
-        const nodeTypes = this.graph.prismAPI.getParameterNodeTypes(param);
+        const nodeTypes = this.graph.prismAPI.getParameterNodeTypes(fullParamName);
         let prefix = '';
         if (nodeTypes === 'st') prefix = '[s,t] ';
         else if (nodeTypes === 's') prefix = '[s] ';
         else if (nodeTypes === 't') prefix = '[t] ';
 
         const option = document.createElement('option');
-        option.value = param;
-        option.textContent = prefix + param;
-        option.title = param;
+        option.value = fullParamName; // Internal value includes category
+        option.textContent = prefix + param; // Display only shows param name
+        option.title = fullParamName; // Tooltip shows full name
         select.appendChild(option);
       });
     });

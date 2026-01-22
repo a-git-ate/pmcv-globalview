@@ -736,6 +736,45 @@ export class PrismAPI {
   }
 
   /**
+   * Get parameter labels from both s and t node types, merged together
+   * Returns a combined map of all available parameters
+   */
+  public getAllParameterLabels(): Record<string, string[]> {
+    if (!this.parameterMetadata) return {};
+
+    const result: Record<string, string[]> = {};
+
+    // Process both s and t node types
+    for (const type of ['s', 't'] as const) {
+      const nodeInfo = this.parameterMetadata[type];
+      if (!nodeInfo) continue;
+
+      // Iterate through categories
+      for (const categoryName of Object.keys(nodeInfo)) {
+        const params = nodeInfo[categoryName];
+        if (!params || typeof params !== 'object') continue;
+
+        // Get parameter names for this category
+        const paramNames = Object.keys(params);
+
+        // Merge with existing parameters for this category
+        if (!result[categoryName]) {
+          result[categoryName] = [];
+        }
+
+        // Add parameters that don't already exist in the result
+        for (const paramName of paramNames) {
+          if (!result[categoryName].includes(paramName)) {
+            result[categoryName].push(paramName);
+          }
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Check which node types (s, t, or both) have a specific parameter
    * Returns 's', 't', 'st', or null
    * @param paramName Parameter name, can be in "category::paramName" format or just "paramName"
@@ -919,7 +958,10 @@ export class PrismAPI {
   async checkModel(projectId: string): Promise<any> {
     try {
       var url = `${this.baseUrl}/${encodeURIComponent(projectId)}/check`;
-      var params = Object.keys(this.parameterMetadata?.s?.['Model Checking Results'] ?? {});
+      // Collect Model Checking Results from both s and t node types
+      const sParams = Object.keys(this.parameterMetadata?.s?.['Model Checking Results'] ?? {});
+      const tParams = Object.keys(this.parameterMetadata?.t?.['Model Checking Results'] ?? {});
+      const params = [...new Set([...sParams, ...tParams])]; // Merge and deduplicate
       if (params.length > 0) {
         const query = new URLSearchParams();
         params.forEach((p: string) => query.append('property', p));
@@ -964,12 +1006,32 @@ export class PrismAPI {
       return null;
     }
 
-    // Original behavior: search all categories for the parameter
-    for (const category of Object.values(node.parameters || {})) {
-      if (category[param] !== undefined) {
+    // BUGFIX: When searching for parameters without explicit category, use a priority order
+    // to handle duplicate parameter names across categories consistently.
+    // Priority: Model Checking Results > Scheduler > Action Parameter > Reward Structures > others
+    const categoryPriority = [
+      'Model Checking Results',
+      'Scheduler',
+      'Action Parameter',
+      'Reward Structures',
+      'Atomic Propositions'
+    ];
+
+    // First, check priority categories in order
+    for (const categoryName of categoryPriority) {
+      const category = node.parameters[categoryName];
+      if (category && category[param] !== undefined) {
         return category[param];
       }
     }
+
+    // Then check any remaining categories
+    for (const [categoryName, category] of Object.entries(node.parameters || {})) {
+      if (!categoryPriority.includes(categoryName) && category[param] !== undefined) {
+        return category[param];
+      }
+    }
+
     return null;
   }
   /**

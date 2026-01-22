@@ -31,6 +31,7 @@ export interface GraphConfig {
   iterations?: number;
   parameterXAxis?: string;
   parameterYAxis?: string;
+  parameterColorAxis?: string;
   useParameterPositioning?: boolean;
   renderDistance: number;
 }

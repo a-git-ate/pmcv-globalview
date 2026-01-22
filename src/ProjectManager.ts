@@ -167,7 +167,7 @@ export class ProjectManager {
 
     try {
       // Get parameter labels before fetching new status
-      const previousParamLabels = this.prismAPI.getParameterLabels('s');
+      const previousParamLabels = this.prismAPI.getAllParameterLabels();
 
       // Fetch new status (this will update parameterMetadata in PrismAPI)
       const status = await this.prismAPI.fetchProjectStatus(this.currentProjectId);
@@ -191,7 +191,7 @@ export class ProjectManager {
       this.showParameterStatus();
 
       // Check if parameters have changed and update dropdowns if needed
-      const currentParamLabels = this.prismAPI.getParameterLabels('s');
+      const currentParamLabels = this.prismAPI.getAllParameterLabels();
       if (this.hasParameterDelta(previousParamLabels, currentParamLabels)) {
         console.log('[ProjectManager] Parameter delta detected, updating dropdowns');
         this.graph.ui.updateParameterSelections(currentParamLabels);
@@ -762,22 +762,105 @@ export class ProjectManager {
     });
     this.paramStatusContent.appendChild(resetFilterButton);
 
-    var mcrDone = false;
-    // Display state node parameters
-    if (status.info.s) {
+    // Collect all categories and their parameters from both s and t nodes
+    const allCategories = new Map<string, {
+      inS: boolean;
+      inT: boolean;
+      sParams: Record<string, ParameterMetadata>;
+      tParams: Record<string, ParameterMetadata>;
+    }>();
 
-      this.renderNodeTypeParameters('Model Checking Results', status.info.s);
-      mcrDone = true;
-    
-      this.renderNodeTypeParameters('State Nodes (s)', status.info.s);
+    // Collect from s nodes
+    if (status.info.s) {
+      for (const [categoryName, categoryParams] of Object.entries(status.info.s)) {
+        if (typeof categoryParams !== 'object' || categoryParams === null) continue;
+
+        if (!allCategories.has(categoryName)) {
+          allCategories.set(categoryName, {
+            inS: true,
+            inT: false,
+            sParams: categoryParams as Record<string, ParameterMetadata>,
+            tParams: {}
+          });
+        } else {
+          allCategories.get(categoryName)!.inS = true;
+          allCategories.get(categoryName)!.sParams = categoryParams as Record<string, ParameterMetadata>;
+        }
+      }
     }
 
-    // Display transition node parameters
+    // Collect from t nodes
     if (status.info.t) {
-      if (!mcrDone) {
-        this.renderNodeTypeParameters('Model Checking Results', status.info.t);
+      for (const [categoryName, categoryParams] of Object.entries(status.info.t)) {
+        if (typeof categoryParams !== 'object' || categoryParams === null) continue;
+
+        if (!allCategories.has(categoryName)) {
+          allCategories.set(categoryName, {
+            inS: false,
+            inT: true,
+            sParams: {},
+            tParams: categoryParams as Record<string, ParameterMetadata>
+          });
+        } else {
+          allCategories.get(categoryName)!.inT = true;
+          allCategories.get(categoryName)!.tParams = categoryParams as Record<string, ParameterMetadata>;
+        }
       }
-      this.renderNodeTypeParameters('Transition Nodes (t)', status.info.t);
+    }
+
+    // Collect shared, s-only, and t-only parameters
+    const sharedCategories = new Map<string, Record<string, ParameterMetadata>>();
+    const sOnlyCategories = new Map<string, Record<string, ParameterMetadata>>();
+    const tOnlyCategories = new Map<string, Record<string, ParameterMetadata>>();
+
+    for (const [categoryName, categoryInfo] of allCategories.entries()) {
+      const sharedParams: Record<string, ParameterMetadata> = {};
+      const sOnlyParams: Record<string, ParameterMetadata> = {};
+      const tOnlyParams: Record<string, ParameterMetadata> = {};
+
+      // Categorize parameters as shared or unique
+      if (categoryInfo.inS) {
+        for (const [paramName, paramMeta] of Object.entries(categoryInfo.sParams)) {
+          if (categoryInfo.inT && paramName in categoryInfo.tParams) {
+            sharedParams[paramName] = paramMeta;
+          } else {
+            sOnlyParams[paramName] = paramMeta;
+          }
+        }
+      }
+
+      if (categoryInfo.inT) {
+        for (const [paramName, paramMeta] of Object.entries(categoryInfo.tParams)) {
+          if (!(paramName in sharedParams)) {
+            tOnlyParams[paramName] = paramMeta;
+          }
+        }
+      }
+
+      // Store categorized parameters
+      if (Object.keys(sharedParams).length > 0) {
+        sharedCategories.set(categoryName, sharedParams);
+      }
+      if (Object.keys(sOnlyParams).length > 0) {
+        sOnlyCategories.set(categoryName, sOnlyParams);
+      }
+      if (Object.keys(tOnlyParams).length > 0) {
+        tOnlyCategories.set(categoryName, tOnlyParams);
+      }
+    }
+
+    // Display shared parameters first
+    this.renderSharedParameters(sharedCategories);
+
+    // Display s-only parameters
+    this.renderSParameters(sOnlyCategories);
+
+    // Display t-only parameters
+    this.renderTParameters(tOnlyCategories);
+
+    // Display scheduler parameters if available
+    if (status.info.scheduler) {
+      this.renderSchedulerParameters('Scheduler', status.info.scheduler);
     }
 
     // Display messages if available
@@ -796,6 +879,290 @@ export class ProjectManager {
     }
   }
 
+
+  /**
+   * Render shared parameters (present in both s and t nodes)
+   */
+  private renderSharedParameters(sharedCategories: Map<string, Record<string, ParameterMetadata>>): void {
+    for (const [categoryName, categoryParams] of sharedCategories.entries()) {
+      this.renderCategoryParameters(categoryName, categoryParams, categoryName);
+    }
+  }
+
+  /**
+   * Render s-only parameters (only in state nodes)
+   */
+  private renderSParameters(sOnlyCategories: Map<string, Record<string, ParameterMetadata>>): void {
+    if (sOnlyCategories.size === 0) return;
+
+    // Create section header
+    const sectionDiv = document.createElement('div');
+    sectionDiv.className = 'param-category';
+    const sectionTitle = document.createElement('div');
+    sectionTitle.className = 'param-category-title';
+    sectionTitle.textContent = 'State Nodes (s)';
+    sectionDiv.appendChild(sectionTitle);
+    this.paramStatusContent!.appendChild(sectionDiv);
+
+    // Render each category under this section
+    for (const [categoryName, categoryParams] of sOnlyCategories.entries()) {
+      this.renderCategoryParametersAsSubsection(categoryName, categoryParams, categoryName);
+    }
+  }
+
+  /**
+   * Render t-only parameters (only in transition nodes)
+   */
+  private renderTParameters(tOnlyCategories: Map<string, Record<string, ParameterMetadata>>): void {
+    if (tOnlyCategories.size === 0) return;
+
+    // Create section header
+    const sectionDiv = document.createElement('div');
+    sectionDiv.className = 'param-category';
+    const sectionTitle = document.createElement('div');
+    sectionTitle.className = 'param-category-title';
+    sectionTitle.textContent = 'Transition Nodes (t)';
+    sectionDiv.appendChild(sectionTitle);
+    this.paramStatusContent!.appendChild(sectionDiv);
+
+    // Render each category under this section
+    for (const [categoryName, categoryParams] of tOnlyCategories.entries()) {
+      this.renderCategoryParametersAsSubsection(categoryName, categoryParams, categoryName);
+    }
+  }
+
+  /**
+   * Render category parameters with a main title
+   */
+  private renderCategoryParameters(title: string, categoryParams: Record<string, ParameterMetadata>, categoryName: string): void {
+    if (!this.paramStatusContent) return;
+
+    const categoryDiv = document.createElement('div');
+    categoryDiv.className = 'param-category';
+
+    const titleDiv = document.createElement('div');
+    titleDiv.className = 'param-category-title';
+    titleDiv.textContent = title;
+    categoryDiv.appendChild(titleDiv);
+
+    this.renderParameterItems(categoryDiv, categoryParams, categoryName);
+    this.paramStatusContent.appendChild(categoryDiv);
+  }
+
+  /**
+   * Render category parameters as a subsection (with subcategory styling)
+   */
+  private renderCategoryParametersAsSubsection(categoryName: string, categoryParams: Record<string, ParameterMetadata>, categoryNameForData: string): void {
+    if (!this.paramStatusContent) return;
+
+    // Add subcategory title
+    const subcategoryDiv = document.createElement('div');
+    subcategoryDiv.style.marginTop = '8px';
+    subcategoryDiv.style.marginBottom = '4px';
+    subcategoryDiv.style.marginLeft = '10px';
+    subcategoryDiv.style.fontSize = '11px';
+    subcategoryDiv.style.fontWeight = 'bold';
+    subcategoryDiv.style.color = '#7f8c8d';
+    subcategoryDiv.textContent = categoryName;
+    this.paramStatusContent.appendChild(subcategoryDiv);
+
+    // Create container for parameters
+    const containerDiv = document.createElement('div');
+    containerDiv.style.marginLeft = '10px';
+    this.renderParameterItems(containerDiv, categoryParams, categoryNameForData);
+    this.paramStatusContent.appendChild(containerDiv);
+  }
+
+  /**
+   * Render individual parameter items (the actual UI elements)
+   */
+  private renderParameterItems(containerDiv: HTMLElement, categoryParams: Record<string, ParameterMetadata>, categoryName: string): void {
+    for (const [paramName, paramInfo] of Object.entries(categoryParams)) {
+      if (!paramInfo || typeof paramInfo !== 'object') continue;
+
+      const outerItemDiv = document.createElement('div');
+      outerItemDiv.className = 'param-item';
+
+      const itemDiv = document.createElement('div');
+      itemDiv.className = 'param-item';
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'param-name';
+      nameSpan.textContent = paramName;
+      itemDiv.appendChild(nameSpan);
+
+      const statusSpan = document.createElement('span');
+      statusSpan.className = 'param-status-icon';
+
+      const status = paramInfo.status || paramInfo.type;
+
+      if (status === 'missing') {
+        statusSpan.textContent = '✗';
+        statusSpan.classList.add('missing');
+      } else if (status === 'ready' || status === 'number' || status === 'boolean' || status === 'nominal') {
+        statusSpan.textContent = '✓';
+        statusSpan.classList.add('ready');
+      } else {
+        statusSpan.textContent = '?';
+        statusSpan.classList.add('loading');
+      }
+
+      itemDiv.appendChild(statusSpan);
+      const rangeDiv = document.createElement('div');
+      rangeDiv.className = 'param-item';
+
+      switch (paramInfo.type) {
+        case 'number':
+          const minSpan = document.createElement('span');
+          minSpan.className = 'param-range-label';
+          minSpan.textContent = "Min:";
+          const minDisplayInput = document.createElement('input');
+          minDisplayInput.type = 'text';
+          minDisplayInput.className = 'param-min-input';
+          minDisplayInput.value = (paramInfo.min !== undefined && paramInfo.max !== "Infinity") ? String(paramInfo.min) : '';
+          minDisplayInput.dataset.paramName = paramName;
+          minDisplayInput.dataset.category = categoryName;
+          minDisplayInput.dataset.rangeType = 'min';
+          minDisplayInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+              this.displayParameterRange();
+            }
+          });
+          rangeDiv.appendChild(minSpan);
+          rangeDiv.appendChild(minDisplayInput);
+
+          const maxSpan = document.createElement('span');
+          maxSpan.className = 'param-range-label';
+          maxSpan.textContent = " Max:";
+          const maxDisplayInput = document.createElement('input');
+          maxDisplayInput.type = 'text';
+          maxDisplayInput.className = 'param-max-input';
+          maxDisplayInput.value = (paramInfo.max !== undefined && paramInfo.max !== "Infinity") ? String(paramInfo.max) : '';
+          maxDisplayInput.dataset.paramName = paramName;
+          maxDisplayInput.dataset.category = categoryName;
+          maxDisplayInput.dataset.rangeType = 'max';
+          maxDisplayInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+              this.displayParameterRange();
+            }
+          });
+
+          rangeDiv.appendChild(maxSpan);
+          rangeDiv.appendChild(maxDisplayInput);
+          break;
+
+        case 'boolean':
+          const falseButton = document.createElement('button');
+          falseButton.textContent = 'False';
+          falseButton.className = 'param-nominal-button';
+          const paramNameClass = paramName.replace(/\s+/g, '-').toLowerCase();
+          const categoryNameClass = categoryName.replace(/\s+/g, '-').toLowerCase();
+          falseButton.classList.add(categoryNameClass);
+          falseButton.classList.add(paramNameClass);
+          falseButton.dataset.paramName = paramName;
+          falseButton.dataset.category = categoryName;
+          falseButton.dataset.nominalValue = 'false';
+          falseButton.addEventListener('click', () => {
+            this.toggleFilterOptions(categoryNameClass, paramNameClass, 'false');
+          });
+
+          const trueButton = document.createElement('button');
+          trueButton.textContent = 'True';
+          trueButton.className = 'param-nominal-button';
+          trueButton.dataset.paramName = paramName;
+          trueButton.dataset.category = categoryName;
+          trueButton.dataset.nominalValue = 'true';
+          trueButton.classList.add(categoryNameClass);
+          trueButton.classList.add(paramNameClass);
+          trueButton.addEventListener('click', () => {
+            this.toggleFilterOptions(categoryNameClass, paramNameClass, 'true');
+          });
+
+          const undefinedButton = document.createElement('button');
+          undefinedButton.textContent = 'Undefined';
+          undefinedButton.className = 'param-nominal-button';
+          undefinedButton.dataset.paramName = paramName;
+          undefinedButton.dataset.category = categoryName;
+          undefinedButton.dataset.nominalValue = 'undefined';
+          undefinedButton.classList.add(categoryNameClass);
+          undefinedButton.classList.add(paramNameClass);
+          undefinedButton.addEventListener('click', () => {
+            this.toggleFilterOptions(categoryNameClass, paramNameClass, 'undefined');
+          });
+
+          rangeDiv.appendChild(falseButton);
+          rangeDiv.appendChild(trueButton);
+          rangeDiv.appendChild(undefinedButton);
+          break;
+
+        case 'nominal':
+          const possibleValues = this.prismAPI.getPossibleValuesForParameter(categoryName, paramName);
+          possibleValues.forEach(value => {
+            const valueButton = document.createElement('button');
+            valueButton.textContent = value;
+            valueButton.className = 'param-nominal-button';
+            const paramNameClass = paramName.replace(/\s+/g, '-').toLowerCase();
+            const categoryNameClass = categoryName.replace(/\s+/g, '-').toLowerCase();
+            valueButton.classList.add(categoryNameClass);
+            valueButton.classList.add(paramNameClass);
+            valueButton.dataset.paramName = paramName;
+            valueButton.dataset.category = categoryName;
+            valueButton.dataset.nominalValue = value;
+            valueButton.addEventListener('click', () => {
+              this.toggleFilterOptions(categoryNameClass, paramNameClass, value);
+            });
+            rangeDiv.appendChild(valueButton);
+          });
+          break;
+      }
+
+      outerItemDiv.appendChild(itemDiv);
+      outerItemDiv.appendChild(rangeDiv);
+      containerDiv.appendChild(outerItemDiv);
+    }
+  }
+
+  /**
+   * Render scheduler parameters
+   */
+  private renderSchedulerParameters(title: string, schedulerInfo: Record<string, any>): void {
+    if (!this.paramStatusContent) return;
+
+    const categoryDiv = document.createElement('div');
+    categoryDiv.className = 'param-category';
+
+    const titleDiv = document.createElement('div');
+    titleDiv.className = 'param-category-title';
+    titleDiv.textContent = title;
+    categoryDiv.appendChild(titleDiv);
+
+    // Scheduler parameters are simpler - just key-value pairs
+    for (const [paramName, paramValue] of Object.entries(schedulerInfo)) {
+      const itemDiv = document.createElement('div');
+      itemDiv.className = 'param-item';
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'param-name';
+      nameSpan.textContent = paramName;
+      itemDiv.appendChild(nameSpan);
+
+      const statusSpan = document.createElement('span');
+      statusSpan.className = 'param-status-icon';
+
+      if (paramValue === 'missing') {
+        statusSpan.textContent = '✗';
+        statusSpan.classList.add('missing');
+      } else {
+        statusSpan.textContent = '✓';
+        statusSpan.classList.add('ready');
+      }
+
+      itemDiv.appendChild(statusSpan);
+      categoryDiv.appendChild(itemDiv);
+    }
+
+    this.paramStatusContent.appendChild(categoryDiv);
+  }
 
   /**
    * Render node type parameters (s or t)
@@ -1411,7 +1778,7 @@ export class ProjectManager {
         this.showParameterStatus();
 
         // Update parameter dropdowns in the graph UI
-        const paramLabels = this.prismAPI.getParameterLabels('s');
+        const paramLabels = this.prismAPI.getAllParameterLabels();
         this.graph.ui.updateParameterSelections(paramLabels);
 
         console.log('[ProjectManager] Parameter UI populated successfully');
