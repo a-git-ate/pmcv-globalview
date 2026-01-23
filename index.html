@@ -119,16 +119,12 @@
             </button>
             <div id="view-content" class="section-content">
               <div class="button-group">
-                <button id="btn-force-directed" class="layout-btn">Force-Directed Layout</button>
                 <button id="btn-lod">Toggle LOD</button>
                 <button id="btn-edges">Toggle Edges</button>
                 <button id="btn-reset">Reset View</button>
-                <button id="btn-clusters">Cluster Mode</button>
                 <button id="btn-gridlines">Toggle Grid</button>
-                <button id="btn-export">Export PNG</button>
-                <button id="btn-toggle-debug" class="debug-button">Debug Info</button>
-                <button id="btn-remove-t-nodes">Remove Transition Nodes</button>
-                <button id="btn-remove-s-nodes">Remove State Nodes</button>
+                <button id="btn-remove-t-nodes">Ignore Transition Nodes</button>
+                <button id="btn-remove-s-nodes">Ignore State Nodes</button>
               </div>
               <div class="slider-container">
                 <label class="slider-label">
@@ -214,6 +210,21 @@
               </div>
               <div id="selected-nodes-list" class="selected-nodes-scroll">
                 <div class="no-selection-message">Click on a node to select it</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Miscellaneous Features Section -->
+          <div class="control-section">
+            <button class="section-toggle" data-target="misc-features-content">
+              <strong>▼ Miscellaneous Features</strong>
+            </button>
+            <div id="misc-features-content" class="section-content">
+              <div class="button-group">
+                <button id="btn-force-directed" class="layout-btn">Force-Directed Layout</button>
+                <button id="btn-clusters">Cluster Mode</button>
+                <button id="btn-export">Export PNG</button>
+                <button id="btn-toggle-debug" class="debug-button">Debug Info</button>
               </div>
             </div>
           </div>

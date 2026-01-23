@@ -1685,6 +1685,33 @@ export class ProjectManager {
    */
   private async handleJsonUpload(file: File): Promise<void> {
     try {
+      const parseStart = performance.now();
+
+      const parseMemStart = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
+      const parseMemTotalStart = (performance as any).memory ? (performance as any).memory.totalJSHeapSize : 0;
+      let peakMemoryParsing = parseMemTotalStart;
+      let peakMemoryProcessing = 0;
+
+      // Helper to track peak memory during parsing
+      const updatePeakMemoryParsing = () => {
+        if ((performance as any).memory) {
+          const current = (performance as any).memory.totalJSHeapSize;
+          if (current > peakMemoryParsing) {
+            peakMemoryParsing = current;
+          }
+        }
+      };
+
+      // Helper to track peak memory during internal processing
+      const updatePeakMemoryProcessing = () => {
+        if ((performance as any).memory) {
+          const current = (performance as any).memory.totalJSHeapSize;
+          if (current > peakMemoryProcessing) {
+            peakMemoryProcessing = current;
+          }
+        }
+      };
+
       const fileSizeMB = file.size / 1024 / 1024;
       console.log(`[ProjectManager] Loading JSON file: ${file.name} (${fileSizeMB.toFixed(2)} MB)`);
 
@@ -1700,13 +1727,27 @@ export class ProjectManager {
       // For large files (> 100MB), use streaming approach
       if (fileSizeMB > 100) {
         console.log(`[ProjectManager] Large file detected, using streaming parser...`);
-        data = await this.readLargeJsonFile(file);
+        data = await this.readLargeJsonFile(file, updatePeakMemoryParsing);
+        updatePeakMemoryParsing();
       } else {
         // For smaller files, use standard approach
         this.prismAPI.progressIndicator.setStatus('Parsing JSON...');
         const text = await file.text();
+        updatePeakMemoryParsing();
         data = JSON.parse(text);
       }
+
+      const parseEnd = performance.now();
+      updatePeakMemoryParsing();
+
+      const parseMemEnd = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
+      const parseMemTotalEnd = (performance as any).memory ? (performance as any).memory.totalJSHeapSize : 0;
+      const parseMemUsed = Math.max(0, (parseMemEnd - parseMemStart)/1024/1024).toFixed(2);
+      const parseMemTotal = Math.max(0, (parseMemTotalEnd - parseMemTotalStart)/1024/1024).toFixed(2);
+      const parseTime = parseEnd-parseStart;
+
+
+      const internalProcessingStart = performance.now();
 
       this.prismAPI.progressIndicator.setStatus('Validating data structure...');
 
@@ -1749,12 +1790,17 @@ export class ProjectManager {
       if (this.checkButton) this.checkButton.disabled = true;
       if (this.resetButton) this.resetButton.disabled = true;
 
+      const processMemStart = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
+      const processMemTotalStart = (performance as any).memory ? (performance as any).memory.totalJSHeapSize : 0;
+      peakMemoryProcessing = processMemTotalStart;
       // Process and load
       this.prismAPI.progressIndicator.setStatus('Processing graph data...');
       const result = await this.prismAPI.convertNewFormatToInternal(data);
+      updatePeakMemoryProcessing();
 
       this.prismAPI.progressIndicator.setStatus('Loading into visualization...');
       await this.graph.loadGraphDataFromMemory(result.nodes, result.edges, file.name);
+      updatePeakMemoryProcessing();
 
       this.prismAPI.progressIndicator.hide();
 
@@ -1781,10 +1827,45 @@ export class ProjectManager {
         const paramLabels = this.prismAPI.getAllParameterLabels();
         this.graph.ui.updateParameterSelections(paramLabels);
 
+
+        const internalProcessingEnd = performance.now();
+        updatePeakMemoryProcessing();
+
+        const internalProcessingTime = (internalProcessingEnd - internalProcessingStart).toFixed(2);
+        const processMemEnd = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
+        const processMemTotalEnd = (performance as any).memory ? (performance as any).memory.totalJSHeapSize : 0;
+
+        // Calculate deltas (may be negative if GC occurred)
+        const processingMemUsedDelta = (processMemEnd - processMemStart)/1024/1024;
+        const processingMemTotalDelta = (processMemTotalEnd - processMemTotalStart)/1024/1024;
+
+        const processingMemUsed = processingMemUsedDelta.toFixed(2);
+        const processingMemTotal = processingMemTotalDelta.toFixed(2);
+        const peakMemoryParsingUsed = ((peakMemoryParsing - parseMemTotalStart)/1024/1024).toFixed(2);
+        const peakMemoryProcessingUsed = ((peakMemoryProcessing - processMemTotalStart)/1024/1024).toFixed(2);
+
+        var paramCount = 0;
+        for (const params of Object.keys(paramLabels)){
+          paramCount += paramLabels[params].length;
+        }
+
+        console.log(`[PERFORMANCE] ========================`)
+        console.log(`[PERFORMANCE] Node count: ${this.graph.getNodeCount()}`)
+        console.log(`[Performance] Parameter Count: ${paramCount}`)
+        console.log(`[PERFORMANCE] JSON parse time: ${parseTime}ms`)
+        console.log(`[PERFORMANCE] JSON memory delta (used): ${parseMemUsed}MB`)
+        console.log(`[PERFORMANCE] JSON memory delta (total): ${parseMemTotal}MB`)
+        console.log(`[PERFORMANCE] Peak Memory Used (parsing): ${peakMemoryParsingUsed}MB`)
+        console.log(`[PERFORMANCE] Internal Processing Time: ${internalProcessingTime}ms`)
+        console.log(`[PERFORMANCE] Internal Processing Memory delta (used): ${processingMemUsed}MB${processingMemUsedDelta < 0 ? ' (negative: GC occurred)' : ''}`)
+        console.log(`[PERFORMANCE] Internal Processing Memory delta (total): ${processingMemTotal}MB${processingMemTotalDelta < 0 ? ' (negative: GC occurred)' : ''}`)
+        console.log(`[PERFORMANCE] Peak Memory Used (processing): ${peakMemoryProcessingUsed}MB`)
+        console.log(`[PERFORMANCE] ========================`)
         console.log('[ProjectManager] Parameter UI populated successfully');
       } else {
         console.warn('[ProjectManager] No parameter metadata available to populate UI');
       }
+
 
       this.graph.ui.updateStatus(`Loaded ${result.nodes.length.toLocaleString()} nodes from ${file.name}. Select a layout to visualize.`);
 
@@ -1812,7 +1893,7 @@ export class ProjectManager {
   /**
    * Stream-parse large JSON files using @streamparser/json library
    */
-  private async readLargeJsonFile(file: File): Promise<any> {
+  private async readLargeJsonFile(file: File, updatePeakMemory?: () => void): Promise<any> {
     return new Promise((resolve, reject) => {
       const CHUNK_SIZE = 16 * 1024 * 1024; // 16MB chunks
       let offset = 0;
@@ -1865,6 +1946,7 @@ export class ProjectManager {
           console.log('[ProjectManager] Info contains s types:', Object.keys(result.info.s || {}));
           console.log('[ProjectManager] Info contains t types:', Object.keys(result.info.t || {}));
         }
+        if (updatePeakMemory) updatePeakMemory();
         resolve(result);
       };
 
@@ -1884,14 +1966,18 @@ export class ProjectManager {
 
         reader.onload = (event) => {
           try {
-            const arrayBuffer = event.target?.result as ArrayBuffer;
-            if (!arrayBuffer) {
-              reject(new Error('Failed to read chunk: ArrayBuffer is null'));
+            const text = event.target?.result as string;
+            if (!text) {
+              reject(new Error('Failed to read chunk: text is null'));
               return;
             }
 
-            // Pass the ArrayBuffer directly to the parser (more efficient than string)
-            parser.write(new Uint8Array(arrayBuffer));
+            // Pass text as string to avoid UTF-8 splitting issues
+            // The JSONParser library handles partial tokens across chunks correctly
+            parser.write(text);
+
+            // Track peak memory after processing chunk
+            if (updatePeakMemory) updatePeakMemory();
 
             offset += CHUNK_SIZE;
             const progress = Math.min(100, (offset / file.size) * 100);
@@ -1913,7 +1999,8 @@ export class ProjectManager {
           reject(new Error('Failed to read file'));
         };
 
-        reader.readAsArrayBuffer(slice);
+        // Use readAsText to let FileReader handle UTF-8 decoding properly
+        reader.readAsText(slice, 'UTF-8');
       };
 
       readNextChunk();

@@ -1,5 +1,6 @@
 import type { NodeData, EdgeData } from './types';
 import type { ProgressIndicator } from './UIManager';
+import { JSONParser } from '@streamparser/json';
 
 export interface ParameterMetadata {
   type: 'number' | 'boolean' | 'nominal';
@@ -89,6 +90,7 @@ export class PrismAPI {
     try {
       const url = `${this.baseUrl}/${projectId}`;
       console.log(`[PrismAPI] Fetching simple graph from: ${url}`);
+      const fetchStart = performance.now();
 
       // Create abort controller for this fetch
       this.currentAbortController = new AbortController();
@@ -122,9 +124,31 @@ export class PrismAPI {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      // Parse the response
-      this.progressIndicator.setStatus('Parsing JSON data...');
-      const data = await response.json();
+      const fetchEnd = performance.now()
+      const fetchTime = fetchEnd-fetchStart;
+      console.log(`[PERFORMANCE] Fetched Graph in ${fetchTime.toFixed(2)}ms`);
+
+      // Determine if we should use streaming based on content length
+      const contentLength = response.headers.get('content-length');
+      const estimatedSizeMB = contentLength ? parseInt(contentLength) / (1024 * 1024) : 0;
+      const USE_STREAMING_THRESHOLD_MB = 50; // Use streaming for responses > 50MB
+
+      let data: any;
+      const parseStart = performance.now();
+
+      if (estimatedSizeMB > USE_STREAMING_THRESHOLD_MB && response.body) {
+        console.log(`[PrismAPI] Large response detected (${estimatedSizeMB.toFixed(2)}MB), using streaming parser`);
+        this.progressIndicator.setStatus('Parsing JSON (streaming)...');
+        data = await this.streamParseResponse(response, estimatedSizeMB);
+      } else {
+        console.log(`[PrismAPI] Small response (${estimatedSizeMB.toFixed(2)}MB), using standard parser`);
+        this.progressIndicator.setStatus('Parsing JSON data...');
+        data = await response.json();
+      }
+
+      const parseEnd = performance.now();
+      const parseTime = parseEnd-parseStart;
+      console.log(`[PERFORMANCE] Parsed JSON in ${parseTime.toFixed(2)}ms`)
 
       if (!data.nodes || !Array.isArray(data.nodes)) {
         this.currentAbortController = null;
@@ -151,7 +175,8 @@ export class PrismAPI {
       // Performance tracking: End timer for local processing
       if (PERFORMANCE) {
         const processingTime = performance.now() - processingStartTime;
-        console.log(`[Performance] Local processing (model preprocessing): ${processingTime.toFixed(2)}ms`);
+        console.log(`[PERFORMANCE] Local processing (model preprocessing): ${processingTime.toFixed(2)}ms`);
+        console.log(`[PERFORMANCE] Sum: ${(fetchTime + parseTime + processingTime).toFixed(2)}ms`)
       }
 
       // Clear abort controller and hide progress indicator when done
@@ -172,6 +197,84 @@ export class PrismAPI {
 
       throw error;
     }
+  }
+
+  /**
+   * Stream-parse response body using @streamparser/json library
+   */
+  private async streamParseResponse(response: Response, estimatedSizeMB: number): Promise<any> {
+    return new Promise(async (resolve, reject) => {
+      const result: any = { nodes: [], edges: [], info: null };
+
+      const parser = new JSONParser({
+        stringBufferSize: 64 * 1024, // 64KB buffer for large strings
+        paths: ['$.nodes.*', '$.edges.*', '$.info'],
+      });
+
+      // Handle parsed values
+      parser.onValue = ({ value, key, stack }) => {
+        if (key === 'info' && stack.length === 1) {
+          console.log('[PrismAPI] Captured info object from JSON');
+          result.info = value;
+        } else if (stack.length === 2) {
+          const parentKey = stack[1]?.key;
+          if (parentKey === 'nodes') {
+            result.nodes.push(value);
+            if (result.nodes.length % 10000 === 0) {
+              console.log(`[PrismAPI] Parsed ${result.nodes.length} nodes...`);
+            }
+          } else if (parentKey === 'edges') {
+            result.edges.push(value);
+            if (result.edges.length % 10000 === 0) {
+              console.log(`[PrismAPI] Parsed ${result.edges.length} edges...`);
+            }
+          }
+        }
+      };
+
+      parser.onError = (error: Error) => {
+        console.error('[PrismAPI] Stream parser error:', error);
+        reject(error);
+      };
+
+      parser.onEnd = () => {
+        console.log(`[PrismAPI] Stream parsing complete: ${result.nodes.length} nodes, ${result.edges.length} edges`);
+        resolve(result);
+      };
+
+      try {
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let bytesReceived = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+
+          if (done) {
+            parser.end();
+            break;
+          }
+
+          // Decode chunk and pass to parser
+          const chunk = decoder.decode(value, { stream: true });
+          parser.write(chunk);
+
+          // Update progress
+          bytesReceived += value.length;
+          const progressMB = bytesReceived / (1024 * 1024);
+          const progressPercent = estimatedSizeMB > 0 ? (progressMB / estimatedSizeMB) * 100 : 0;
+          this.progressIndicator.setStatus(
+            `Parsing JSON... ${progressMB.toFixed(1)}MB / ${estimatedSizeMB.toFixed(1)}MB (${result.nodes.length.toLocaleString()} nodes, ${result.edges.length.toLocaleString()} edges)`
+          );
+          if (estimatedSizeMB > 0) {
+            this.progressIndicator.updateProgress(Math.min(100, progressPercent));
+          }
+        }
+      } catch (error) {
+        console.error('[PrismAPI] Error reading response stream:', error);
+        reject(error);
+      }
+    });
   }
   private populateParameterOrder(info: any): void {
     const s_types = this.getParameterLabels('s');
@@ -261,10 +364,10 @@ export class PrismAPI {
 
         const { nodes, edges } = result;
 
-        // Process metadata on main thread (these methods access class state)
-        this.addNominalValuesToParameterMetadata(nodes);
-        this.convertNumericNominalParameters();
-        this.calculateParameterMinMax(nodes);
+        // Process metadata on main thread using single-pass approach
+        // The worker already did the node conversion, but we still need to process metadata
+        // since it requires access to class state (this.parameterMetadata)
+        this.processSinglePassMetadata(nodes);
 
         resolve({ nodes, edges });
       };
@@ -284,7 +387,7 @@ export class PrismAPI {
     });
   }
 
-  private convertNewFormatToInternalMainThread(data: any): { nodes: NodeData[]; edges: EdgeData[] } {
+  private async convertNewFormatToInternalMainThread(data: any): Promise<{ nodes: NodeData[]; edges: EdgeData[] }> {
     if (data.info) {
       console.log('[PrismAPI] Setting parameterMetadata from data.info');
       this.parameterMetadata = data.info;
@@ -301,58 +404,241 @@ export class PrismAPI {
     const totalNodes = s_nodes_raw.length + t_nodes_raw.length;
     const nodes: NodeData[] = new Array(totalNodes);
 
-    // Create s_nodes with their global indices
+    console.log(`[PrismAPI] Converting ${totalNodes.toLocaleString()} nodes in a single pass...`);
+    this.progressIndicator.setStatus(`Converting ${totalNodes.toLocaleString()} nodes...`);
+
+    // Setup for single-pass parameter metadata collection
+    // Get nominal params structure from metadata
+    const [sNominalParams, tNominalParams] = this.getNominalParams();
+    const sNominalKeys = Object.keys(sNominalParams);
+    const tNominalKeys = Object.keys(tNominalParams);
+
+    // Use Sets for nominal values (faster duplicate checking)
+    const sNominalSets: Record<string, Set<string>> = {};
+    const tNominalSets: Record<string, Set<string>> = {};
+
+    // Initialize nominal sets with "undefined"
+    for (let i = 0; i < sNominalKeys.length; i++) {
+      sNominalSets[sNominalKeys[i]] = new Set(['undefined']);
+    }
+    for (let i = 0; i < tNominalKeys.length; i++) {
+      tNominalSets[tNominalKeys[i]] = new Set(['undefined']);
+    }
+
+    // Track min/max for numeric parameters
+    const paramStats: Record<string, { min: number; max: number }> = {};
+
+    // For large graphs, use sampling for nominal values (but still calculate min/max for all)
+    const SAMPLE_THRESHOLD = 50000;
+    const SAMPLE_SIZE = 10000;
+    const shouldSample = totalNodes > SAMPLE_THRESHOLD;
+    const sampleEvery = shouldSample ? Math.ceil(totalNodes / SAMPLE_SIZE) : 1;
+
+    if (shouldSample) {
+      console.log(`[PrismAPI] Large graph detected (${totalNodes} nodes). Sampling every ${sampleEvery}th node for nominal values.`);
+    }
+
+    // SINGLE PASS: Create s_nodes with their global indices AND collect metadata
     for (let i = 0; i < s_nodes_raw.length; i++) {
       const node = s_nodes_raw[i];
       const nodeId = String(node.id);
-      const globalIndex = i; // Global index in the final combined array
+      const globalIndex = i;
 
-      // Map original ID to global index for edge resolution
       idToIndex.set(nodeId, globalIndex);
 
-      nodes[globalIndex] = {
-        id: node.id, // Keep original ID
-        index: globalIndex, // Add sequential index for positioning
+      const nodeData: NodeData = {
+        id: node.id,
+        index: globalIndex,
         type: 's',
         name: node.name || '',
         x: 0,
         y: 0,
         cluster: 0,
-        degree: 0, // Initialize degree counter
+        degree: 0,
         parameters: node.details || {}
       };
+
+      nodes[globalIndex] = nodeData;
+
+      // Collect parameter metadata in the same pass
+      if (nodeData.parameters && this.parameterMetadata) {
+        const shouldSampleThisNode = !shouldSample || (i % sampleEvery === 0);
+
+        for (const categoryName in nodeData.parameters) {
+          if (!nodeData.parameters.hasOwnProperty(categoryName)) continue;
+
+          const category = nodeData.parameters[categoryName];
+          if (!category || typeof category !== 'object') continue;
+
+          for (const paramName in category) {
+            if (!category.hasOwnProperty(paramName)) continue;
+
+            const value = category[paramName];
+
+            // Collect nominal values (with sampling for large graphs)
+            if (shouldSampleThisNode && sNominalKeys.includes(paramName)) {
+              const valueStr = String(value);
+              sNominalSets[paramName].add(valueStr);
+            }
+
+            // Always calculate min/max for numeric values (no sampling)
+            if (typeof value === 'number' && isFinite(value)) {
+              const key = `s::${categoryName}::${paramName}`;
+              if (!paramStats[key]) {
+                paramStats[key] = { min: value, max: value };
+              } else {
+                paramStats[key].min = Math.min(paramStats[key].min, value);
+                paramStats[key].max = Math.max(paramStats[key].max, value);
+              }
+            }
+          }
+        }
+      }
+
+      // Yield to UI periodically
+      if (i % 100000 === 0 && i > 0) {
+        console.log(`[PrismAPI] Processed ${i.toLocaleString()} s-nodes...`);
+        this.progressIndicator.setStatus(`Converting nodes: ${i.toLocaleString()} / ${totalNodes.toLocaleString()}`);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
     }
 
-    // Create t_nodes with their global indices (offset by s_nodes length)
+    // SINGLE PASS: Create t_nodes with their global indices AND collect metadata
     const s_length = s_nodes_raw.length;
     for (let i = 0; i < t_nodes_raw.length; i++) {
       const node = t_nodes_raw[i];
       const nodeId = String(node.id);
-      const globalIndex = s_length + i; // Offset by s_nodes length
+      const globalIndex = s_length + i;
 
-      // Map original ID to global index for edge resolution
       idToIndex.set(nodeId, globalIndex);
 
-      nodes[globalIndex] = {
-        id: node.id, // Keep original ID
-        index: globalIndex, // Add sequential index for positioning
+      const nodeData: NodeData = {
+        id: node.id,
+        index: globalIndex,
         x: 0,
         y: 0,
         type: 't',
         cluster: 0,
-        degree: 0, // Initialize degree counter
+        degree: 0,
         parameters: node.details || {},
         name: node.name || String(node.id)
       };
+
+      nodes[globalIndex] = nodeData;
+
+      // Collect parameter metadata in the same pass
+      if (nodeData.parameters && this.parameterMetadata) {
+        const shouldSampleThisNode = !shouldSample || (i % sampleEvery === 0);
+
+        for (const categoryName in nodeData.parameters) {
+          if (!nodeData.parameters.hasOwnProperty(categoryName)) continue;
+
+          const category = nodeData.parameters[categoryName];
+          if (!category || typeof category !== 'object') continue;
+
+          for (const paramName in category) {
+            if (!category.hasOwnProperty(paramName)) continue;
+
+            const value = category[paramName];
+
+            // Collect nominal values (with sampling for large graphs)
+            if (shouldSampleThisNode && tNominalKeys.includes(paramName)) {
+              const valueStr = String(value);
+              tNominalSets[paramName].add(valueStr);
+            }
+
+            // Always calculate min/max for numeric values (no sampling)
+            if (typeof value === 'number' && isFinite(value)) {
+              const key = `t::${categoryName}::${paramName}`;
+              if (!paramStats[key]) {
+                paramStats[key] = { min: value, max: value };
+              } else {
+                paramStats[key].min = Math.min(paramStats[key].min, value);
+                paramStats[key].max = Math.max(paramStats[key].max, value);
+              }
+            }
+          }
+        }
+      }
+
+      // Yield to UI periodically
+      if (i % 100000 === 0 && i > 0) {
+        const processed = s_length + i;
+        console.log(`[PrismAPI] Processed ${processed.toLocaleString()} nodes total...`);
+        this.progressIndicator.setStatus(`Converting nodes: ${processed.toLocaleString()} / ${totalNodes.toLocaleString()}`);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
     }
 
-    this.addNominalValuesToParameterMetadata(nodes);
+    console.log(`[PrismAPI] All nodes converted, updating metadata...`);
+    this.progressIndicator.setStatus('Updating parameter metadata...');
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    // Update parameterMetadata with collected nominal values
+    if (this.parameterMetadata) {
+      // Convert Sets to arrays and update s-type nominal params
+      for (let i = 0; i < sNominalKeys.length; i++) {
+        const paramName = sNominalKeys[i];
+        sNominalParams[paramName] = Array.from(sNominalSets[paramName]);
+      }
+
+      // Convert Sets to arrays and update t-type nominal params
+      for (let i = 0; i < tNominalKeys.length; i++) {
+        const paramName = tNominalKeys[i];
+        tNominalParams[paramName] = Array.from(tNominalSets[paramName]);
+      }
+
+      // Update metadata with nominal values
+      for (const type of ['s', 't'] as const) {
+        const nodeInfo = this.parameterMetadata[type];
+        if (!nodeInfo) continue;
+
+        const nominalParams = type === 's' ? sNominalParams : tNominalParams;
+        const nominalKeys = type === 's' ? sNominalKeys : tNominalKeys;
+
+        for (const category in nodeInfo) {
+          if (!nodeInfo.hasOwnProperty(category)) continue;
+
+          const params = nodeInfo[category];
+
+          for (let i = 0; i < nominalKeys.length; i++) {
+            const paramName = nominalKeys[i];
+            if (paramName in params) {
+              params[paramName].possibleValues = nominalParams[paramName];
+            }
+          }
+        }
+      }
+
+      // Update metadata with min/max values
+      for (const key in paramStats) {
+        if (!paramStats.hasOwnProperty(key)) continue;
+
+        const [nodeType, categoryName, paramName] = key.split('::');
+        const stats = paramStats[key];
+
+        const nodeInfo = this.parameterMetadata[nodeType as 's' | 't'];
+        if (!nodeInfo) continue;
+
+        const categoryParams = nodeInfo[categoryName];
+        if (!categoryParams) continue;
+
+        const param = categoryParams[paramName];
+        if (!param) continue;
+
+        if (param.type === 'number') {
+          param.min = stats.min;
+          param.max = stats.max;
+        }
+      }
+    }
+
+    // Convert numeric nominal parameters
     this.convertNumericNominalParameters();
 
-    // Calculate and cache min/max values for all numeric parameters
-    this.calculateParameterMinMax(nodes);
-
     // Process edges and calculate degrees in a single pass
+    console.log(`[PrismAPI] Processing ${data.edges.length.toLocaleString()} edges...`);
+    this.progressIndicator.setStatus(`Processing edges...`);
     const edges: EdgeData[] = [];
     for (let i = 0; i < data.edges.length; i++) {
       const edge = data.edges[i];
@@ -369,13 +655,19 @@ export class PrismAPI {
           label: edge.label || ''
         });
 
-        // Increment degree for both nodes
         nodes[fromIndex].degree!++;
         nodes[toIndex].degree!++;
       }
+
+      // Yield to UI periodically for very large edge sets
+      if (i % 100000 === 0 && i > 0) {
+        console.log(`[PrismAPI] Processed ${i.toLocaleString()} edges...`);
+        this.progressIndicator.setStatus(`Processing edges: ${i.toLocaleString()} / ${data.edges.length.toLocaleString()}`);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
     }
 
-    console.log(`[PrismAPI] Converted graph with ${nodes.length} nodes, ${edges.length} edges.`);
+    console.log(`[PrismAPI] Converted graph with ${nodes.length} nodes, ${edges.length} edges in single pass.`);
     return { nodes, edges };
   }
 
@@ -415,6 +707,138 @@ export class PrismAPI {
     }
     return possibleValues;
   }
+  /**
+   * Process parameter metadata in a single pass (synchronous version for worker results)
+   * This is called after worker processing to update metadata without re-iterating nodes
+   */
+  private processSinglePassMetadata(nodes: NodeData[]): void {
+    if (!this.parameterMetadata || nodes.length === 0) return;
+
+    console.log('[PrismAPI] Processing metadata in single pass (sync)...');
+
+    // Get nominal params structure from metadata
+    const [sNominalParams, tNominalParams] = this.getNominalParams();
+    const sNominalKeys = Object.keys(sNominalParams);
+    const tNominalKeys = Object.keys(tNominalParams);
+
+    // Use Sets for nominal values
+    const sNominalSets: Record<string, Set<string>> = {};
+    const tNominalSets: Record<string, Set<string>> = {};
+
+    // Initialize nominal sets
+    for (let i = 0; i < sNominalKeys.length; i++) {
+      sNominalSets[sNominalKeys[i]] = new Set(['undefined']);
+    }
+    for (let i = 0; i < tNominalKeys.length; i++) {
+      tNominalSets[tNominalKeys[i]] = new Set(['undefined']);
+    }
+
+    // Track min/max for numeric parameters
+    const paramStats: Record<string, { min: number; max: number }> = {};
+
+    // Sampling for large graphs
+    const SAMPLE_THRESHOLD = 50000;
+    const SAMPLE_SIZE = 10000;
+    const shouldSample = nodes.length > SAMPLE_THRESHOLD;
+    const sampleEvery = shouldSample ? Math.ceil(nodes.length / SAMPLE_SIZE) : 1;
+
+    // Single pass through nodes
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (!node.parameters) continue;
+
+      const shouldSampleThisNode = !shouldSample || (i % sampleEvery === 0);
+      const nominalKeys = node.type === 's' ? sNominalKeys : tNominalKeys;
+      const nominalSets = node.type === 's' ? sNominalSets : tNominalSets;
+
+      for (const categoryName in node.parameters) {
+        if (!node.parameters.hasOwnProperty(categoryName)) continue;
+
+        const category = node.parameters[categoryName];
+        if (!category || typeof category !== 'object') continue;
+
+        for (const paramName in category) {
+          if (!category.hasOwnProperty(paramName)) continue;
+
+          const value = category[paramName];
+
+          // Collect nominal values (with sampling)
+          if (shouldSampleThisNode && nominalKeys.includes(paramName)) {
+            const valueStr = String(value);
+            nominalSets[paramName].add(valueStr);
+          }
+
+          // Calculate min/max for numeric values (no sampling)
+          if (typeof value === 'number' && isFinite(value)) {
+            const key = `${node.type}::${categoryName}::${paramName}`;
+            if (!paramStats[key]) {
+              paramStats[key] = { min: value, max: value };
+            } else {
+              paramStats[key].min = Math.min(paramStats[key].min, value);
+              paramStats[key].max = Math.max(paramStats[key].max, value);
+            }
+          }
+        }
+      }
+    }
+
+    // Update metadata with nominal values
+    for (let i = 0; i < sNominalKeys.length; i++) {
+      sNominalParams[sNominalKeys[i]] = Array.from(sNominalSets[sNominalKeys[i]]);
+    }
+    for (let i = 0; i < tNominalKeys.length; i++) {
+      tNominalParams[tNominalKeys[i]] = Array.from(tNominalSets[tNominalKeys[i]]);
+    }
+
+    for (const type of ['s', 't'] as const) {
+      const nodeInfo = this.parameterMetadata[type];
+      if (!nodeInfo) continue;
+
+      const nominalParams = type === 's' ? sNominalParams : tNominalParams;
+      const nominalKeys = type === 's' ? sNominalKeys : tNominalKeys;
+
+      for (const category in nodeInfo) {
+        if (!nodeInfo.hasOwnProperty(category)) continue;
+
+        const params = nodeInfo[category];
+
+        for (let i = 0; i < nominalKeys.length; i++) {
+          const paramName = nominalKeys[i];
+          if (paramName in params) {
+            params[paramName].possibleValues = nominalParams[paramName];
+          }
+        }
+      }
+    }
+
+    // Update metadata with min/max values
+    for (const key in paramStats) {
+      if (!paramStats.hasOwnProperty(key)) continue;
+
+      const [nodeType, categoryName, paramName] = key.split('::');
+      const stats = paramStats[key];
+
+      const nodeInfo = this.parameterMetadata[nodeType as 's' | 't'];
+      if (!nodeInfo) continue;
+
+      const categoryParams = nodeInfo[categoryName];
+      if (!categoryParams) continue;
+
+      const param = categoryParams[paramName];
+      if (!param) continue;
+
+      if (param.type === 'number') {
+        param.min = stats.min;
+        param.max = stats.max;
+      }
+    }
+
+    // Convert numeric nominal parameters
+    this.convertNumericNominalParameters();
+
+    console.log('[PrismAPI] Metadata processing complete (sync)');
+  }
+
   private addNominalValuesToParameterMetadata(nodes: NodeData[]): void {
     if (!this.parameterMetadata) return;
 
@@ -523,6 +947,112 @@ export class PrismAPI {
     if (DEBUG) {
       console.log('[PrismAPI] addNominalValuesToParameterMetadata - END');
     }
+  }
+
+  /**
+   * Async version that yields to UI for very large datasets
+   */
+  private async addNominalValuesToParameterMetadataAsync(nodes: NodeData[]): Promise<void> {
+    if (!this.parameterMetadata) return;
+
+    console.log('[PrismAPI] addNominalValuesToParameterMetadata (async) - START');
+
+    // Get nominal params structure from metadata
+    const [sNominalParams, tNominalParams] = this.getNominalParams();
+
+    // Early exit if no nominal params
+    const sNominalKeys = Object.keys(sNominalParams);
+    const tNominalKeys = Object.keys(tNominalParams);
+    if (sNominalKeys.length === 0 && tNominalKeys.length === 0) {
+      return;
+    }
+
+    // Use Sets for much faster duplicate checking
+    const sNominalSets: Record<string, Set<string>> = {};
+    const tNominalSets: Record<string, Set<string>> = {};
+
+    // Initialize with "undefined" value
+    for (let i = 0; i < sNominalKeys.length; i++) {
+      const paramName = sNominalKeys[i];
+      sNominalSets[paramName] = new Set(['undefined']);
+    }
+    for (let i = 0; i < tNominalKeys.length; i++) {
+      const paramName = tNominalKeys[i];
+      tNominalSets[paramName] = new Set(['undefined']);
+    }
+
+    // For large graphs, use sampling strategy to avoid scanning all nodes
+    const SAMPLE_THRESHOLD = 50000;
+    const SAMPLE_SIZE = 10000;
+    const shouldSample = nodes.length > SAMPLE_THRESHOLD;
+    const nodesToScan = shouldSample ? Math.min(SAMPLE_SIZE, nodes.length) : nodes.length;
+
+    if (shouldSample) {
+      console.log(`[PrismAPI] Large graph detected (${nodes.length} nodes). Sampling ${nodesToScan} nodes for nominal values.`);
+    }
+
+    // Populate nominal params with actual values from nodes
+    for (let i = 0; i < nodesToScan; i++) {
+      const node = nodes[i];
+      const nominalSets = node.type === 's' ? sNominalSets : tNominalSets;
+      const nominalKeys = node.type === 's' ? sNominalKeys : tNominalKeys;
+
+      if (!node.parameters) continue;
+
+      for (const categoryName in node.parameters) {
+        if (!node.parameters.hasOwnProperty(categoryName)) continue;
+
+        const category = node.parameters[categoryName];
+        if (!category || typeof category !== 'object') continue;
+
+        for (let j = 0; j < nominalKeys.length; j++) {
+          const paramName = nominalKeys[j];
+          if (paramName in category) {
+            const valueStr = String(category[paramName]);
+            nominalSets[paramName].add(valueStr);
+          }
+        }
+      }
+
+      // Yield to UI periodically
+      if (i % 50000 === 0 && i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    // Convert Sets back to arrays
+    for (let i = 0; i < sNominalKeys.length; i++) {
+      const paramName = sNominalKeys[i];
+      sNominalParams[paramName] = Array.from(sNominalSets[paramName]);
+    }
+    for (let i = 0; i < tNominalKeys.length; i++) {
+      const paramName = tNominalKeys[i];
+      tNominalParams[paramName] = Array.from(tNominalSets[paramName]);
+    }
+
+    // Update metadata
+    for (const type of ['s', 't'] as const) {
+      const nodeInfo = this.parameterMetadata[type];
+      if (!nodeInfo) continue;
+
+      const nominalParams = type === 's' ? sNominalParams : tNominalParams;
+      const nominalKeys = type === 's' ? sNominalKeys : tNominalKeys;
+
+      for (const category in nodeInfo) {
+        if (!nodeInfo.hasOwnProperty(category)) continue;
+
+        const params = nodeInfo[category];
+
+        for (let i = 0; i < nominalKeys.length; i++) {
+          const paramName = nominalKeys[i];
+          if (paramName in params) {
+            params[paramName].possibleValues = nominalParams[paramName];
+          }
+        }
+      }
+    }
+
+    console.log('[PrismAPI] addNominalValuesToParameterMetadata (async) - END');
   }
 
   /**
@@ -677,6 +1207,89 @@ export class PrismAPI {
     }
 
     if (DEBUG) console.log('[PrismAPI] calculateParameterMinMax - END');
+  }
+
+  /**
+   * Async version that yields to UI for very large datasets
+   */
+  private async calculateParameterMinMaxAsync(nodes: NodeData[]): Promise<void> {
+    if (!this.parameterMetadata || nodes.length === 0) return;
+
+    console.log('[PrismAPI] calculateParameterMinMax (async) - START');
+
+    // Track min/max for each parameter across all nodes
+    const paramStats: Record<string, { min: number; max: number; category: string; nodeType: 's' | 't' }> = {};
+
+    // Single pass through all nodes to calculate min/max
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (!node.parameters) continue;
+
+      const nodeType = node.type;
+
+      // Iterate through categories
+      for (const categoryName in node.parameters) {
+        if (!node.parameters.hasOwnProperty(categoryName)) continue;
+
+        const category = node.parameters[categoryName];
+        if (!category || typeof category !== 'object') continue;
+
+        // Iterate through parameters in this category
+        for (const paramName in category) {
+          if (!category.hasOwnProperty(paramName)) continue;
+
+          const value = category[paramName];
+
+          // Only process numeric values
+          if (typeof value !== 'number' || !isFinite(value)) continue;
+
+          const key = `${nodeType}::${categoryName}::${paramName}`;
+
+          if (!paramStats[key]) {
+            paramStats[key] = {
+              min: value,
+              max: value,
+              category: categoryName,
+              nodeType: nodeType
+            };
+          } else {
+            paramStats[key].min = Math.min(paramStats[key].min, value);
+            paramStats[key].max = Math.max(paramStats[key].max, value);
+          }
+        }
+      }
+
+      // Yield to UI periodically
+      if (i % 100000 === 0 && i > 0) {
+        console.log(`[PrismAPI] Calculated min/max for ${i.toLocaleString()} / ${nodes.length.toLocaleString()} nodes...`);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    // Update parameterMetadata with calculated min/max values
+    for (const key in paramStats) {
+      if (!paramStats.hasOwnProperty(key)) continue;
+
+      const [nodeType, categoryName, paramName] = key.split('::');
+      const stats = paramStats[key];
+
+      const nodeInfo = this.parameterMetadata[nodeType as 's' | 't'];
+      if (!nodeInfo) continue;
+
+      const categoryParams = nodeInfo[categoryName];
+      if (!categoryParams) continue;
+
+      const param = categoryParams[paramName];
+      if (!param) continue;
+
+      // Update min/max only if they are numeric parameters
+      if (param.type === 'number') {
+        param.min = stats.min;
+        param.max = stats.max;
+      }
+    }
+
+    console.log('[PrismAPI] calculateParameterMinMax (async) - END');
   }
 
   /**

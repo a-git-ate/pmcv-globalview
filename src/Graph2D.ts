@@ -56,6 +56,10 @@ export class Graph2D {
   // Maps geometry point index to array of node indices at that position
   private geometryToNodesMap: Map<number, number[]> = new Map();
 
+  // Cached stack map created during node placement (optimization)
+  private cachedStackMap: Map<number, number[]> | null = null;
+  private lastStackGenTime: number = 0;
+
   // PCA Results storage
   private pcaResults: {
     eigenvectors: Array<{eigenvalue: number, eigenvector: number[]}>;
@@ -556,6 +560,7 @@ export class Graph2D {
 
     if (PERFORMANCE) console.log('[Graph2D] [PERF] ===== TOTAL PERFORMANCE SUMMARY (ml-pca) =====');
     if (PERFORMANCE) console.log(`[Graph2D] [PERF] Total execution time: ${totalTime.toFixed(2)} ms`);
+    if (PERFORMANCE) console.log(`[Graph2D] [PERF] Nodes: ${dataMatrix.length}`)
     if (PERFORMANCE) console.log(`[Graph2D] [PERF] Total time per node: ${(totalTime / dataMatrix.length).toFixed(4)} ms`);
     if (PERFORMANCE) console.log(`[Graph2D] [PERF] Total time per parameter: ${(totalTime / parameterNames.length).toFixed(4)} ms`);
     if (memUsed > 0) {
@@ -1027,7 +1032,7 @@ export class Graph2D {
       }
 
       // Create point cloud
-      this.createPointCloud(geometry, positions, colors, sizes);
+      await this.createPointCloud(geometry, positions, colors, sizes);
 
       // Update state
       this.nodeCount = count;
@@ -1091,7 +1096,7 @@ export class Graph2D {
 
       // Create point cloud first for visual feedback
       const cloudStart = performance.now();
-      this.createPointCloud(geometry, positions, colors, sizes);
+      await this.createPointCloud(geometry, positions, colors, sizes);
       this.nodeCount = nodeCount;
       this.ui.updateNodeCount(nodeCount);
       this.resetView();
@@ -1123,17 +1128,17 @@ export class Graph2D {
         if (PERFORMANCE) console.log(`[Performance] Edge rendering: ${(performance.now() - edgeStart).toFixed(2)}ms`);
       }
 
-      // Update overlap labels (deferred for large graphs)
-      if (nodeCount < 50000) {
+      // Update overlap labels (deferred for very large graphs)
+      if (nodeCount < 500000) {
         this.updateOverlapLabels();
       } else {
-        // Defer overlap calculation for large graphs
+        // Defer overlap calculation for very large graphs
         setTimeout(() => this.updateOverlapLabels(), 100);
       }
 
       const totalTime = (performance.now() - startTime).toFixed(2);
       //if (PERFORMANCE) console.log(`[Performance] Total load time: ${totalTime}ms`);
-      this.ui.updateStatus(`Loaded ${nodeCount.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API (${totalTime}ms)`);
+      if (PERFORMANCE) console.log(`Loaded ${nodeCount.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API (${totalTime}ms)`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load graph from API';
       this.ui.showError(message);
@@ -1236,6 +1241,7 @@ export class Graph2D {
     }
 
     const startTime = performance.now();
+    const perfTimes = { layout: 0, stack: 0, display: 0 }; // Track all performance timings
     this.ui.disableButtons();
 
     try {
@@ -1250,11 +1256,15 @@ export class Graph2D {
       // Populate geometry arrays from loaded nodes
       const layoutStart = performance.now();
       await this.populateGeometryFromNodes(positions, colors, sizes);
-      if (PERFORMANCE) console.log(`[Performance] Layout population: ${(performance.now() - layoutStart).toFixed(2)}ms`);
+      perfTimes.layout = performance.now() - layoutStart;
+      if (PERFORMANCE) console.log(`[Performance] Layout population: ${perfTimes.layout.toFixed(2)}ms`);
 
       // Create point cloud
       const cloudStart = performance.now();
-      this.createPointCloud(geometry, positions, colors, sizes);
+      await this.createPointCloud(geometry, positions, colors, sizes);
+      perfTimes.stack = this.lastStackGenTime || 0; // Stack time captured in deduplicateStackedNodes
+      perfTimes.display = performance.now() - cloudStart - perfTimes.stack;
+      if (PERFORMANCE) console.log(`[Performance] Point cloud creation: ${(performance.now() - cloudStart).toFixed(2)}ms`);
       this.ui.updateNodeCount(nodeCount);
 
       // If using parameter positioning, set alpha values for visibility
@@ -1310,7 +1320,7 @@ export class Graph2D {
       this.applyColorParameter(colorParam);
 
       // Update overlap labels
-      if (nodeCount < 50000) {
+      if (nodeCount < 500000) {
         this.updateOverlapLabels();
       } else {
         setTimeout(() => this.updateOverlapLabels(), 100);
@@ -1360,8 +1370,30 @@ export class Graph2D {
         this.fitViewToParameterRange(spread);
       }
 
-      const totalTime = (performance.now() - startTime).toFixed(2);
-      this.ui.updateStatus(`Rendered ${nodeCount.toLocaleString()} nodes with ${this.currentLayout} layout (${totalTime}ms)`);
+      const totalTime = performance.now() - startTime;
+
+      // Display comprehensive performance summary
+      if (PERFORMANCE) {
+        console.log(`[NodePlacement] [PERF] ===== RENDERING SUMMARY =====`);
+        console.log(`[NodePlacement] [PERF] Node count: ${nodeCount.toLocaleString()}`);
+        console.log(`[NodePlacement] [PERF] Total time: ${totalTime.toFixed(2)}ms`);
+        console.log(`[NodePlacement] [PERF] Breakdown:`);
+        console.log(`[NodePlacement] [PERF]   - Layout generation: ${perfTimes.layout.toFixed(2)}ms (${((perfTimes.layout / totalTime) * 100).toFixed(1)}%)`);
+        console.log(`[NodePlacement] [PERF]   - Stack generation: ${perfTimes.stack.toFixed(2)}ms (${((perfTimes.stack / totalTime) * 100).toFixed(1)}%)`);
+        console.log(`[NodePlacement] [PERF]   - Node display: ${perfTimes.display.toFixed(2)}ms (${((perfTimes.display / totalTime) * 100).toFixed(1)}%)`);
+        console.log(`[NodePlacement] [PERF] Time per node: ${((totalTime / nodeCount) * 1000).toFixed(2)}µs`);
+
+        // Memory stats (Chrome-specific API)
+        const perfWithMemory = performance as any;
+        if (perfWithMemory.memory) {
+          const memUsed = perfWithMemory.memory.usedJSHeapSize / (1024 * 1024);
+          console.log(`[NodePlacement] [PERF] Memory used: ${memUsed.toFixed(2)}MB`);
+        }
+
+        console.log(`[NodePlacement] [PERF] ======================================`);
+      }
+
+      this.ui.updateStatus(`Rendered ${nodeCount.toLocaleString()} nodes with ${this.currentLayout} layout (${totalTime.toFixed(0)}ms)`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to render graph';
       this.ui.showError(message);
@@ -1392,43 +1424,105 @@ export class Graph2D {
     colors: Float32Array,
     sizes: Float32Array
   ): Promise<void> {
+    const perfStart = performance.now();
+    const memStart = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
+
     const count = this.nodes.length;
     const spread = Math.sqrt(count) * 0.5;
 
-    if (DEBUG) console.log(`[NodePlacement] Starting placement for ${count} nodes`);
+    console.log(`[NodePlacement] Starting layout generation for ${count.toLocaleString()} nodes`);
+
+    // Show progress indicator for large datasets
+    const showProgress = count > 10000;
+    if (showProgress) {
+      this.prismAPI.progressIndicator.show({ title: 'Generating Layout' });
+    }
 
     // ============================================================
     // STEP 1: Determine Coordinate System Bounds
     // ============================================================
+    if (showProgress) this.prismAPI.progressIndicator.setStatus('Determining coordinate system...');
+    const coordStart = performance.now();
     const coordinateSystem = this.determineCoordinateSystem(count, spread);
+    const coordTime = performance.now() - coordStart;
+    if (PERFORMANCE && coordTime > 10) console.log(`[NodePlacement] [PERF] Coordinate system: ${coordTime.toFixed(2)}ms`);
 
     // Store for later use (e.g., axis rendering)
     this.currentAxisInfo = coordinateSystem;
 
     // ============================================================
-    // STEP 2: Position All Nodes
+    // STEP 2: Position All Nodes AND Generate Stack Map
     // ============================================================
-    await this.positionNodesInCoordinateSystem(
+    if (showProgress) this.prismAPI.progressIndicator.setStatus('Positioning nodes...');
+    const posStart = performance.now();
+    const stackMap = await this.positionNodesInCoordinateSystem(
       positions,
       count,
       spread,
-      coordinateSystem
+      coordinateSystem,
+      showProgress
     );
+    const posTime = performance.now() - posStart;
+    if (PERFORMANCE) console.log(`[NodePlacement] [PERF] Node positioning + stack grouping: ${posTime.toFixed(2)}ms (${(posTime / count * 1000).toFixed(2)}µs per node)`);
 
     // ============================================================
     // STEP 3: Apply Force-Directed Layout (Optional)
     // ============================================================
+    let forceTime = 0;
     if (this.currentLayout === 'force' && count > 0) {
+      if (showProgress) this.prismAPI.progressIndicator.setStatus('Computing force-directed layout...');
       this.ui.updateStatus('Computing force-directed layout...');
+      const forceStart = performance.now();
       this.applyForceDirectedLayout(count, positions, spread);
+      forceTime = performance.now() - forceStart;
+      if (PERFORMANCE) console.log(`[NodePlacement] [PERF] Force-directed layout: ${forceTime.toFixed(2)}ms`);
     }
 
     // ============================================================
     // STEP 4: Generate Visual Attributes
     // ============================================================
+    if (showProgress) this.prismAPI.progressIndicator.setStatus('Generating visual attributes...');
+    const attrStart = performance.now();
     this.generateNodeVisualAttributes(colors, sizes, count);
+    const attrTime = performance.now() - attrStart;
+    if (PERFORMANCE) console.log(`[NodePlacement] [PERF] Visual attributes: ${attrTime.toFixed(2)}ms`);
 
-    if (DEBUG) console.log(`[NodePlacement] Placement complete`);
+    // ============================================================
+    // STEP 5: Store Stack Map for Later Use
+    // ============================================================
+    // Store the stack map so createPointCloud can use it instead of recomputing
+    this.cachedStackMap = stackMap;
+
+    // Hide progress indicator
+    if (showProgress) {
+      this.prismAPI.progressIndicator.hide();
+    }
+
+    // ============================================================
+    // PERFORMANCE SUMMARY
+    // ============================================================
+    const perfEnd = performance.now();
+    const memEnd = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
+    const totalTime = perfEnd - perfStart;
+    const memUsed = memEnd - memStart;
+
+    console.log(`[NodePlacement] [PERF] ===== LAYOUT GENERATION SUMMARY =====`);
+    console.log(`[NodePlacement] [PERF] Node count: ${count.toLocaleString()}`);
+    console.log(`[NodePlacement] [PERF] Total time: ${totalTime.toFixed(2)}ms`);
+    console.log(`[NodePlacement] [PERF] Breakdown:`);
+    console.log(`[NodePlacement] [PERF]   - Coordinate system: ${coordTime.toFixed(2)}ms (${(coordTime/totalTime*100).toFixed(1)}%)`);
+    console.log(`[NodePlacement] [PERF]   - Node positioning: ${posTime.toFixed(2)}ms (${(posTime/totalTime*100).toFixed(1)}%)`);
+    if (forceTime > 0) {
+      console.log(`[NodePlacement] [PERF]   - Force layout: ${forceTime.toFixed(2)}ms (${(forceTime/totalTime*100).toFixed(1)}%)`);
+    }
+    console.log(`[NodePlacement] [PERF]   - Visual attributes: ${attrTime.toFixed(2)}ms (${(attrTime/totalTime*100).toFixed(1)}%)`);
+    console.log(`[NodePlacement] [PERF] Time per node: ${(totalTime / count * 1000).toFixed(2)}µs`);
+    if (memUsed !== 0) {
+      console.log(`[NodePlacement] [PERF] Memory delta: ${(memUsed / 1024 / 1024).toFixed(2)}MB`);
+      console.log(`[NodePlacement] [PERF] Memory per node: ${(memUsed / count).toFixed(2)} bytes`);
+    }
+    console.log(`[NodePlacement] [PERF] ======================================`);
+    console.log(`[NodePlacement] Layout generation complete for ${count.toLocaleString()} nodes`);
   }
 
   /**
@@ -1528,8 +1622,8 @@ export class Graph2D {
   }
 
   /**
-   * Position all nodes in the coordinate system
-   * This is where each node gets its (x, y) coordinates
+   * Position all nodes in the coordinate system AND build stack map simultaneously
+   * This is where each node gets its (x, y) coordinates AND gets grouped by position
    */
   private async positionNodesInCoordinateSystem(
     positions: Float32Array,
@@ -1542,10 +1636,15 @@ export class Graph2D {
       minValues: { x: number; y: number };
       maxValues: { x: number; y: number };
       spread: number;
-    }
-  ): Promise<void> {
-    const batchSize = 50000;
+    },
+    showProgress: boolean = false
+  ): Promise<Map<number, number[]>> {
+    const batchSize = 100000;
     const isParameterMode = coordinateSystem.mode === 'parameter';
+    const POSITION_EPSILON = 0.001;
+
+    // Build stack map while positioning nodes
+    const positionToNodesMap = new Map<number, number[]>();
 
     for (let batch = 0; batch < count; batch += batchSize) {
       const end = Math.min(batch + batchSize, count);
@@ -1575,18 +1674,38 @@ export class Graph2D {
         nodeData.y = position.y;
 
         // Update positions array
-        positions[i * 3] = position.x;
-        positions[i * 3 + 1] = position.y;
-        positions[i * 3 + 2] = 0;
+        const x = position.x;
+        const y = position.y;
+        const z = 0;
+        positions[i * 3] = x;
+        positions[i * 3 + 1] = y;
+        positions[i * 3 + 2] = z;
+
+        // OPTIMIZATION: Build stack map during placement (not after!)
+        const positionKey = this.createPositionKey(x, y, z, POSITION_EPSILON);
+        if (!positionToNodesMap.has(positionKey)) {
+          positionToNodesMap.set(positionKey, []);
+        }
+        positionToNodesMap.get(positionKey)!.push(i);
       }
 
-      // Yield control for large graphs to keep UI responsive
-      if (count > 50000 && end < count) {
-        await new Promise(resolve => setTimeout(resolve, 0));
+      // Yield control and update progress for large graphs
+      if (end < count) {
+        if (showProgress) {
+          const progress = (end / count) * 100;
+          this.prismAPI.progressIndicator.updateProgress(progress);
+          this.prismAPI.progressIndicator.setStatus(`Positioning nodes: ${end.toLocaleString()} / ${count.toLocaleString()}`);
+        }
+        if (count > 50000) {
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
       }
     }
 
-    if (DEBUG) console.log(`[NodePlacement] Positioned ${count} nodes`);
+    console.log(`[NodePlacement] Positioned ${count.toLocaleString()} nodes`);
+    console.log(`[NodePlacement] Generated ${positionToNodesMap.size.toLocaleString()} unique positions (${((1 - positionToNodesMap.size / count) * 100).toFixed(1)}% reduction)`);
+
+    return positionToNodesMap;
   }
 
   /**
@@ -2604,38 +2723,40 @@ export class Graph2D {
    *
    * This is the core of the stack generation system.
    */
-  private deduplicateStackedNodes(
+  private async deduplicateStackedNodes(
     positions: Float32Array,
     colors: Float32Array,
     sizes: Float32Array
-  ): {
+  ): Promise<{
     positions: Float32Array;
     colors: Float32Array;
     sizes: Float32Array;
     geometryToNodesMap: Map<number, number[]>;
-  } {
+  }> {
     const startTime = performance.now();
     const nodeCount = positions.length / 3;
 
-    if (DEBUG) console.log(`[StackGeneration] Starting stack generation for ${nodeCount} nodes`);
+    console.log(`[StackGeneration] Using cached stack map from layout generation...`);
 
-    // ============================================================
-    // STEP 1: Group Nodes by Position
-    // ============================================================
-    const stacks = this.groupNodesByPosition(positions, nodeCount);
+    // Use the cached stack map created during node placement
+    const stacks = this.cachedStackMap!;
 
-    if (DEBUG) {
-      const stackCount = stacks.size;
-      const largestStack = Math.max(...Array.from(stacks.values()).map(nodes => nodes.length));
-      console.log(`[StackGeneration] Created ${stackCount} stacks from ${nodeCount} nodes`);
-      console.log(`[StackGeneration] Largest stack: ${largestStack} nodes`);
-      console.log(`[StackGeneration] Reduction: ${((1 - stackCount / nodeCount) * 100).toFixed(1)}%`);
+    const stackCount = stacks.size;
+    // Avoid spread operator for large datasets - use loop instead
+    let largestStack = 0;
+    for (const nodes of stacks.values()) {
+      if (nodes.length > largestStack) {
+        largestStack = nodes.length;
+      }
     }
+    console.log(`[StackGeneration] Using ${stackCount.toLocaleString()} stacks from ${nodeCount.toLocaleString()} nodes`);
+    console.log(`[StackGeneration] Largest stack: ${largestStack} nodes`);
+    console.log(`[StackGeneration] Reduction: ${((1 - stackCount / nodeCount) * 100).toFixed(1)}%`);
 
     // ============================================================
     // STEP 2: Create Geometry for Each Stack
     // ============================================================
-    const geometryData = this.createGeometryFromStacks(
+    const geometryData = await this.createGeometryFromStacksAsync(
       stacks,
       positions,
       colors,
@@ -2643,26 +2764,24 @@ export class Graph2D {
     );
 
     const elapsed = performance.now() - startTime;
-    if (PERFORMANCE && elapsed > 50) {
-      console.log(`[StackGeneration] Completed in ${elapsed.toFixed(0)}ms`);
-    }
+    this.lastStackGenTime = elapsed; // Store for final summary
+    console.log(`[StackGeneration] Geometry creation completed in ${elapsed.toFixed(0)}ms`);
 
     return geometryData;
   }
 
   /**
-   * Group nodes by their position in the coordinate system
+   * Group nodes by their position in the coordinate system (async version with yielding)
    * Returns a map from position key to array of node indices
    */
-  private groupNodesByPosition(
+  private async groupNodesByPositionAsync(
     positions: Float32Array,
     nodeCount: number
-  ): Map<string, number[]> {
+  ): Promise<Map<number, number[]>> {
     // Epsilon defines how close two positions must be to be considered "the same"
-    // This allows for floating-point precision issues
     const POSITION_EPSILON = 0.001;
 
-    const positionToNodesMap = new Map<string, number[]>();
+    const positionToNodesMap = new Map<number, number[]>();
 
     for (let nodeIndex = 0; nodeIndex < nodeCount; nodeIndex++) {
       const x = positions[nodeIndex * 3];
@@ -2670,10 +2789,41 @@ export class Graph2D {
       const z = positions[nodeIndex * 3 + 2];
 
       // Create a position key by rounding to epsilon precision
-      // This groups nearby positions together
       const positionKey = this.createPositionKey(x, y, z, POSITION_EPSILON);
 
       // Add node to the stack at this position
+      if (!positionToNodesMap.has(positionKey)) {
+        positionToNodesMap.set(positionKey, []);
+      }
+      positionToNodesMap.get(positionKey)!.push(nodeIndex);
+
+      // Yield to UI periodically for very large datasets
+      if (nodeIndex % 500000 === 0 && nodeIndex > 0) {
+        console.log(`[StackGeneration] Grouped ${nodeIndex.toLocaleString()} / ${nodeCount.toLocaleString()} nodes...`);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    return positionToNodesMap;
+  }
+
+  /**
+   * Group nodes by their position (sync version - kept for compatibility)
+   */
+  private groupNodesByPosition(
+    positions: Float32Array,
+    nodeCount: number
+  ): Map<number, number[]> {
+    const POSITION_EPSILON = 0.001;
+    const positionToNodesMap = new Map<number, number[]>();
+
+    for (let nodeIndex = 0; nodeIndex < nodeCount; nodeIndex++) {
+      const x = positions[nodeIndex * 3];
+      const y = positions[nodeIndex * 3 + 1];
+      const z = positions[nodeIndex * 3 + 2];
+
+      const positionKey = this.createPositionKey(x, y, z, POSITION_EPSILON);
+
       if (!positionToNodesMap.has(positionKey)) {
         positionToNodesMap.set(positionKey, []);
       }
@@ -2684,38 +2834,49 @@ export class Graph2D {
   }
 
   /**
-   * Create a unique string key for a position
+   * Create a unique numeric key for a position
    * Positions within epsilon distance will have the same key
+   * Uses bit-packing for performance (avoids string concatenation)
    */
   private createPositionKey(
     x: number,
     y: number,
     z: number,
     epsilon: number
-  ): string {
+  ): number {
     // Round each coordinate to epsilon precision
     const roundedX = Math.round(x / epsilon);
     const roundedY = Math.round(y / epsilon);
     const roundedZ = Math.round(z / epsilon);
 
-    return `${roundedX}:${roundedY}:${roundedZ}`;
+    // Pack into a single number using bit shifting (much faster than string concatenation)
+    // Assumes coordinates are within reasonable bounds (-1M to 1M)
+    // This gives us ~20 bits per coordinate
+    const OFFSET = 1000000; // Offset to handle negative numbers
+    const BITS_PER_COORD = 21;
+
+    const ux = (roundedX + OFFSET) & 0x1FFFFF; // 21 bits
+    const uy = (roundedY + OFFSET) & 0x1FFFFF; // 21 bits
+    const uz = (roundedZ + OFFSET) & 0x3FF;    // 10 bits (z is usually 0)
+
+    // Combine into 52-bit number (safe for JavaScript)
+    return (ux * 0x200000000) + (uy * 0x400) + uz;
   }
 
   /**
-   * Create deduplicated geometry arrays from stacks
-   * Each stack becomes one geometry point
+   * Create deduplicated geometry arrays from stacks (async version with yielding)
    */
-  private createGeometryFromStacks(
-    stacks: Map<string, number[]>,
+  private async createGeometryFromStacksAsync(
+    stacks: Map<number, number[]>,
     positions: Float32Array,
     colors: Float32Array,
     sizes: Float32Array
-  ): {
+  ): Promise<{
     positions: Float32Array;
     colors: Float32Array;
     sizes: Float32Array;
     geometryToNodesMap: Map<number, number[]>;
-  } {
+  }> {
     const stackCount = stacks.size;
 
     // Allocate arrays for deduplicated geometry
@@ -2725,9 +2886,10 @@ export class Graph2D {
     const geometryToNodesMap = new Map<number, number[]>();
 
     let geometryIndex = 0;
+    const stackValues = Array.from(stacks.values());
 
-    for (const nodeIndices of stacks.values()) {
-      // Use the first node in the stack as the representative
+    for (let i = 0; i < stackValues.length; i++) {
+      const nodeIndices = stackValues[i];
       const representativeNodeIndex = nodeIndices[0];
 
       // Copy position from representative node
@@ -2744,6 +2906,61 @@ export class Graph2D {
       deduplicatedSizes[geometryIndex] = sizes[representativeNodeIndex];
 
       // Store the mapping: geometry index -> all nodes at this position
+      geometryToNodesMap.set(geometryIndex, nodeIndices);
+
+      geometryIndex++;
+
+      // Yield to UI periodically for very large stack sets
+      if (i % 100000 === 0 && i > 0) {
+        console.log(`[StackGeneration] Created geometry for ${i.toLocaleString()} / ${stackCount.toLocaleString()} stacks...`);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    return {
+      positions: deduplicatedPositions,
+      colors: deduplicatedColors,
+      sizes: deduplicatedSizes,
+      geometryToNodesMap
+    };
+  }
+
+  /**
+   * Create deduplicated geometry arrays from stacks (sync version - kept for compatibility)
+   */
+  private createGeometryFromStacks(
+    stacks: Map<number, number[]>,
+    positions: Float32Array,
+    colors: Float32Array,
+    sizes: Float32Array
+  ): {
+    positions: Float32Array;
+    colors: Float32Array;
+    sizes: Float32Array;
+    geometryToNodesMap: Map<number, number[]>;
+  } {
+    const stackCount = stacks.size;
+
+    const deduplicatedPositions = new Float32Array(stackCount * 3);
+    const deduplicatedColors = new Float32Array(stackCount * 3);
+    const deduplicatedSizes = new Float32Array(stackCount);
+    const geometryToNodesMap = new Map<number, number[]>();
+
+    let geometryIndex = 0;
+
+    for (const nodeIndices of stacks.values()) {
+      const representativeNodeIndex = nodeIndices[0];
+
+      deduplicatedPositions[geometryIndex * 3]     = positions[representativeNodeIndex * 3];
+      deduplicatedPositions[geometryIndex * 3 + 1] = positions[representativeNodeIndex * 3 + 1];
+      deduplicatedPositions[geometryIndex * 3 + 2] = positions[representativeNodeIndex * 3 + 2];
+
+      deduplicatedColors[geometryIndex * 3]     = colors[representativeNodeIndex * 3];
+      deduplicatedColors[geometryIndex * 3 + 1] = colors[representativeNodeIndex * 3 + 1];
+      deduplicatedColors[geometryIndex * 3 + 2] = colors[representativeNodeIndex * 3 + 2];
+
+      deduplicatedSizes[geometryIndex] = sizes[representativeNodeIndex];
+
       geometryToNodesMap.set(geometryIndex, nodeIndices);
 
       geometryIndex++;
@@ -2824,8 +3041,8 @@ export class Graph2D {
   private groupGeometryPointsByPosition(
     positions: THREE.BufferAttribute,
     epsilon: number
-  ): Map<string, number[]> {
-    const positionToGeometryMap = new Map<string, number[]>();
+  ): Map<number, number[]> {
+    const positionToGeometryMap = new Map<number, number[]>();
 
     this.geometryToNodesMap.forEach((_nodeIndices, geometryIndex) => {
       const x = positions.getX(geometryIndex);
@@ -2852,7 +3069,7 @@ export class Graph2D {
    * Merge geometry stacks that are at the same position
    */
   private mergeGeometryStacks(
-    geometryStacksByPosition: Map<string, number[]>,
+    geometryStacksByPosition: Map<number, number[]>,
     _positions: THREE.BufferAttribute,
     alphas: THREE.BufferAttribute
   ): {
@@ -2912,14 +3129,14 @@ export class Graph2D {
     };
   }
 
-  private createPointCloud(
+  private async createPointCloud(
     geometry: THREE.BufferGeometry,
     positions: Float32Array,
     colors: Float32Array,
     sizes: Float32Array
-  ): void {
+  ): Promise<void> {
     // Deduplicate stacked nodes - only create one geometry point per unique position
-    const deduplicatedData = this.deduplicateStackedNodes(positions, colors, sizes);
+    const deduplicatedData = await this.deduplicateStackedNodes(positions, colors, sizes);
 
     geometry.setAttribute('position', new THREE.BufferAttribute(deduplicatedData.positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(deduplicatedData.colors, 3));
@@ -3592,8 +3809,8 @@ export class Graph2D {
    * Remove all transition (t-type) nodes and create direct edges between connected state (s-type) nodes
    */
   public async removeTransitionNodes(): Promise<void> {
-    this.ui.updateStatus('Removing transition nodes...');
-    this.prismAPI.progressIndicator.show({ title: 'Removing Transition Nodes' });
+    this.ui.updateStatus('Ignoring transition nodes...');
+    this.prismAPI.progressIndicator.show({ title: 'Ignoring Transition Nodes' });
     this.prismAPI.progressIndicator.updateProgress(0);
     this.prismAPI.progressIndicator.setStatus('Building node map...');
 
@@ -3664,7 +3881,7 @@ export class Graph2D {
 
       // Log warning if generating excessive edges
       if (newEdges.length > 100000) {
-        console.warn(`[Remove Transition Nodes] Creating ${newEdges.length.toLocaleString()} new edges - this may take some time`);
+        console.warn(`[Ignore Transition Nodes] Creating ${newEdges.length.toLocaleString()} new edges - this may take some time`);
       }
 
       // Filter out t-nodes and edges involving t-nodes
@@ -3711,20 +3928,20 @@ export class Graph2D {
 
       this.prismAPI.progressIndicator.updateProgress(100);
       this.prismAPI.progressIndicator.hide();
-      this.ui.updateStatus(`Removed ${tNodeIndices.size.toLocaleString()} transition nodes, added ${newEdges.length.toLocaleString()} new edges`);
+      this.ui.updateStatus(`Ignored ${tNodeIndices.size.toLocaleString()} transition nodes, added ${newEdges.length.toLocaleString()} new edges`);
     } catch (error) {
-      console.error('Error removing transition nodes:', error);
+      console.error('Error ignoring transition nodes:', error);
       this.prismAPI.progressIndicator.hide();
-      this.ui.showError('Failed to remove transition nodes');
+      this.ui.showError('Failed to ignore transition nodes');
     }
   }
 
   /**
-   * Remove all state (s-type) nodes and create direct edges between connected transition (t-type) nodes
+   * Ignore all state (s-type) nodes and create direct edges between connected transition (t-type) nodes
    */
   public async removeStateNodes(): Promise<void> {
-    this.ui.updateStatus('Removing state nodes...');
-    this.prismAPI.progressIndicator.show({ title: 'Removing State Nodes' });
+    this.ui.updateStatus('Ignoring state nodes...');
+    this.prismAPI.progressIndicator.show({ title: 'Ignoring State Nodes' });
     this.prismAPI.progressIndicator.updateProgress(0);
     this.prismAPI.progressIndicator.setStatus('Building node map...');
 
@@ -3795,7 +4012,7 @@ export class Graph2D {
 
       // Log warning if generating excessive edges
       if (newEdges.length > 100000) {
-        console.warn(`[Remove State Nodes] Creating ${newEdges.length.toLocaleString()} new edges - this may take some time`);
+        console.warn(`[Ignore State Nodes] Creating ${newEdges.length.toLocaleString()} new edges - this may take some time`);
       }
 
       // Filter out s-nodes and edges involving s-nodes
@@ -3842,11 +4059,11 @@ export class Graph2D {
 
       this.prismAPI.progressIndicator.updateProgress(100);
       this.prismAPI.progressIndicator.hide();
-      this.ui.updateStatus(`Removed ${sNodeIndices.size.toLocaleString()} state nodes, added ${newEdges.length.toLocaleString()} new edges`);
+      this.ui.updateStatus(`Ignored ${sNodeIndices.size.toLocaleString()} state nodes, added ${newEdges.length.toLocaleString()} new edges`);
     } catch (error) {
-      console.error('Error removing state nodes:', error);
+      console.error('Error ignoring state nodes:', error);
       this.prismAPI.progressIndicator.hide();
-      this.ui.showError('Failed to remove state nodes');
+      this.ui.showError('Failed to ignore state nodes');
     }
   }
 
@@ -4372,7 +4589,7 @@ export class Graph2D {
 
     // Performance optimization: Skip overlap labels for very large datasets
     const geometryMapSize = this.geometryToNodesMap.size;
-    const MAX_GEOMETRY_FOR_LABELS = 50000;
+    const MAX_GEOMETRY_FOR_LABELS = 1000000; // Increased from 50k to 1M for better large dataset support
 
     if (geometryMapSize > MAX_GEOMETRY_FOR_LABELS) {
       console.warn(`[updateOverlapLabels] Skipping overlap labels for performance (${geometryMapSize.toLocaleString()} geometry points > ${MAX_GEOMETRY_FOR_LABELS.toLocaleString()} limit)`);
@@ -5271,7 +5488,7 @@ export class Graph2D {
       }
 
       // Create point cloud
-      this.createPointCloud(geometry, positions, colors, sizes);
+      await this.createPointCloud(geometry, positions, colors, sizes);
 
       // Update state
       this.nodeCount = nodeCount;
