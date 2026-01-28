@@ -654,6 +654,55 @@ export class ProjectManager {
   }
 
   /**
+   * Mark parameters with zero variance that were automatically deselected
+   * Updates the UI to show red marking with "deselected because of zero variance" label
+   * @param zeroVarianceParams Array of parameter names in format "category::paramName"
+   */
+  private markZeroVarianceParameters(zeroVarianceParams: string[]): void {
+    if (!this.PCAOptionsContent) return;
+
+    console.log('[ProjectManager] Marking zero variance parameters as deselected:', zeroVarianceParams);
+
+    // Get all parameter rows
+    const rows = this.PCAOptionsContent.querySelectorAll('tr.pca-param-row');
+
+    rows.forEach(row => {
+      const rowElement = row as HTMLElement;
+      const nameCell = rowElement.querySelector('.pca-param-name') as HTMLElement;
+
+      // Get checkboxes to extract category and param name
+      const checkbox = rowElement.querySelector('.pca-param-checkbox') as HTMLInputElement;
+      if (!checkbox) return;
+
+      const category = checkbox.dataset.category || '';
+      const paramName = checkbox.dataset.paramName || '';
+      const fullParamName = `${category}::${paramName}`;
+
+      // Check if this parameter is in the zero variance list
+      if (zeroVarianceParams.includes(fullParamName)) {
+        // Mark the row with red background
+        rowElement.style.backgroundColor = '#ffcccc';
+        nameCell.style.color = '#cc0000';
+        nameCell.style.fontWeight = 'bold';
+
+        // Uncheck the checkbox to show it was deselected
+        checkbox.checked = false;
+
+        // Update the label to indicate it was deselected
+        if (!nameCell.textContent?.includes('deselected')) {
+          const originalText = nameCell.textContent?.replace(/^⚠\s*/, '').replace(/\s*\(.*?\)\s*$/, '') || paramName;
+          nameCell.textContent = '⚠ ' + originalText + ' (deselected because of zero variance)';
+        }
+
+        console.log(`[ProjectManager] Marked parameter as deselected due to zero variance: ${fullParamName}`);
+      }
+    });
+
+    // Update the Apply button state
+    this.updatePCAApplyButton();
+  }
+
+  /**
    * Handle Apply ML-PCA button click
    */
   private handleApplyMLPCA(): void {
@@ -708,18 +757,34 @@ export class ProjectManager {
 
     // Call the ML-PCA function on Graph2D
     try {
-      this.graph.doMLPCAWithSelection(selectedParams, center, scale);
+      const result = this.graph.doMLPCAWithSelection(selectedParams, center, scale);
 
       // Hide progress indicator
       this.prismAPI.progressIndicator.hide();
 
-      // Close PCA menu after successful application
-      const pcaMenu = document.getElementById('pca-menu');
-      if (pcaMenu) {
-        pcaMenu.classList.add('hidden');
-      }
+      if (result.success) {
+        // Mark zero variance parameters with updated label
+        if (result.zeroVarianceParams.length > 0) {
+          console.log('[ProjectManager] Marking zero variance parameters:', result.zeroVarianceParams);
+          this.markZeroVarianceParameters(result.zeroVarianceParams);
 
-      this.graph.ui.updateStatus('ML-PCA applied successfully');
+          // Show info message about auto-deselection
+          alert(`PCA applied successfully!\n\n${result.zeroVarianceParams.length} parameter(s) with zero variance were automatically deselected:\n${result.zeroVarianceParams.join(', ')}`);
+        }
+
+        // Close PCA menu after successful application
+        const pcaMenu = document.getElementById('pca-menu');
+        if (pcaMenu) {
+          pcaMenu.classList.add('hidden');
+        }
+
+        this.graph.ui.updateStatus('ML-PCA applied successfully');
+      } else {
+        // PCA failed but didn't throw an error (e.g., not enough params after filtering)
+        if (result.zeroVarianceParams.length > 0) {
+          this.markZeroVarianceParameters(result.zeroVarianceParams);
+        }
+      }
     } catch (error) {
       // Hide progress indicator on error
       this.prismAPI.progressIndicator.hide();
@@ -727,21 +792,7 @@ export class ProjectManager {
       console.error('[ProjectManager] ML-PCA failed:', error);
 
       const errorMsg = error instanceof Error ? error.message : String(error);
-
-      // Check if error contains list of problematic parameters (separated by |||)
-      if (errorMsg.includes('|||')) {
-        const parts = errorMsg.split('|||');
-        const userMessage = parts[0];
-        const problematicParams = parts.slice(1).filter(p => p.length > 0);
-
-        // Mark problematic parameters as red in the PCA selection dialog
-        this.markProblematicParameters(problematicParams);
-
-        // Show user-friendly alert with just the main message
-        alert(userMessage);
-      } else {
-        alert('ML-PCA failed: ' + errorMsg);
-      }
+      alert('ML-PCA failed: ' + errorMsg);
     }
   }
 

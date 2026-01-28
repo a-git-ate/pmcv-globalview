@@ -172,11 +172,18 @@ export class PrismAPI {
 
       const result = await this.convertNewFormatToInternal(data);
 
+      // CRITICAL: Clear source data to free memory after conversion
+      // This prevents 2x memory usage (parsed + converted)
+      data.nodes = null;
+      data.edges = null;
+      data = null;
+
       // Performance tracking: End timer for local processing
       if (PERFORMANCE) {
         const processingTime = performance.now() - processingStartTime;
         console.log(`[PERFORMANCE] Local processing (model preprocessing): ${processingTime.toFixed(2)}ms`);
         console.log(`[PERFORMANCE] Sum: ${(fetchTime + parseTime + processingTime).toFixed(2)}ms`)
+        console.log(`[MEMORY] Cleared source data after conversion to reduce memory footprint`);
       }
 
       // Clear abort controller and hide progress indicator when done
@@ -201,13 +208,26 @@ export class PrismAPI {
 
   /**
    * Stream-parse response body using @streamparser/json library
+   * Optimized for large datasets (8M+ nodes)
    */
   private async streamParseResponse(response: Response, estimatedSizeMB: number): Promise<any> {
     return new Promise(async (resolve, reject) => {
-      const result: any = { nodes: [], edges: [], info: null };
+      // Estimate node count from file size (rough: ~150 bytes per node in JSON)
+      // Add 20% buffer to reduce reallocation probability
+      const estimatedNodeCount = Math.floor((estimatedSizeMB * 1024 * 1024) / 150 * 1.2);
+
+      // Pre-allocate arrays with conservative initial size to avoid massive reallocation
+      const result: any = {
+        nodes: new Array(Math.min(estimatedNodeCount > 0 ? estimatedNodeCount : 1000000, 10000000)), // Cap at 10M initial
+        edges: new Array(Math.min(Math.floor(estimatedNodeCount * 1.5), 15000000)), // Pre-allocate edges too
+        info: null
+      };
+
+      let nodeIndex = 0;
+      let edgeIndex = 0;
 
       const parser = new JSONParser({
-        stringBufferSize: 64 * 1024, // 64KB buffer for large strings
+        stringBufferSize: 128 * 1024, // Increased to 128KB for better performance
         paths: ['$.nodes.*', '$.edges.*', '$.info'],
       });
 
@@ -219,14 +239,47 @@ export class PrismAPI {
         } else if (stack.length === 2) {
           const parentKey = stack[1]?.key;
           if (parentKey === 'nodes') {
-            result.nodes.push(value);
-            if (result.nodes.length % 10000 === 0) {
-              console.log(`[PrismAPI] Parsed ${result.nodes.length} nodes...`);
+            // Use direct index assignment instead of push for better performance
+            result.nodes[nodeIndex++] = value;
+
+            // Expand array if needed with larger chunks to reduce reallocations
+            if (nodeIndex >= result.nodes.length) {
+              // Use a more aggressive growth strategy for very large arrays
+              // For arrays < 1M: double size
+              // For arrays >= 1M: add 50% more
+              const currentLength = result.nodes.length;
+              const newSize = currentLength < 1000000
+                ? currentLength * 2
+                : Math.floor(currentLength * 1.5);
+
+              console.log(`[PrismAPI] Expanding node array from ${currentLength.toLocaleString()} to ${newSize.toLocaleString()}`);
+
+              // REVERT TO SIMPLE APPROACH: Just set length - V8 handles this efficiently
+              // The manual array copy was causing massive slowdown at 80%+
+              result.nodes.length = newSize;
+            }
+
+            if (nodeIndex % 50000 === 0) {
+              console.log(`[PrismAPI] Parsed ${nodeIndex.toLocaleString()} nodes...`);
             }
           } else if (parentKey === 'edges') {
-            result.edges.push(value);
-            if (result.edges.length % 10000 === 0) {
-              console.log(`[PrismAPI] Parsed ${result.edges.length} edges...`);
+            result.edges[edgeIndex++] = value;
+
+            // Expand edges array similarly
+            if (edgeIndex >= result.edges.length) {
+              const currentLength = result.edges.length;
+              const newSize = currentLength < 1000000
+                ? currentLength * 2
+                : Math.floor(currentLength * 1.5);
+
+              console.log(`[PrismAPI] Expanding edge array from ${currentLength.toLocaleString()} to ${newSize.toLocaleString()}`);
+
+              // REVERT TO SIMPLE APPROACH: Just set length - V8 handles this efficiently
+              result.edges.length = newSize;
+            }
+
+            if (edgeIndex % 50000 === 0) {
+              console.log(`[PrismAPI] Parsed ${edgeIndex.toLocaleString()} edges...`);
             }
           }
         }
@@ -238,7 +291,14 @@ export class PrismAPI {
       };
 
       parser.onEnd = () => {
-        console.log(`[PrismAPI] Stream parsing complete: ${result.nodes.length} nodes, ${result.edges.length} edges`);
+        // Trim arrays to actual size to free memory
+        // IMPORTANT: Use slice() to create new arrays and allow GC to reclaim unused space
+        result.nodes = result.nodes.slice(0, nodeIndex);
+        result.edges = result.edges.slice(0, edgeIndex);
+
+        console.log(`[PrismAPI] Stream parsing complete: ${nodeIndex.toLocaleString()} nodes, ${edgeIndex.toLocaleString()} edges`);
+        console.log(`[PrismAPI] Memory optimization: Pre-allocated ${estimatedNodeCount.toLocaleString()} slots, used ${nodeIndex.toLocaleString()}`);
+        console.log(`[PrismAPI] Trimmed arrays to exact size, freeing ${((estimatedNodeCount - nodeIndex) * 150).toLocaleString()} bytes estimate`);
         resolve(result);
       };
 
@@ -264,7 +324,7 @@ export class PrismAPI {
           const progressMB = bytesReceived / (1024 * 1024);
           const progressPercent = estimatedSizeMB > 0 ? (progressMB / estimatedSizeMB) * 100 : 0;
           this.progressIndicator.setStatus(
-            `Parsing JSON... ${progressMB.toFixed(1)}MB / ${estimatedSizeMB.toFixed(1)}MB (${result.nodes.length.toLocaleString()} nodes, ${result.edges.length.toLocaleString()} edges)`
+            `Parsing JSON... ${progressMB.toFixed(1)}MB / ${estimatedSizeMB.toFixed(1)}MB (${nodeIndex.toLocaleString()} nodes, ${edgeIndex.toLocaleString()} edges)`
           );
           if (estimatedSizeMB > 0) {
             this.progressIndicator.updateProgress(Math.min(100, progressPercent));
@@ -388,6 +448,10 @@ export class PrismAPI {
   }
 
   private async convertNewFormatToInternalMainThread(data: any): Promise<{ nodes: NodeData[]; edges: EdgeData[] }> {
+    // Log memory at start
+    const memStart = (performance as any).memory?.usedJSHeapSize || 0;
+    console.log(`[PrismAPI] Memory at conversion start: ${(memStart / 1024 / 1024).toFixed(2)}MB`);
+
     if (data.info) {
       console.log('[PrismAPI] Setting parameterMetadata from data.info');
       this.parameterMetadata = data.info;
@@ -396,12 +460,40 @@ export class PrismAPI {
 
     const idToIndex = new Map<string, number>();
 
-    // Filter s_nodes and t_nodes first
-    const s_nodes_raw = data.nodes.filter((node: any) => node.type === 's');
-    const t_nodes_raw = data.nodes.filter((node: any) => node.type === 't');
+    // MEMORY OPTIMIZATION: Process nodes in-place to avoid creating 4 large arrays simultaneously
+    // First, sort data.nodes in-place: s-nodes first, then t-nodes
+    // This allows us to process without creating intermediate arrays
 
-    // Pre-allocate the combined nodes array
-    const totalNodes = s_nodes_raw.length + t_nodes_raw.length;
+    const totalNodes = data.nodes.length;
+    console.log(`[PrismAPI] Sorting ${totalNodes.toLocaleString()} nodes in-place by type...`);
+
+    // Stable partition: move all s-nodes to front, t-nodes to back
+    // This is more memory-efficient than creating separate arrays
+    let writePos = 0;
+    const tNodes: any[] = [];
+
+    for (let i = 0; i < data.nodes.length; i++) {
+      if (data.nodes[i].type === 's') {
+        data.nodes[writePos++] = data.nodes[i];
+      } else if (data.nodes[i].type === 't') {
+        tNodes.push(data.nodes[i]);
+      }
+    }
+
+    const s_count = writePos;
+    const t_count = tNodes.length;
+
+    // Append t-nodes after s-nodes
+    for (let i = 0; i < tNodes.length; i++) {
+      data.nodes[s_count + i] = tNodes[i];
+    }
+
+    // Trim to actual size
+    data.nodes.length = s_count + t_count;
+
+    console.log(`[PrismAPI] Sorted: ${s_count.toLocaleString()} s-nodes, ${t_count.toLocaleString()} t-nodes`);
+
+    // Create output array
     const nodes: NodeData[] = new Array(totalNodes);
 
     console.log(`[PrismAPI] Converting ${totalNodes.toLocaleString()} nodes in a single pass...`);
@@ -439,8 +531,9 @@ export class PrismAPI {
     }
 
     // SINGLE PASS: Create s_nodes with their global indices AND collect metadata
-    for (let i = 0; i < s_nodes_raw.length; i++) {
-      const node = s_nodes_raw[i];
+    // Now data.nodes is sorted: [s-nodes][t-nodes]
+    for (let i = 0; i < s_count; i++) {
+      const node = data.nodes[i];
       const nodeId = String(node.id);
       const globalIndex = i;
 
@@ -504,9 +597,9 @@ export class PrismAPI {
     }
 
     // SINGLE PASS: Create t_nodes with their global indices AND collect metadata
-    const s_length = s_nodes_raw.length;
-    for (let i = 0; i < t_nodes_raw.length; i++) {
-      const node = t_nodes_raw[i];
+    const s_length = s_count;
+    for (let i = 0; i < t_count; i++) {
+      const node = data.nodes[s_count + i];
       const nodeId = String(node.id);
       const globalIndex = s_length + i;
 
@@ -636,6 +729,17 @@ export class PrismAPI {
     // Convert numeric nominal parameters
     this.convertNumericNominalParameters();
 
+    // CRITICAL MEMORY OPTIMIZATION: Clear data.nodes now that we've converted to NodeData[]
+    // This frees up the raw parsed JSON objects before we process edges
+    console.log('[PrismAPI] Clearing raw parsed data to free memory...');
+    const memBeforeClear = (performance as any).memory?.usedJSHeapSize || 0;
+    data.nodes.length = 0; // Clear the array to allow GC
+    data.nodes = null; // Remove reference
+    const memAfterClear = (performance as any).memory?.usedJSHeapSize || 0;
+    if (memBeforeClear > 0) {
+      console.log(`[PrismAPI] Memory before/after clearing nodes: ${(memBeforeClear / 1024 / 1024).toFixed(2)}MB -> ${(memAfterClear / 1024 / 1024).toFixed(2)}MB`);
+    }
+
     // Process edges and calculate degrees in a single pass
     console.log(`[PrismAPI] Processing ${data.edges.length.toLocaleString()} edges...`);
     this.progressIndicator.setStatus(`Processing edges...`);
@@ -667,7 +771,17 @@ export class PrismAPI {
       }
     }
 
+    // CRITICAL MEMORY OPTIMIZATION: Clear data.edges after processing
+    data.edges.length = 0;
+    data.edges = null;
+
+    const memEnd = (performance as any).memory?.usedJSHeapSize || 0;
     console.log(`[PrismAPI] Converted graph with ${nodes.length} nodes, ${edges.length} edges in single pass.`);
+    console.log('[PrismAPI] Cleared raw data - memory freed for GC');
+    if (memStart > 0) {
+      console.log(`[PrismAPI] Total memory delta: ${((memEnd - memStart) / 1024 / 1024).toFixed(2)}MB (start: ${(memStart / 1024 / 1024).toFixed(2)}MB, end: ${(memEnd / 1024 / 1024).toFixed(2)}MB)`);
+    }
+
     return { nodes, edges };
   }
 

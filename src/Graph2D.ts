@@ -28,8 +28,9 @@ export class Graph2D {
   // Graph data
   private nodes: NodeData[] = [];
   private edges: EdgeData[] = [];
-  private fullNodes : NodeData[] = [];
-  private fullEdges : EdgeData[] = [];
+  // REMOVED: fullNodes and fullEdges were unused duplicates causing 2x memory usage
+  // private fullNodes : NodeData[] = [];
+  // private fullEdges : EdgeData[] = [];
   private nodeCount: number = 0;
   private currentLayout: LayoutType = 'none';
   private loadedProjectId: string | null = null;
@@ -188,12 +189,14 @@ export class Graph2D {
     container.appendChild(this.renderer.domElement);
   }
 
+  // MEMORY OPTIMIZATION: Removed fullNodes/fullEdges duplicates
+  // These were storing the same references as this.nodes/this.edges
   public getFullNodes(): NodeData[] {
-    return this.fullNodes;
+    return this.nodes; // Return nodes directly (no duplication)
   }
 
   public getFullEdges(): EdgeData[] {
-    return this.fullEdges;
+    return this.edges; // Return edges directly (no duplication)
   }
 
   private setupCamera(): void {
@@ -307,21 +310,22 @@ export class Graph2D {
    * @param selectedParams Array of parameter objects with category, paramName, and nodeTypes
    * @param center Whether to center the data (subtract mean)
    * @param scale Whether to scale the data (standardize)
+   * @returns Object containing success status and any zero variance parameters that were auto-deselected
    */
   public doMLPCAWithSelection(
     selectedParams: Array<{category: string, paramName: string, nodeTypes: Set<'s' | 't'>}>,
     center: boolean = true,
     scale: boolean = true
-  ): void {
+  ): { success: boolean; zeroVarianceParams: string[] } {
     if (this.nodes.length === 0) {
       console.warn('[Graph2D] No nodes available for PCA');
-      return;
+      return { success: false, zeroVarianceParams: [] };
     }
 
     if (selectedParams.length < 2) {
       console.warn('[Graph2D] PCA requires at least 2 parameters');
       alert('Please select at least 2 parameters for PCA');
-      return;
+      return { success: false, zeroVarianceParams: [] };
     }
 
     if (STATUS) console.log('[Graph2D] ========== ML-PCA PERFORMANCE METRICS ==========');
@@ -329,6 +333,9 @@ export class Graph2D {
 
     const perfStart = performance.now();
     const memStart = (performance as any).memory ? (performance as any).memory.usedJSHeapSize : 0;
+
+    // Track zero variance parameters that were auto-removed during retry
+    let zeroVarianceParamsToReturn: string[] = [];
 
     // 1. Clear existing PCA data from all nodes
     this.prismAPI.progressIndicator.setStatus('Clearing previous PCA data...');
@@ -342,7 +349,7 @@ export class Graph2D {
 
     // 3. Build data matrix from selected nodes and parameters
     this.prismAPI.progressIndicator.setStatus('Building data matrix...');
-    const { dataMatrix, nodeIndices, parameterNames } = this.buildPCADataMatrix(
+    let { dataMatrix, nodeIndices, parameterNames } = this.buildPCADataMatrix(
       selectedParams,
       includeS,
       includeT
@@ -351,7 +358,7 @@ export class Graph2D {
     if (dataMatrix.length === 0) {
       console.warn('[Graph2D] No valid data for PCA');
       alert('No valid numeric data found for selected parameters');
-      return;
+      return { success: false, zeroVarianceParams: [] };
     }
 
     if (DEBUG) console.log(`[Graph2D] PCA data matrix: ${dataMatrix.length} nodes × ${parameterNames.length} parameters`);
@@ -370,7 +377,7 @@ export class Graph2D {
       console.error(`[Graph2D] ERROR: Data matrix contains ${nanCount} NaN values and ${infCount} infinite values!`);
       alert(`PCA data validation failed: Found ${nanCount} NaN and ${infCount} infinite values in the data matrix. Please check your parameter selections.`);
       this.prismAPI.progressIndicator.hide();
-      return;
+      return { success: false, zeroVarianceParams: [] };
     }
 
     // Check data variance
@@ -419,16 +426,75 @@ export class Graph2D {
           }
         }
 
-        // Throw error with details about problematic parameters
-        const errorDetail = problematicParams.length > 0
-          ? `The following parameters have zero variance (all values are identical): ${problematicParams.join(', ')}\n\nPlease deselect these parameters or disable scaling and try again.`
-          : errorMsg;
+        if (problematicParams.length > 0) {
+          console.log(`[Graph2D] Automatically deselecting ${problematicParams.length} zero variance parameters and retrying PCA...`);
 
-        throw new Error(`Cannot scale dataset: ${errorDetail}|||${problematicParams.join('|||')}`);
+          // Filter out problematic parameters from selectedParams
+          const filteredParams = selectedParams.filter(param => {
+            const fullParamName = `${param.category}::${param.paramName}`;
+            return !problematicParams.includes(fullParamName);
+          });
+
+          // Check if we still have enough parameters
+          if (filteredParams.length < 2) {
+            console.error('[Graph2D] Not enough valid parameters left after removing zero variance parameters');
+            alert(`Cannot perform PCA: ${problematicParams.length} parameter(s) have zero variance, and removing them leaves fewer than 2 parameters.\n\nZero variance parameters: ${problematicParams.join(', ')}`);
+            this.prismAPI.progressIndicator.hide();
+            return { success: false, zeroVarianceParams: problematicParams };
+          }
+
+          console.log(`[Graph2D] Retrying PCA with ${filteredParams.length} parameters (removed ${problematicParams.length} zero variance parameters)`);
+
+          // Don't clear PCA data again - just rebuild the data matrix with filtered params
+          // and continue from here
+          this.prismAPI.progressIndicator.setStatus('Rebuilding data matrix with valid parameters...');
+          const retryResult = this.buildPCADataMatrix(filteredParams, includeS, includeT);
+
+          if (retryResult.dataMatrix.length === 0) {
+            console.warn('[Graph2D] No valid data for PCA after filtering');
+            alert('No valid numeric data found for remaining parameters after removing zero variance parameters');
+            this.prismAPI.progressIndicator.hide();
+            return { success: false, zeroVarianceParams: problematicParams };
+          }
+
+          // Update variables with retry data
+          dataMatrix = retryResult.dataMatrix;
+          nodeIndices = retryResult.nodeIndices;
+          parameterNames = retryResult.parameterNames;
+
+          console.log(`[Graph2D] Retry data matrix: ${dataMatrix.length} nodes × ${parameterNames.length} parameters`);
+
+          // Try PCA again with the new data
+          this.prismAPI.progressIndicator.setStatus(`Computing PCA for ${dataMatrix.length.toLocaleString()} nodes...`);
+          try {
+            mlpca = new MLPCA(dataMatrix, { center: center, scale: scale });
+
+            // If successful, continue with the rest of the function (break out of error handling)
+            // We'll store the problematic params to return at the end
+            // Note: We don't return here, we let the function continue normally
+            console.log('[Graph2D] PCA retry succeeded with filtered parameters');
+          } catch (retryError) {
+            // If it still fails, give up
+            const retryErrorMsg = retryError instanceof Error ? retryError.message : String(retryError);
+            console.error('[Graph2D] PCA retry failed:', retryErrorMsg);
+            alert(`PCA failed even after removing zero variance parameters:\n${retryErrorMsg}`);
+            this.prismAPI.progressIndicator.hide();
+            return { success: false, zeroVarianceParams: problematicParams };
+          }
+
+          // Store problematic params to return at the end
+          zeroVarianceParamsToReturn = problematicParams;
+
+          // Continue to the rest of the function with the successful mlpca object
+          // Fall through to continue with normal PCA processing
+        } else {
+          // If no problematic params identified, throw original error
+          throw new Error(`Cannot scale dataset: ${errorMsg}`);
+        }
+      } else {
+        // Re-throw if it's a different error
+        throw error;
       }
-
-      // Re-throw if it's a different error
-      throw error;
     }
 
     const pcaEnd = performance.now();
@@ -465,7 +531,7 @@ export class Graph2D {
       console.error('[Graph2D] ERROR: Invalid eigenvalues detected:', eigenvalues.slice(0, 3));
       alert('PCA computation failed: Invalid eigenvalues detected. This may be due to insufficient data variance or numerical instability. Try selecting different parameters or disabling scaling.');
       this.prismAPI.progressIndicator.hide();
-      return;
+      return { success: false, zeroVarianceParams: [] };
     }
 
     // Check for NaN or invalid eigenvectors
@@ -481,7 +547,7 @@ export class Graph2D {
       console.error('[Graph2D] ERROR: Invalid eigenvectors detected');
       alert('PCA computation failed: Invalid eigenvectors detected. This may be due to insufficient data variance or numerical instability. Try selecting different parameters or disabling scaling.');
       this.prismAPI.progressIndicator.hide();
-      return;
+      return { success: false, zeroVarianceParams: [] };
     }
 
     const totalVariance = cumulativeVariance[Math.min(2, cumulativeVariance.length - 1)] * 100;
@@ -499,7 +565,7 @@ export class Graph2D {
     if (pcData.columns < 3) {
       console.error('[Graph2D] ML-PCA did not generate enough principal components');
       alert('ML-PCA failed: not enough principal components generated');
-      return;
+      return { success: false, zeroVarianceParams: [] };
     }
 
     // Extract first 3 PCs for each node
@@ -525,7 +591,7 @@ export class Graph2D {
       console.error(`[Graph2D] ERROR: ${pcDataNaNCount} nodes have NaN values in their PC coordinates`);
       alert(`PCA computation produced ${pcDataNaNCount} nodes with invalid coordinates. This may be due to numerical instability. Try disabling scaling or selecting different parameters.`);
       this.prismAPI.progressIndicator.hide();
-      return;
+      return { success: false, zeroVarianceParams: [] };
     }
 
     if (STATUS) console.log('[Graph2D] ML-PCA PC data dimensions:', pcDataForNodes.length, 'x', pcDataForNodes[0]?.length);
@@ -569,6 +635,8 @@ export class Graph2D {
     }
     if (PERFORMANCE) console.log('[Graph2D] [PERF] ================================================');
     if (STATUS) console.log('[Graph2D] ML-PCA complete');
+
+    return { success: true, zeroVarianceParams: zeroVarianceParamsToReturn };
   }
 
   /**
@@ -1072,8 +1140,7 @@ export class Graph2D {
         //if (PERFORMANCE) console.log(`[Performance] API fetch: ${(performance.now() - fetchStart).toFixed(2)}ms`);
         this.nodes = graphData.nodes;
         this.edges = graphData.edges;
-        this.fullNodes = graphData.nodes;
-        this.fullEdges = graphData.edges;
+        // REMOVED: fullNodes/fullEdges assignments (memory optimization)
       } else {
         this.nodes = filteredNodes;
         this.edges = filteredEdges;
@@ -1169,8 +1236,7 @@ export class Graph2D {
       // Store the data but don't render yet
       this.nodes = graphData.nodes;
       this.edges = graphData.edges;
-      this.fullNodes = graphData.nodes;
-      this.fullEdges = graphData.edges;
+      // REMOVED: fullNodes/fullEdges assignments (memory optimization)
       this.loadedProjectId = graphId;
       this.nodeCount = this.nodes.length;
 
@@ -1207,8 +1273,7 @@ export class Graph2D {
       // Store the data but don't render yet
       this.nodes = nodes;
       this.edges = edges;
-      this.fullNodes = nodes;
-      this.fullEdges = edges;
+      // REMOVED: fullNodes/fullEdges assignments (memory optimization)
       this.loadedProjectId = projectName;
       this.nodeCount = this.nodes.length;
 
@@ -1245,6 +1310,21 @@ export class Graph2D {
     this.ui.disableButtons();
 
     try {
+      // CRITICAL: Dispose old geometry before creating new one to prevent memory leaks
+      if (this.pointCloud) {
+        if (this.pointCloud.geometry) {
+          this.pointCloud.geometry.dispose();
+        }
+        if (this.pointCloud.material instanceof THREE.Material) {
+          this.pointCloud.material.dispose();
+        }
+        this.scene.remove(this.pointCloud);
+        this.pointCloud = null;
+      }
+
+      // Clear edge lines as well
+      this.clearEdgeLines();
+
       const nodeCount = this.nodes.length;
 
       // Create geometry arrays
@@ -1271,7 +1351,8 @@ export class Graph2D {
       if (this.config.useParameterPositioning && this.config.parameterXAxis && this.config.parameterYAxis) {
         const xParam = this.config.parameterXAxis;
         const yParam = this.config.parameterYAxis;
-        const alphas = this.pointCloud?.geometry.getAttribute('alpha') as THREE.BufferAttribute;
+        // pointCloud is created by createPointCloud above, safe to access here
+        const alphas = this.pointCloud!.geometry.getAttribute('alpha') as THREE.BufferAttribute;
 
         if (alphas) {
           let visibleCount = 0;
@@ -2027,6 +2108,20 @@ export class Graph2D {
   // Map parameter value to viridis color using linear interpolation
   // Uses dynamic range based on actual min/max values in the dataset
   private getColorFromParameter(value: number, minValue: number, maxValue: number): { r: number; g: number; b: number } {
+    // Safety check: ensure viridisColors array is not empty
+    if (!this.viridisColors || this.viridisColors.length === 0) {
+      console.error('[Graph2D] viridisColors array is empty or undefined');
+      return { r: 0.5, g: 0.5, b: 0.5 }; // Return gray as fallback
+    }
+
+    // Handle invalid input values - return middle color without logging
+    // (Some nodes may not have the parameter being visualized, which is expected)
+    if (!isFinite(value) || !isFinite(minValue) || !isFinite(maxValue)) {
+      // Return middle color from viridis scale
+      const midIndex = Math.floor(this.viridisColors.length / 2);
+      return this.viridisColors[midIndex];
+    }
+
     // Normalize value to [0, 1] range based on actual data range
     const range = maxValue - minValue;
     const normalizedValue = range > 0 ? (value - minValue) / range : 0.5;
@@ -2041,6 +2136,12 @@ export class Graph2D {
     // Linear interpolation between two color stops
     const colorLower = this.viridisColors[lowerIndex];
     const colorUpper = this.viridisColors[upperIndex];
+
+    // Safety check: ensure colors exist at these indices
+    if (!colorLower || !colorUpper) {
+      console.error('[Graph2D] Color not found at indices:', { lowerIndex, upperIndex, arrayLength: this.viridisColors.length });
+      return { r: 0.5, g: 0.5, b: 0.5 }; // Return gray as fallback
+    }
 
     return {
       r: colorLower.r + (colorUpper.r - colorLower.r) * t,
@@ -3211,6 +3312,8 @@ export class Graph2D {
    * This is called when switching projects to ensure a clean slate
    */
   public clearGraphCanvas(): void {
+    console.log('[Graph2D] Clearing canvas and freeing memory...');
+
     // Clear all graph elements
     this.clearPointCloud();
     this.clearEdgeLines();
@@ -3218,12 +3321,24 @@ export class Graph2D {
     this.clearAxisVisualization();
     this.clearOverlapLabels();
 
-    // Reset data arrays
+    // CRITICAL: Clear cached stack map to free memory
+    if (this.cachedStackMap) {
+      this.cachedStackMap.clear();
+      this.cachedStackMap = null;
+      console.log('[Graph2D] Cleared cached stack map');
+    }
+
+    // Clear geometry mapping
+    this.geometryToNodesMap.clear();
+
+    // Reset data arrays - set to empty to allow GC
     this.nodes = [];
     this.edges = [];
-    this.fullNodes = [];
-    this.fullEdges = [];
-    this.geometryToNodesMap.clear();
+    // REMOVED: fullNodes/fullEdges assignments (memory optimization)
+
+    // Clear PCA results cache
+    this.pcaResults = null;
+    this.currentAxisInfo = null;
 
     // Reset camera and zoom
     this.panOffset.set(0, 0);
@@ -3236,7 +3351,13 @@ export class Graph2D {
       this.renderer.render(this.scene, this.camera);
     }
 
-    console.log('[Graph2D] Canvas cleared - ready for new project');
+    // Force garbage collection hint (non-standard, but Chrome respects it)
+    if ((window as any).gc) {
+      console.log('[Graph2D] Requesting garbage collection...');
+      (window as any).gc();
+    }
+
+    console.log('[Graph2D] Canvas cleared - memory freed - ready for new project');
   }
 
   public applyLayout(layoutType: LayoutType): void {
@@ -4598,16 +4719,19 @@ export class Graph2D {
 
     const startTime = performance.now();
     let processedCount = 0;
-    const TIMEOUT_MS = 1000; // 1 second timeout to prevent freeze
+    const TIMEOUT_MS = 5000; // 5 second timeout to prevent freeze (increased for large datasets)
     let timedOut = false;
 
     // Use the existing geometryToNodesMap which already has deduplicated positions
     this.geometryToNodesMap.forEach((nodeIndices, geometryIndex) => {
-      // Performance check: stop if taking too long
-      if (++processedCount % 100 === 0) {
+      // Performance check: stop if taking too long (check every 10000 points to reduce overhead)
+      if (++processedCount % 10000 === 0) {
         const elapsed = performance.now() - startTime;
         if (elapsed > TIMEOUT_MS) {
-          if (PERFORMANCE) console.warn(`[updateOverlapLabels] Timed out after processing ${processedCount}/${geometryMapSize} geometry points (${elapsed.toFixed(0)}ms)`);
+          // Only log once when first timing out
+          if (!timedOut && PERFORMANCE) {
+            console.warn(`[updateOverlapLabels] Timed out after processing ${processedCount}/${geometryMapSize} geometry points (${elapsed.toFixed(0)}ms)`);
+          }
           timedOut = true;
           return;
         }
@@ -5278,6 +5402,18 @@ export class Graph2D {
         minColor = Math.min(minColor, colorValue);
         maxColor = Math.max(maxColor, colorValue);
       }
+    }
+
+    // Check if we found valid color values
+    if (!isFinite(minColor) || !isFinite(maxColor)) {
+      console.warn(`[Graph2D] No valid numeric values found for color parameter: ${colorParamIndex}`);
+      // Fall back to grey for all nodes
+      for (let i = 0; i < this.nodes.length; i++) {
+        colors.setXYZ(i, 0.5, 0.5, 0.5);
+      }
+      colors.needsUpdate = true;
+      this.ui.updateStatus(`No valid values for color parameter ${colorParamIndex}`);
+      return;
     }
 
     // Apply colors
