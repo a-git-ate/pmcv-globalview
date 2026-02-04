@@ -1,4 +1,3 @@
-import { getRandomValues } from 'crypto';
 import type { Graph2D } from './Graph2D.ts';
 import type { LayoutType } from './types';
 
@@ -347,7 +346,6 @@ export class UIManager {
     this.addClickListener('btn-force-directed', () => this.graph.applyLayout('force'));
 
     // View control buttons
-    this.addClickListener('btn-lod', () => this.graph.toggleLOD());
     this.addClickListener('btn-edges', () => this.graph.toggleEdges());
     this.addClickListener('btn-reset', () => this.graph.resetView());
     this.addClickListener('btn-clusters', () => this.graph.toggleClusters());

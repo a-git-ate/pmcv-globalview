@@ -126,11 +126,13 @@ export class PrismAPI {
 
       const fetchEnd = performance.now()
       const fetchTime = fetchEnd-fetchStart;
-      console.log(`[PERFORMANCE] Fetched Graph in ${fetchTime.toFixed(2)}ms`);
 
       // Determine if we should use streaming based on content length
       const contentLength = response.headers.get('content-length');
       const estimatedSizeMB = contentLength ? parseInt(contentLength) / (1024 * 1024) : 0;
+
+      // Log fetch/download performance
+      console.log(`[PERFORMANCE] Fetch complete: ${fetchTime.toFixed(2)}ms (${estimatedSizeMB.toFixed(2)}MB downloaded)`);
       const USE_STREAMING_THRESHOLD_MB = 50; // Use streaming for responses > 50MB
 
       let data: any;
@@ -181,8 +183,15 @@ export class PrismAPI {
       // Performance tracking: End timer for local processing
       if (PERFORMANCE) {
         const processingTime = performance.now() - processingStartTime;
+        const totalTime = fetchTime + parseTime + processingTime;
+
         console.log(`[PERFORMANCE] Local processing (model preprocessing): ${processingTime.toFixed(2)}ms`);
-        console.log(`[PERFORMANCE] Sum: ${(fetchTime + parseTime + processingTime).toFixed(2)}ms`)
+        console.log(`[PERFORMANCE] ============================================`);
+        console.log(`[PERFORMANCE] Total graph loading time: ${totalTime.toFixed(2)}ms`);
+        console.log(`[PERFORMANCE]   - Fetch/Download: ${fetchTime.toFixed(2)}ms (${((fetchTime/totalTime)*100).toFixed(1)}%)`);
+        console.log(`[PERFORMANCE]   - JSON Parsing:   ${parseTime.toFixed(2)}ms (${((parseTime/totalTime)*100).toFixed(1)}%)`);
+        console.log(`[PERFORMANCE]   - Processing:     ${processingTime.toFixed(2)}ms (${((processingTime/totalTime)*100).toFixed(1)}%)`);
+        console.log(`[PERFORMANCE] ============================================`);
         console.log(`[MEMORY] Cleared source data after conversion to reduce memory footprint`);
       }
 

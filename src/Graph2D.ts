@@ -14,7 +14,7 @@ import type {
 import { min } from 'three/examples/jsm/nodes/Nodes.js';
 
 // Global logging configuration
-const DEBUG = true;        // Enable/disable debug logs
+const DEBUG = false;        // Enable/disable debug logs
 const PERFORMANCE = true;  // Enable/disable performance logs
 const STATUS = false;        // Enable/disable status logs
 
@@ -108,7 +108,6 @@ export class Graph2D {
       renderDistance: 500,
       minZoom: 0.001, // Allow zooming out much further (was 0.1)
       maxZoom: 10000.0, // Allow extreme zoom in (was 100.0)
-      lodEnabled: true,
       edgesVisible: true, // Show edges by default
       clusterMode: false,
       forceStrength: 0.1,
@@ -1064,63 +1063,6 @@ export class Graph2D {
   }
 
 
-  public async generateNodes(count: number): Promise<void> {
-    this.ui.updateStatus(`Generating ${count.toLocaleString()} nodes in 2D...`);
-    this.ui.disableButtons();
-
-    try {
-      // Clear existing nodes and edges
-      this.clearPointCloud();
-      this.clearEdgeLines();
-      this.nodes = [];
-      this.edges = [];
-
-      // Reset parameter centers for new random distribution
-      this.parameterCenters = null;
-
-      // Create geometry arrays
-      const geometry = new THREE.BufferGeometry();
-      const positions = new Float32Array(count * 3);
-      const colors = new Float32Array(count * 3);
-      const sizes = new Float32Array(count);
-
-      // Generate random edges first
-      this.generateRandomEdges(count);
-      if (STATUS) console.log(`[Generate Nodes] Created ${this.edges.length} random edges for ${count} nodes`);
-      
-      // Generate layout based on connectivity
-      await this.generateLayout(count, positions, colors, sizes);
-
-      // Create edge lines if edges are visible
-      // Note: edges default to hidden for better performance
-      if (this.config.edgesVisible) {
-        this.createEdgeLines();
-      } else {
-        if (STATUS) console.log(`[Generate Nodes] ${this.edges.length} edges created but hidden (use Toggle Edges to show)`);
-      }
-
-      // Create point cloud
-      await this.createPointCloud(geometry, positions, colors, sizes);
-
-      // Update state
-      this.nodeCount = count;
-      this.ui.updateNodeCount(count);
-      this.updateVisibleNodeCounter(count);
-      this.resetView();
-
-      // Apply default type-based coloring
-      this.applyColorParameter('__type__');
-
-      this.ui.updateStatus(`${count.toLocaleString()} 2D nodes ready`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to generate nodes';
-      this.ui.showError(message);
-    } finally {
-      this.ui.enableButtons();
-    }
-  }
-
-
   public async loadGraph(graphId: string = '0', filteredNodes?: NodeData[], filteredEdges?: EdgeData[]): Promise<void> {
     const startTime = performance.now();
     this.ui.updateStatus('Fetching graph data from API...');
@@ -1910,174 +1852,6 @@ export class Graph2D {
     }
   }
 
-
-  //random layout
-  private async generateLayout(
-    count: number,
-    positions: Float32Array,
-    colors: Float32Array,
-    sizes: Float32Array
-  ): Promise<void> {
-    const spread = Math.sqrt(count) * 0.5;
-
-    // Pre-allocate array for better performance
-    this.nodes = new Array(count);
-
-    // Initialize nodes with parameters in batches for large graphs
-    const batchSize = 50000;
-    for (let batch = 0; batch < count; batch += batchSize) {
-      const end = Math.min(batch + batchSize, count);
-
-      for (let i = batch; i < end; i++) {
-        this.nodes[i] = {
-          id: i,
-          x: 0, // Will be set below
-          y: 0, // Will be set below
-          radius: 0,
-          cluster: Math.floor(i / Math.max(1, count / 10)) % 10,
-          type: 's', // Todo: s/t typing
-          parameters: this.generateNodeParameters()
-        };
-      }
-
-      // Yield control for large graphs to keep UI responsive
-      if (count > 50000 && end < count) {
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-    }
-
-    // Calculate min/max parameter values if using parameter positioning
-    let minX = 0, maxX = 100;
-    let minY = 0, maxY = 100;
-
-    if (this.config.useParameterPositioning) {
-      const xParamIndex = this.config.parameterXAxis ?? "";
-      const yParamIndex = this.config.parameterYAxis ?? "";
-
-      // Use cached min/max values from PrismAPI (calculated during data loading)
-      const xRange = this.prismAPI.getParameterMinMax(xParamIndex);
-      const yRange = this.prismAPI.getParameterMinMax(yParamIndex);
-
-      if (xRange) {
-        minX = xRange.min;
-        maxX = xRange.max;
-      } else {
-        // Fallback: calculate from nodes (shouldn't happen for API-loaded data)
-        minX = Infinity;
-        maxX = -Infinity;
-        for (let i = 0; i < count; i++) {
-          const valRaw = PrismAPI.getParameterValue(this.nodes[i], xParamIndex);
-          const val = this.convertParameterValueToNumber(valRaw);
-          if (!isNaN(val) && isFinite(val)) {
-            minX = Math.min(minX, val);
-            maxX = Math.max(maxX, val);
-          }
-        }
-      }
-
-      if (yRange) {
-        minY = yRange.min;
-        maxY = yRange.max;
-      } else {
-        // Fallback: calculate from nodes (shouldn't happen for API-loaded data)
-        minY = Infinity;
-        maxY = -Infinity;
-        for (let i = 0; i < count; i++) {
-          const valRaw = PrismAPI.getParameterValue(this.nodes[i], yParamIndex);
-          const val = this.convertParameterValueToNumber(valRaw);
-          if (!isNaN(val) && isFinite(val)) {
-            minY = Math.min(minY, val);
-            maxY = Math.max(maxY, val);
-          }
-        }
-      }
-    }
-
-    // Now position all nodes
-    for (let i = 0; i < count; i++) {
-      const nodeData = this.nodes[i];
-
-      // Calculate position based on parameters or layout
-      let position: THREE.Vector2;
-      if (this.config.useParameterPositioning) {
-        position = this.calculateParameterPosition(
-          nodeData,
-          spread,
-          { x: minX, y: minY },
-          { x: maxX, y: maxY }
-        );
-      } else {
-        position = this.calculateNodePosition(i, count, spread);
-      }
-
-      // Update node position
-      nodeData.x = position.x;
-      nodeData.y = position.y;
-
-      // Set initial positions array
-      positions[i * 3] = position.x;
-      positions[i * 3 + 1] = position.y;
-      positions[i * 3 + 2] = 0;
-    }
-    
-    // Apply force-directed layout if selected
-    if (this.currentLayout === 'force') {
-      this.ui.updateStatus('Computing force-directed layout...');
-      this.applyForceDirectedLayout(count, positions, spread);
-    }
-    
-    // // Pre-calculate color table for common degree values to avoid creating Color objects
-    // const colorCache = new Map<number, { r: number; g: number; b: number }>();
-    // const getColorForDegree = (degree: number): { r: number; g: number; b: number } => {
-    //   const key = Math.min(degree, 20); // Cap at 20 for cache efficiency
-    //   if (!colorCache.has(key)) {
-    //     const hue = key > 0 ? Math.min(0.3, key * 0.05) : 0.6;
-    //     const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
-    //     colorCache.set(key, { r: color.r, g: color.g, b: color.b });
-    //   }
-    //   return colorCache.get(key)!;
-    // };
-
-    // // Update colors and sizes based on final positions and connectivity
-    // for (let i = 0; i < count; i++) {
-    //   const x = positions[i * 3];
-    //   const y = positions[i * 3 + 1];
-
-    //   const size = this.calculateNodeSize(x, y, spread);
-
-    //   // Adjust size based on node degree (connectivity)
-    //   const degree = (this.nodes[i] as any).degree || 0;
-    //   const adjustedSize = size + (degree * 0.2);
-
-    //   this.nodes[i].radius = adjustedSize;
-
-    //   // Set colors array - color based on connectivity (using cache)
-    //   const color = getColorForDegree(degree);
-    //   colors[i * 3] = color.r;
-    //   colors[i * 3 + 1] = color.g;
-    //   colors[i * 3 + 2] = color.b;
-
-    //   // Set sizes array
-    //   sizes[i] = adjustedSize;
-    // }
-  }
-
-  // Gaussian distribution generator using Box-Muller transform
-  private generateGaussian(mean: number = 50, stdDev: number = 15): number {
-    let u = 0, v = 0;
-    while(u === 0) u = Math.random(); // Converting [0,1) to (0,1)
-    while(v === 0) v = Math.random();
-
-    const normal = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-    const value = mean + stdDev * normal;
-
-    // No clamping - allow full Gaussian distribution
-    return value;
-  }
-
-  // Random center points for each parameter (shared across all nodes)
-  private parameterCenters: number[] | null = null;
-
   // Viridis color scale - excellent for ordinal/sequential data
   // 6 distinct colors with larger perceptual differences
   private viridisColors = [
@@ -2088,22 +1862,6 @@ export class Graph2D {
     { r: 0.477504, g: 0.821444, b: 0.318195 }, // Yellow-green
     { r: 0.993248, g: 0.906157, b: 0.143936 }  // Bright yellow
   ];
-
-  // Initialize random center points for parameters
-  private initializeParameterCenters(): void {
-    this.parameterCenters = [
-      Math.random() * 100, // Parameter 0 center
-      Math.random() * 100, // Parameter 1 center
-      Math.random() * 100, // Parameter 2 center
-      Math.random() * 100, // Parameter 3 center
-      Math.random() * 100, // Parameter 4 center
-      Math.random() * 100, // Parameter 5 center
-      Math.random() * 100, // Parameter 6 center
-      Math.random() * 100, // Parameter 7 center
-      Math.random() * 100, // Parameter 8 center
-      Math.random() * 100  // Parameter 9 center
-    ];
-  }
 
   // Map parameter value to viridis color using linear interpolation
   // Uses dynamic range based on actual min/max values in the dataset
@@ -2148,24 +1906,6 @@ export class Graph2D {
       g: colorLower.g + (colorUpper.g - colorLower.g) * t,
       b: colorLower.b + (colorUpper.b - colorLower.b) * t
     };
-  }
-
-  // Random Generation: Generate 10 parameters with Gaussian distribution for a node
-  private generateNodeParameters(): [number, number, number, number, number, number, number, number, number, number] {
-    // Initialize centers if not already done
-    if (!this.parameterCenters) {
-      this.initializeParameterCenters();
-    }
-
-    const parameters: [number, number, number, number, number, number, number, number, number, number] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    const stdDev = 15; // Standard deviation for all parameters
-
-    for (let i = 0; i < 10; i++) {
-      // Use the shared center point for this parameter
-      parameters[i] = this.generateGaussian(this.parameterCenters![i], stdDev);
-    }
-
-    return parameters;
   }
 
   /**
@@ -2306,51 +2046,6 @@ export class Graph2D {
     return baseSize;
   }
 
-  private generateRandomEdges(nodeCount: number): void {
-    // Generate 0.5x as many edges as nodes (moderate connectivity)
-    const edgeCount = Math.min(Math.floor(nodeCount * 0.5), nodeCount * (nodeCount - 1) / 2);
-    this.edges = [];
-
-    // Use Sets for O(1) duplicate detection instead of arrays
-    const connectionSets: Set<number>[] = Array(nodeCount).fill(null).map(() => new Set());
-    const edgeSet = new Set<string>(); // Track edges as "from-to" strings
-
-    let edgesCreated = 0;
-    let attempts = 0;
-    const maxAttempts = edgeCount * 10; // Avoid infinite loops
-
-    while (edgesCreated < edgeCount && attempts < maxAttempts) {
-      attempts++;
-
-      const from = Math.floor(Math.random() * nodeCount);
-      const to = Math.floor(Math.random() * nodeCount);
-
-      // Skip self-loops
-      if (from === to) continue;
-
-      // Create canonical edge key (smaller index first for undirected)
-      const edgeKey = from < to ? `${from}-${to}` : `${to}-${from}`;
-
-      // Skip if edge already exists
-      if (edgeSet.has(edgeKey)) continue;
-
-      // Add the edge
-      this.edges.push({ from, to});
-      edgeSet.add(edgeKey);
-      connectionSets[from].add(to);
-      connectionSets[to].add(from);
-      edgesCreated++;
-    }
-
-    if (STATUS) console.log(`[generateRandomEdges] Successfully created ${edgesCreated} edges for ${nodeCount} nodes`);
-
-    // Convert Sets back to arrays for node data
-    this.nodes.forEach((node, index) => {
-      const connectionsArray = Array.from(connectionSets[index]);
-      (node as any).connections = connectionsArray;
-      (node as any).degree = connectionsArray.length;
-    });
-  }
 
   private applyForceDirectedLayout(_nodeCount: number, positions: Float32Array, spread: number): void {
     const nodeCount = this.nodes.length;
@@ -4387,11 +4082,6 @@ export class Graph2D {
     }
   }
 
-  public toggleLOD(): void {
-    this.config.lodEnabled = !this.config.lodEnabled;
-    this.ui.updateStatus(`LOD ${this.config.lodEnabled ? 'enabled' : 'disabled'}`);
-  }
-
   public toggleEdges(): void {
     this.config.edgesVisible = !this.config.edgesVisible;
 
@@ -5045,11 +4735,30 @@ export class Graph2D {
     // otherwise snap to screen edges for visibility
     const axisOffset = viewHeight * 0.01;
 
+    // Calculate visible parameter ranges for interval calculation
+    const visibleMinX = this.worldToParam(viewLeft, minValues.x, maxValues.x, spread);
+    const visibleMaxX = this.worldToParam(viewRight, minValues.x, maxValues.x, spread);
+    const visibleMinY = this.worldToParam(viewBottom, minValues.y, maxValues.y, spread);
+    const visibleMaxY = this.worldToParam(viewTop, minValues.y, maxValues.y, spread);
+    const visibleXParamRange = visibleMaxX - visibleMinX;
+    const visibleYParamRange = visibleMaxY - visibleMinY;
+
+    // Calculate nice intervals to determine axis extension
+    const xParamInterval = this.calculateNiceParameterInterval(visibleXParamRange);
+    const yParamInterval = this.calculateNiceParameterInterval(visibleYParamRange);
+
     // Calculate world positions of minimum parameter values
     const minXWorldPos = this.paramToWorld(minValues.x, minValues.x, maxValues.x, spread);
     const minYWorldPos = this.paramToWorld(minValues.y, minValues.y, maxValues.y, spread);
     const maxXWorldPos = this.paramToWorld(maxValues.x, minValues.x, maxValues.x, spread);
     const maxYWorldPos = this.paramToWorld(maxValues.y, minValues.y, maxValues.y, spread);
+
+    // Calculate the position of the last tick (first multiple of interval >= maxValues)
+    // This is where the axis should end
+    const lastXTick = Math.ceil(maxValues.x / xParamInterval) * xParamInterval;
+    const lastYTick = Math.ceil(maxValues.y / yParamInterval) * yParamInterval;
+    const lastXTickWorldPos = this.paramToWorld(lastXTick, minValues.x, maxValues.x, spread);
+    const lastYTickWorldPos = this.paramToWorld(lastYTick, minValues.y, maxValues.y, spread);
 
     // Y-axis positioning: Use minValues.x position if visible, otherwise snap to viewLeft
     let yAxisX: number;
@@ -5071,17 +4780,19 @@ export class Graph2D {
       xAxisY = viewBottom;
     }
     // X-axis: horizontal line starting from Y-axis position (minValues.x) extending right
+    // Ends at the last tick position
     const xAxisGeometry = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(yAxisX, xAxisY, 0),  // Start at Y-axis
-      new THREE.Vector3(maxXWorldPos, xAxisY, 0)
+      new THREE.Vector3(lastXTickWorldPos, xAxisY, 0)  // End at last tick
     ]);
     const xAxisLine = new THREE.Line(xAxisGeometry, axisLinesMaterial);
     this.axisGroup.add(xAxisLine);
 
     // Y-axis: vertical line starting from X-axis position (minValues.y) extending up
+    // Ends at the last tick position
     const yAxisGeometry = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(yAxisX, xAxisY, 0),  // Start at X-axis
-      new THREE.Vector3(yAxisX, maxYWorldPos, 0)
+      new THREE.Vector3(yAxisX, lastYTickWorldPos, 0)  // End at last tick
     ]);
     const yAxisLine = new THREE.Line(yAxisGeometry, axisLinesMaterial);
     this.axisGroup.add(yAxisLine);
@@ -5098,25 +4809,6 @@ export class Graph2D {
     // Calculate label scale based on viewport size to maintain constant screen size
     // viewHeight already calculated above
     const labelScale = labelHeight; // Use the same label height calculated above
-
-    // Calculate visible X range in parameter space
-    // Convert viewport bounds to parameter values using helper functions
-    const visibleMinX = this.worldToParam(viewLeft, minValues.x, maxValues.x, spread);
-    const visibleMaxX = this.worldToParam(viewRight, minValues.x, maxValues.x, spread);
-    const visibleMinY = this.worldToParam(viewBottom, minValues.y, maxValues.y, spread);
-    const visibleMaxY = this.worldToParam(viewTop, minValues.y, maxValues.y, spread);
-
-    // Calculate INDEPENDENT parameter intervals for X and Y axes
-    // Calculate the visible parameter ranges
-    const visibleXParamRange = visibleMaxX - visibleMinX;
-    const visibleYParamRange = visibleMaxY - visibleMinY;
-
-
-    // Calculate nice intervals independently for each axis
-    // This allows each axis to choose its own optimal step size
-    const xParamInterval = this.calculateNiceParameterInterval(visibleXParamRange);
-    const yParamInterval = this.calculateNiceParameterInterval(visibleYParamRange);
-
 
     // Generate X-axis ticks starting from 0 (or nearest multiple below visible range)
     const xTicks: number[] = [];
@@ -5144,8 +4836,8 @@ export class Graph2D {
 
     for (let mult = xStartMultiplier; mult <= xEndMultiplier; mult++) {
       const val = mult * xParamInterval;
-      // Only include ticks >= minValues.x (where Y-axis is positioned)
-      if (val >= minValues.x && val <= maxValues.x + xParamInterval * 0.01) {
+      // Include ticks from minValues.x up to and including the last tick at maxValues.x
+      if (val >= minValues.x && val <= lastXTick + xParamInterval * 0.01) {
         xTicks.push(val);
       }
     }
@@ -5219,8 +4911,8 @@ export class Graph2D {
 
     for (let mult = yStartMultiplier; mult <= yEndMultiplier; mult++) {
       const val = mult * yParamInterval;
-      // Only include ticks >= minValues.y (where X-axis is positioned)
-      if (val >= minValues.y && val <= maxValues.y + yParamInterval * 0.01) {
+      // Include ticks from minValues.y up to and including the last tick at maxValues.y
+      if (val >= minValues.y && val <= lastYTick + yParamInterval * 0.01) {
         yTicks.push(val);
       }
     }
@@ -5604,7 +5296,6 @@ export class Graph2D {
       this.edges = graphData.edges;
 
       // Parameters are now extracted from PRISM API data
-      // No need to generate random parameters anymore
 
       const nodeCount = this.nodes.length;
 
@@ -5614,8 +5305,8 @@ export class Graph2D {
       const colors = new Float32Array(nodeCount * 3);
       const sizes = new Float32Array(nodeCount);
 
-      // Generate layout using existing method
-      await this.generateLayout(nodeCount, positions, colors, sizes);
+      // Populate geometry arrays directly from loaded nodes
+      await this.populateGeometryFromNodes(positions, colors, sizes);
 
       // Create edge lines if edges are visible
       if (this.config.edgesVisible) {

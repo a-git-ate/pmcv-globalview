@@ -23,7 +23,6 @@ export interface GraphConfig {
   maxVisibleNodes: number;
   minZoom: number;
   maxZoom: number;
-  lodEnabled: boolean;
   edgesVisible: boolean;
   clusterMode: boolean;
   forceStrength?: number;
@@ -36,7 +35,7 @@ export interface GraphConfig {
   renderDistance: number;
 }
 
-export type LayoutType = 'none' | 'random' | 'grid' | 'force';
+export type LayoutType = 'none' | 'grid' | 'force';
 
 export interface ViewportBounds {
   left: number;
