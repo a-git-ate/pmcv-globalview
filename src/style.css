@@ -880,8 +880,8 @@ button[id*="toggle"] {
 /* Selected Nodes Section */
 .selected-nodes-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 10px;
   padding-bottom: 8px;
   border-bottom: 2px solid #3498db;
@@ -896,6 +896,19 @@ button[id*="toggle"] {
 .selected-nodes-buttons {
   display: flex;
   gap: 5px;
+  flex-wrap: wrap;
+}
+
+.selected-nodes-checked-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: #f8f9fa;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #555;
 }
 
 .small-btn {
@@ -914,6 +927,16 @@ button[id*="toggle"] {
   background: #229954;
 }
 
+#btn-select-all-list, #btn-deselect-all-list {
+  background: #3498db;
+  border-color: #2980b9;
+  color: white;
+}
+
+#btn-select-all-list:hover, #btn-deselect-all-list:hover {
+  background: #2980b9;
+}
+
 .btn-table-view {
   background: #9b59b6;
   border-color: #8e44ad;
@@ -922,6 +945,24 @@ button[id*="toggle"] {
 
 .btn-table-view:hover:not(:disabled) {
   background: #8e44ad;
+}
+
+.btn-local-view {
+  background: #e67e22;
+  border-color: #d35400;
+  color: white;
+  font-weight: bold;
+}
+
+.btn-local-view:hover:not(:disabled) {
+  background: #d35400;
+}
+
+.btn-local-view:disabled {
+  background: #bdc3c7;
+  border-color: #95a5a6;
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .selected-nodes-scroll {
@@ -957,6 +998,7 @@ button[id*="toggle"] {
   margin-bottom: 8px;
   cursor: pointer;
   transition: all 0.2s;
+  position: relative;
 }
 
 .selected-node-item:hover {
@@ -966,6 +1008,20 @@ button[id*="toggle"] {
 
 .selected-node-item:last-child {
   margin-bottom: 0;
+}
+
+.selected-node-checkbox {
+  position: absolute;
+  top: 12px;
+  left: 10px;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.selected-node-item.has-checkbox {
+  padding-left: 35px;
 }
 
 .selected-node-header {

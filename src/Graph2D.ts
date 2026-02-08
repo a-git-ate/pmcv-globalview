@@ -53,6 +53,12 @@ export class Graph2D {
   // Selection
   private selectedNodeIndices: Set<number> = new Set();
 
+  // Rectangle selection
+  private isRectSelecting: boolean = false;
+  private rectSelectionStart: THREE.Vector2 = new THREE.Vector2();
+  private rectSelectionEnd: THREE.Vector2 = new THREE.Vector2();
+  private rectSelectionElement: HTMLElement | null = null;
+
   // Geometry to nodes mapping (for stacked nodes)
   // Maps geometry point index to array of node indices at that position
   private geometryToNodesMap: Map<number, number[]> = new Map();
@@ -151,6 +157,7 @@ export class Graph2D {
       this.setupCamera();
       this.setupControls();
       this.setupTooltip();
+      this.setupRectSelectionElement();
       this.startAnimationLoop();
 
       // Notify UI of initial layout state
@@ -169,6 +176,19 @@ export class Graph2D {
     if (!this.tooltipElement) {
       console.warn('Tooltip element not found');
     }
+  }
+
+  private setupRectSelectionElement(): void {
+    // Create rectangle selection overlay element
+    this.rectSelectionElement = document.createElement('div');
+    this.rectSelectionElement.id = 'rect-selection';
+    this.rectSelectionElement.style.position = 'absolute';
+    this.rectSelectionElement.style.border = '2px solid #4CAF50';
+    this.rectSelectionElement.style.backgroundColor = 'rgba(76, 175, 80, 0.1)';
+    this.rectSelectionElement.style.pointerEvents = 'none';
+    this.rectSelectionElement.style.display = 'none';
+    this.rectSelectionElement.style.zIndex = '1000';
+    document.body.appendChild(this.rectSelectionElement);
   }
 
   private setupRenderer(): void {
@@ -212,28 +232,47 @@ export class Graph2D {
 
     // Mouse down
     canvas.addEventListener('mousedown', (event: MouseEvent) => {
-      isDragging = true;
-      lastMouse.set(event.clientX, event.clientY);
+      // Check if Ctrl is pressed for rectangle selection
+      if (event.ctrlKey || event.metaKey) {
+        this.isRectSelecting = true;
+        this.rectSelectionStart.set(event.clientX, event.clientY);
+        this.rectSelectionEnd.set(event.clientX, event.clientY);
+        this.updateRectSelectionVisual();
+      } else {
+        isDragging = true;
+        lastMouse.set(event.clientX, event.clientY);
+      }
     });
 
     // Mouse up
     window.addEventListener('mouseup', () => {
+      if (this.isRectSelecting) {
+        // Complete rectangle selection
+        this.completeRectSelection();
+        this.isRectSelecting = false;
+        this.hideRectSelection();
+      }
       isDragging = false;
     });
 
-    // Mouse move (panning)
+    // Mouse move (panning or rectangle selection)
     canvas.addEventListener('mousemove', (event: MouseEvent) => {
-      if (!isDragging) return;
+      if (this.isRectSelecting) {
+        // Update rectangle selection
+        this.rectSelectionEnd.set(event.clientX, event.clientY);
+        this.updateRectSelectionVisual();
+      } else if (isDragging) {
+        // Pan the canvas
+        const deltaX = event.clientX - lastMouse.x;
+        const deltaY = event.clientY - lastMouse.y;
 
-      const deltaX = event.clientX - lastMouse.x;
-      const deltaY = event.clientY - lastMouse.y;
+        const panSpeed = 0.1 / this.zoomLevel;
+        this.panOffset.x -= deltaX * panSpeed;
+        this.panOffset.y += deltaY * panSpeed;
 
-      const panSpeed = 0.1 / this.zoomLevel;
-      this.panOffset.x -= deltaX * panSpeed;
-      this.panOffset.y += deltaY * panSpeed;
-
-      this.updateCameraPosition();
-      lastMouse.set(event.clientX, event.clientY);
+        this.updateCameraPosition();
+        lastMouse.set(event.clientX, event.clientY);
+      }
     });
 
     // Wheel (zooming)
@@ -3676,6 +3715,21 @@ export class Graph2D {
     );
 
     const raycaster = new THREE.Raycaster();
+
+    // Use the same threshold calculation as tooltip hover detection
+    // For orthographic camera with screen-space points (sizeAttenuation: false),
+    // we need a much smaller threshold since the points are rendered as pixels
+    const viewHeight = this.camera.top - this.camera.bottom;
+    const screenHeight = window.innerHeight;
+
+    // Each pixel represents this many world units
+    const worldUnitsPerPixel = viewHeight / screenHeight;
+
+    // Node visual size is 9 pixels, so we want a threshold of about 4.5 pixels (half)
+    const nodeRadiusPixels = 5; // Slightly larger than visual radius for easier clicking
+    const threshold = nodeRadiusPixels * worldUnitsPerPixel;
+
+    raycaster.params.Points = { threshold: threshold };
     raycaster.setFromCamera(mouse, this.camera);
 
     const intersects = raycaster.intersectObject(this.pointCloud);
@@ -3692,6 +3746,96 @@ export class Graph2D {
         this.selectNodes(stackedIndices, multiSelect);
       }
     }
+  }
+
+  /**
+   * Update the visual representation of the rectangle selection
+   */
+  private updateRectSelectionVisual(): void {
+    if (!this.rectSelectionElement) return;
+
+    const left = Math.min(this.rectSelectionStart.x, this.rectSelectionEnd.x);
+    const top = Math.min(this.rectSelectionStart.y, this.rectSelectionEnd.y);
+    const width = Math.abs(this.rectSelectionEnd.x - this.rectSelectionStart.x);
+    const height = Math.abs(this.rectSelectionEnd.y - this.rectSelectionStart.y);
+
+    this.rectSelectionElement.style.left = `${left}px`;
+    this.rectSelectionElement.style.top = `${top}px`;
+    this.rectSelectionElement.style.width = `${width}px`;
+    this.rectSelectionElement.style.height = `${height}px`;
+    this.rectSelectionElement.style.display = 'block';
+  }
+
+  /**
+   * Hide the rectangle selection visual
+   */
+  private hideRectSelection(): void {
+    if (!this.rectSelectionElement) return;
+    this.rectSelectionElement.style.display = 'none';
+  }
+
+  /**
+   * Complete the rectangle selection and select all nodes within it
+   */
+  private completeRectSelection(): void {
+    if (!this.renderer || !this.pointCloud) return;
+
+    // Convert screen coordinates to world coordinates
+    const rect = this.renderer.domElement.getBoundingClientRect();
+
+    const startNDC = new THREE.Vector2(
+      ((this.rectSelectionStart.x - rect.left) / rect.width) * 2 - 1,
+      -((this.rectSelectionStart.y - rect.top) / rect.height) * 2 + 1
+    );
+
+    const endNDC = new THREE.Vector2(
+      ((this.rectSelectionEnd.x - rect.left) / rect.width) * 2 - 1,
+      -((this.rectSelectionEnd.y - rect.top) / rect.height) * 2 + 1
+    );
+
+    // Calculate world space bounds
+    const startWorld = this.screenToWorld(startNDC);
+    const endWorld = this.screenToWorld(endNDC);
+
+    const minX = Math.min(startWorld.x, endWorld.x);
+    const maxX = Math.max(startWorld.x, endWorld.x);
+    const minY = Math.min(startWorld.y, endWorld.y);
+    const maxY = Math.max(startWorld.y, endWorld.y);
+
+    // Find all nodes within the rectangle
+    const selectedIndices: number[] = [];
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+      if (node.x >= minX && node.x <= maxX && node.y >= minY && node.y <= maxY) {
+        selectedIndices.push(i);
+      }
+    }
+
+    // Select the nodes (multi-select mode is always on for rectangle selection)
+    if (selectedIndices.length > 0) {
+      this.selectNodes(selectedIndices, true);
+    }
+  }
+
+  /**
+   * Convert screen NDC coordinates to world coordinates
+   */
+  private screenToWorld(ndc: THREE.Vector2): THREE.Vector2 {
+    const aspect = window.innerWidth / window.innerHeight;
+    const viewSize = 50 / this.zoomLevel;
+
+    let worldX: number;
+    let worldY: number;
+
+    if (aspect > 1) {
+      worldX = ndc.x * viewSize * aspect + this.panOffset.x;
+      worldY = ndc.y * viewSize + this.panOffset.y;
+    } else {
+      worldX = ndc.x * viewSize + this.panOffset.x;
+      worldY = ndc.y * viewSize / aspect + this.panOffset.y;
+    }
+
+    return new THREE.Vector2(worldX, worldY);
   }
 
   /**
@@ -4171,6 +4315,8 @@ export class Graph2D {
 
     if (selectedCount === 0) {
       listElement.innerHTML = '<div class="no-selection-message">Click on a node to select it</div>';
+      // Reset checked counter
+      this.updateCheckedNodesCounter();
       return;
     }
 
@@ -4181,6 +4327,9 @@ export class Graph2D {
       // For small selections, render immediately
       this.updateSelectedNodesUIImmediate(listElement);
     }
+
+    // Update checked nodes counter after rendering
+    setTimeout(() => this.updateCheckedNodesCounter(), 0);
   }
 
   /**
@@ -4260,11 +4409,13 @@ export class Graph2D {
    */
   private createSelectedNodeElement(node: NodeData, index: number): HTMLDivElement {
     const nodeDiv = document.createElement('div');
-    nodeDiv.className = 'selected-node-item';
+    nodeDiv.className = 'selected-node-item has-checkbox';
     nodeDiv.dataset.index = index.toString();
+    nodeDiv.dataset.nodeId = node.id.toString();
 
     // Build HTML using array join for better performance
     const htmlParts: string[] = [
+      `<input type="checkbox" class="selected-node-checkbox" data-index="${index}" data-node-id="${node.id}">`,
       '<div class="selected-node-header">',
       `Node #${node.id}`,
       `<button class="selected-node-remove" data-index="${index}">×</button>`,
@@ -4293,6 +4444,15 @@ export class Graph2D {
 
     nodeDiv.innerHTML = htmlParts.join('');
 
+    // Add click handler for checkbox
+    const checkbox = nodeDiv.querySelector('.selected-node-checkbox') as HTMLInputElement;
+    if (checkbox) {
+      checkbox.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.updateCheckedNodesCounter();
+      });
+    }
+
     // Add click handler for remove button
     const removeBtn = nodeDiv.querySelector('.selected-node-remove') as HTMLButtonElement;
     if (removeBtn) {
@@ -4320,6 +4480,82 @@ export class Graph2D {
     this.panOffset.set(-node.x, -node.y);
     this.updateCameraPosition();
     this.ui.updateStatus(`Focused on node #${node.id}`);
+  }
+
+  /**
+   * Update the counter for checked nodes in the selected nodes list
+   */
+  private updateCheckedNodesCounter(): void {
+    const checkboxes = document.querySelectorAll('.selected-node-checkbox') as NodeListOf<HTMLInputElement>;
+    const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+    const totalCount = checkboxes.length;
+
+    const counterElement = document.getElementById('selected-nodes-checked-counter');
+    if (counterElement) {
+      counterElement.textContent = `${checkedCount} of ${totalCount} checked`;
+    }
+
+    // Enable/disable "Open in Local View" button
+    const openLocalViewBtn = document.getElementById('btn-open-local-view') as HTMLButtonElement;
+    if (openLocalViewBtn) {
+      openLocalViewBtn.disabled = checkedCount === 0;
+    }
+  }
+
+  /**
+   * Select all nodes in the list (check all checkboxes)
+   */
+  public selectAllInList(): void {
+    const checkboxes = document.querySelectorAll('.selected-node-checkbox') as NodeListOf<HTMLInputElement>;
+    checkboxes.forEach(cb => cb.checked = true);
+    this.updateCheckedNodesCounter();
+  }
+
+  /**
+   * Deselect all nodes in the list (uncheck all checkboxes)
+   */
+  public deselectAllInList(): void {
+    const checkboxes = document.querySelectorAll('.selected-node-checkbox') as NodeListOf<HTMLInputElement>;
+    checkboxes.forEach(cb => cb.checked = false);
+    this.updateCheckedNodesCounter();
+  }
+
+  /**
+   * Get the node IDs of all checked nodes in the list
+   */
+  public getCheckedNodeIds(): (string | number)[] {
+    const checkboxes = document.querySelectorAll('.selected-node-checkbox:checked') as NodeListOf<HTMLInputElement>;
+    return Array.from(checkboxes).map(cb => cb.dataset.nodeId || '').filter(id => id !== '');
+  }
+
+  /**
+   * Open checked nodes in local view (subgraph view)
+   */
+  public openLocalView(): void {
+    const nodeIds = this.getCheckedNodeIds();
+
+    if (nodeIds.length === 0) {
+      this.ui.showError('No nodes selected. Please check at least one node.');
+      return;
+    }
+
+    // Get the current project ID
+    const projectId = this.projectManager.getCurrentProjectId();
+    if (!projectId) {
+      this.ui.showError('No project loaded');
+      return;
+    }
+
+    // Build the URL: /{project}?nodes=id1,id2,id3
+    // Local view runs on port 3000 (separate project)
+    const baseUrl = 'http://localhost:3000';
+    const nodeIdsParam = nodeIds.join(',');
+    const url = `${baseUrl}/${projectId}?nodes=${nodeIdsParam}`;
+
+    // Open in new tab
+    window.open(url, '_blank');
+
+    this.ui.updateStatus(`Opening local view with ${nodeIds.length} node${nodeIds.length > 1 ? 's' : ''}`);
   }
 
   // Public API methods
@@ -4372,6 +4608,12 @@ export class Graph2D {
 
     // Store nodes in localStorage for the new tab to access
     localStorage.setItem('tableViewNodes', JSON.stringify(nodes));
+
+    // Store current project ID for local view functionality
+    const projectId = this.projectManager.getCurrentProjectId();
+    if (projectId) {
+      localStorage.setItem('currentProjectId', projectId);
+    }
 
     // Open table view in new tab
     window.open('table-view.html', '_blank');

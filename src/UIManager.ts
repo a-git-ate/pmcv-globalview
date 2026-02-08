@@ -312,6 +312,7 @@ export class UIManager {
       'btn-toggle-param-status', 'param-status-content',
       // Selected nodes
       'btn-clear-selection', 'btn-show-all-nodes', 'btn-table-view', 'selected-nodes-list', 'selected-nodes-counter',
+      'btn-select-all-list', 'btn-deselect-all-list', 'btn-open-local-view', 'selected-nodes-checked-counter',
       // Node filtering buttons
       'btn-remove-t-nodes', 'btn-remove-s-nodes'
     ];
@@ -372,6 +373,9 @@ export class UIManager {
       const selectedNodes = this.graph.getSelectedNodes();
       this.graph.openTableView(selectedNodes);
     });
+    this.addClickListener('btn-select-all-list', () => this.graph.selectAllInList());
+    this.addClickListener('btn-deselect-all-list', () => this.graph.deselectAllInList());
+    this.addClickListener('btn-open-local-view', () => this.graph.openLocalView());
 
     // Node filtering controls
     this.addClickListener('btn-remove-t-nodes', () => this.graph.removeTransitionNodes());

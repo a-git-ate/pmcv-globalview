@@ -204,6 +204,10 @@
 
     <div class="controls">
       <input type="text" id="search-input" class="search-box" placeholder="Search nodes...">
+      <button id="btn-select-all-table" class="btn">Select All</button>
+      <button id="btn-deselect-all-table" class="btn btn-secondary">Deselect All</button>
+      <span id="selected-count" style="margin-left: 10px; font-weight: bold;">0 selected</span>
+      <button id="btn-open-local-view-table" class="btn" style="background: #e67e22; margin-left: auto;" disabled>Open in Local View</button>
       <button id="btn-export-csv" class="btn">Export CSV</button>
       <button id="btn-reset-filters" class="btn btn-secondary">Reset Filters</button>
     </div>
@@ -278,9 +282,9 @@
 
       const allColumns = [...columns, ...Array.from(parameterColumns).sort()];
 
-      // Build header
+      // Build header with checkbox column
       const thead = document.getElementById('table-head');
-      thead.innerHTML = '<tr>' + allColumns.map(col => {
+      thead.innerHTML = '<tr><th style="width: 40px;"><input type="checkbox" id="select-all-checkbox"></th>' + allColumns.map(col => {
         const displayName = col === 'id' ? 'ID' :
                            col === 'x' ? 'X' :
                            col === 'y' ? 'Y' :
@@ -304,7 +308,7 @@
       }
 
       tbody.innerHTML = nodes.map(node => {
-        return '<tr>' + columns.map(col => {
+        return '<tr><td><input type="checkbox" class="row-checkbox" data-node-id="' + node.id + '"></td>' + columns.map(col => {
           let value = '';
 
           if (col === 'id') {
@@ -331,6 +335,9 @@
           return `<td>${value}</td>`;
         }).join('') + '</tr>';
       }).join('');
+
+      // Update selected count after rendering
+      updateSelectedCount();
     }
 
     // Sort table
@@ -475,6 +482,42 @@
       URL.revokeObjectURL(url);
     }
 
+    // Update selected count
+    function updateSelectedCount() {
+      const checkboxes = document.querySelectorAll('.row-checkbox:checked');
+      const count = checkboxes.length;
+      document.getElementById('selected-count').textContent = `${count} selected`;
+
+      // Enable/disable Open in Local View button
+      const btn = document.getElementById('btn-open-local-view-table');
+      if (btn) {
+        btn.disabled = count === 0;
+      }
+    }
+
+    // Open selected nodes in local view
+    function openLocalView() {
+      const checkboxes = document.querySelectorAll('.row-checkbox:checked');
+      const nodeIds = Array.from(checkboxes).map(cb => cb.dataset.nodeId);
+
+      if (nodeIds.length === 0) {
+        alert('Please select at least one node');
+        return;
+      }
+
+      // Get project ID from localStorage or URL
+      const projectId = localStorage.getItem('currentProjectId') || 'unknown';
+
+      // Build URL: /{project}?nodes=id1,id2,id3
+      // Local view runs on port 3000 (separate project)
+      const baseUrl = 'http://localhost:3000';
+      const nodeIdsParam = nodeIds.join(',');
+      const url = `${baseUrl}/${projectId}?nodes=${nodeIdsParam}`;
+
+      // Open in new tab
+      window.open(url, '_blank');
+    }
+
     // Setup event listeners
     function setupEventListeners() {
       // Sort on header click
@@ -483,6 +526,36 @@
           sortTable(e.target.dataset.column);
         }
       });
+
+      // Select all checkbox in header
+      document.addEventListener('change', (e) => {
+        if (e.target.id === 'select-all-checkbox') {
+          const checkboxes = document.querySelectorAll('.row-checkbox');
+          checkboxes.forEach(cb => cb.checked = e.target.checked);
+          updateSelectedCount();
+        } else if (e.target.classList.contains('row-checkbox')) {
+          updateSelectedCount();
+        }
+      });
+
+      // Select all button
+      document.getElementById('btn-select-all-table').addEventListener('click', () => {
+        const checkboxes = document.querySelectorAll('.row-checkbox');
+        checkboxes.forEach(cb => cb.checked = true);
+        document.getElementById('select-all-checkbox').checked = true;
+        updateSelectedCount();
+      });
+
+      // Deselect all button
+      document.getElementById('btn-deselect-all-table').addEventListener('click', () => {
+        const checkboxes = document.querySelectorAll('.row-checkbox');
+        checkboxes.forEach(cb => cb.checked = false);
+        document.getElementById('select-all-checkbox').checked = false;
+        updateSelectedCount();
+      });
+
+      // Open in Local View button
+      document.getElementById('btn-open-local-view-table').addEventListener('click', openLocalView);
 
       // Search
       document.getElementById('search-input').addEventListener('input', (e) => {
@@ -500,7 +573,7 @@
 
         const thead = document.getElementById('table-head');
         const headers = thead.querySelectorAll('th');
-        const columns = Array.from(headers).map(th => th.dataset.column);
+        const columns = Array.from(headers).map(th => th.dataset.column).filter(c => c);
         renderTableBody(filteredNodes, columns);
       });
     }
