@@ -311,11 +311,11 @@ export class Graph2D {
    * @param scale Whether to scale the data (standardize)
    * @returns Object containing success status and any zero variance parameters that were auto-deselected
    */
-  public doMLPCAWithSelection(
+  public async doMLPCAWithSelection(
     selectedParams: Array<{category: string, paramName: string, nodeTypes: Set<'s' | 't'>}>,
     center: boolean = true,
     scale: boolean = true
-  ): { success: boolean; zeroVarianceParams: string[] } {
+  ): Promise<{ success: boolean; zeroVarianceParams: string[] }> {
     if (this.nodes.length === 0) {
       console.warn('[Graph2D] No nodes available for PCA');
       return { success: false, zeroVarianceParams: [] };
@@ -338,6 +338,7 @@ export class Graph2D {
 
     // 1. Clear existing PCA data from all nodes
     this.prismAPI.progressIndicator.setStatus('Clearing previous PCA data...');
+    await new Promise(resolve => setTimeout(resolve, 0)); // Yield to show progress indicator
     this.clearPCAData();
 
     // 2. Get selected node types from checkboxes
@@ -348,7 +349,8 @@ export class Graph2D {
 
     // 3. Build data matrix from selected nodes and parameters
     this.prismAPI.progressIndicator.setStatus('Building data matrix...');
-    let { dataMatrix, nodeIndices, parameterNames } = this.buildPCADataMatrix(
+    await new Promise(resolve => setTimeout(resolve, 0)); // Yield to show progress indicator
+    let { dataMatrix, nodeIndices, parameterNames } = await this.buildPCADataMatrixAsync(
       selectedParams,
       includeS,
       includeT
@@ -398,7 +400,7 @@ export class Graph2D {
     }
 
     // 4. Perform PCA using ml-pca
-    this.prismAPI.progressIndicator.setStatus(`Computing PCA for ${dataMatrix.length.toLocaleString()} nodes...`);
+    this.prismAPI.progressIndicator.setIndeterminate(`Computing PCA for ${dataMatrix.length.toLocaleString()} nodes...`);
     const pcaStart = performance.now();
 
     // ml-pca expects data in the format: rows = samples, columns = features
@@ -447,7 +449,8 @@ export class Graph2D {
           // Don't clear PCA data again - just rebuild the data matrix with filtered params
           // and continue from here
           this.prismAPI.progressIndicator.setStatus('Rebuilding data matrix with valid parameters...');
-          const retryResult = this.buildPCADataMatrix(filteredParams, includeS, includeT);
+          await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
+          const retryResult = await this.buildPCADataMatrixAsync(filteredParams, includeS, includeT);
 
           if (retryResult.dataMatrix.length === 0) {
             console.warn('[Graph2D] No valid data for PCA after filtering');
@@ -464,7 +467,7 @@ export class Graph2D {
           console.log(`[Graph2D] Retry data matrix: ${dataMatrix.length} nodes × ${parameterNames.length} parameters`);
 
           // Try PCA again with the new data
-          this.prismAPI.progressIndicator.setStatus(`Computing PCA for ${dataMatrix.length.toLocaleString()} nodes...`);
+          this.prismAPI.progressIndicator.setIndeterminate(`Computing PCA for ${dataMatrix.length.toLocaleString()} nodes...`);
           try {
             mlpca = new MLPCA(dataMatrix, { center: center, scale: scale });
 
@@ -608,14 +611,20 @@ export class Graph2D {
     };
 
     // 5. Add PC values as parameters to nodes
+    this.prismAPI.progressIndicator.clearIndeterminate();
     this.prismAPI.progressIndicator.setStatus('Adding PC values to nodes...');
-    this.addPCParametersToNodes(nodeIndices, pcDataForNodes, includeS, includeT);
+    this.prismAPI.progressIndicator.updateProgress(0);
+    await this.addPCParametersToNodesAsync(nodeIndices, pcDataForNodes, includeS, includeT);
 
     // 6. Apply parameter view with PC1 (x), PC2 (y), PC3 (color)
     this.prismAPI.progressIndicator.setStatus('Applying PCA visualization...');
-    this.applyPCAView(includeS, includeT);
+    this.prismAPI.progressIndicator.updateProgress(80);
+    await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
+    await this.applyPCAView(includeS, includeT);
 
     // 7. Update PCA eigenvectors display
+    this.prismAPI.progressIndicator.updateProgress(90);
+    await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
     this.updatePCAEigenvectorsDisplay();
 
     const perfEnd = performance.now();
@@ -851,6 +860,131 @@ export class Graph2D {
   }
 
   /**
+   * Build data matrix for PCA from selected parameters and node types (async version with progress updates)
+   * @param selectedParams Array of parameter objects with category, paramName, and nodeTypes
+   * @param includeS Whether to include S-type nodes
+   * @param includeT Whether to include T-type nodes
+   * @returns Object containing data matrix, node indices, and parameter names
+   */
+  private async buildPCADataMatrixAsync(
+    selectedParams: Array<{category: string, paramName: string, nodeTypes: Set<'s' | 't'>}>,
+    includeS: boolean,
+    includeT: boolean
+  ): Promise<{ dataMatrix: number[][], nodeIndices: number[], parameterNames: string[] }> {
+    const dataMatrix: number[][] = [];
+    const nodeIndices: number[] = [];
+    const parameterNames: string[] = selectedParams.map(p => `${p.category}::${p.paramName}`);
+
+    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Processing ${this.nodes.length} nodes`);
+    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: includeS=${includeS}, includeT=${includeT}`);
+    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: selectedParams=`, selectedParams);
+
+    // Count node types
+    const sCount = this.nodes.filter(n => n.type === 's').length;
+    const tCount = this.nodes.filter(n => n.type === 't').length;
+    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Node type distribution: s=${sCount}, t=${tCount}`);
+
+    // Log which node types each parameter applies to
+    for (const param of selectedParams) {
+      const nodeTypesArray = Array.from(param.nodeTypes);
+      if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Param "${param.paramName}" applies to node types:`, nodeTypesArray);
+    }
+
+    let skippedByType = 0;
+    let skippedByParamType = 0;
+    let skippedByMissingValue = 0;
+    let skippedByInfinite = 0;
+
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+
+      // Skip node if its type is not selected
+      if (node.type === 's' && !includeS) {
+        skippedByType++;
+        continue;
+      }
+      if (node.type === 't' && !includeT) {
+        skippedByType++;
+        continue;
+      }
+
+      // Check if node has all selected parameters for its type
+      const rowData: number[] = [];
+      let validRow = true;
+      let skipReason = '';
+
+      for (const param of selectedParams) {
+        // Check if this parameter applies to this node type
+        if (!param.nodeTypes.has(node.type)) {
+          validRow = false;
+          skipReason = `param ${param.paramName} not applicable to node type ${node.type}`;
+          skippedByParamType++;
+          break;
+        }
+
+        // Get parameter value using category::paramName format
+        const value = PrismAPI.getParameterValue(node, `${param.category}::${param.paramName}`);
+
+        // Handle boolean values: true -> 1, false -> 0
+        let numValue: number;
+        if (typeof value === 'boolean') {
+          numValue = value ? 1 : 0;
+        } else {
+          numValue = parseFloat(value);
+        }
+
+        // Check for NaN values
+        if (isNaN(numValue)) {
+          validRow = false;
+          skipReason = `param ${param.paramName} has invalid value: ${value} (type: ${typeof value})`;
+          skippedByMissingValue++;
+          break;
+        }
+
+        // Check for infinite values
+        if (!isFinite(numValue)) {
+          validRow = false;
+          skipReason = `param ${param.paramName} has infinite value: ${numValue}`;
+          skippedByInfinite++;
+          break;
+        }
+
+        rowData.push(numValue);
+      }
+
+      if (validRow && rowData.length === selectedParams.length) {
+        dataMatrix.push(rowData);
+        nodeIndices.push(i);
+        if (STATUS && dataMatrix.length <= 3) {
+          console.log(`[Graph2D] Added node ${i} (type=${node.type}) to matrix. Row data:`, rowData);
+        }
+      } else if (i < 10) {
+        // Log first 10 skipped nodes for debugging
+        if (STATUS) console.log(`[Graph2D] Skipped node ${i} (type=${node.type}): ${skipReason}`);
+      }
+
+      // Update progress periodically and yield to event loop
+      if (i % 10000 === 0 && i > 0) {
+        this.prismAPI.progressIndicator.setStatus(`Building data matrix: ${i.toLocaleString()} / ${this.nodes.length.toLocaleString()} nodes processed...`);
+        await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
+      }
+    }
+
+    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Result: ${dataMatrix.length} valid nodes`);
+    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Skipped by type: ${skippedByType}`);
+    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Skipped by param type: ${skippedByParamType}`);
+    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Skipped by missing/invalid value: ${skippedByMissingValue}`);
+    if (STATUS) console.log(`[Graph2D] buildPCADataMatrix: Skipped by infinite value: ${skippedByInfinite}`);
+
+    // Warn if many nodes were skipped due to infinite values
+    if (skippedByInfinite > 0) {
+      console.warn(`[Graph2D] Warning: ${skippedByInfinite} nodes were excluded from PCA due to infinite parameter values. Consider filtering or transforming these parameters.`);
+    }
+
+    return { dataMatrix, nodeIndices, parameterNames };
+  }
+
+  /**
    * Add principal component values as parameters to nodes
    * @param nodeIndices Indices of nodes included in PCA
    * @param pcData PCA values for included nodes
@@ -904,11 +1038,72 @@ export class Graph2D {
   }
 
   /**
+   * Add principal component values as parameters to nodes (async version with progress updates)
+   * @param nodeIndices Indices of nodes included in PCA
+   * @param pcData PCA values for included nodes
+   * @param includeS Whether S nodes were included in PCA
+   * @param includeT Whether T nodes were included in PCA
+   */
+  private async addPCParametersToNodesAsync(nodeIndices: number[], pcData: number[][], includeS: boolean, includeT: boolean): Promise<void> {
+    if (!pcData || pcData.length === 0) {
+      console.error('[Graph2D] pcData is empty or undefined');
+      throw new Error('PCA data is empty');
+    }
+
+    if (STATUS) console.log(`[Graph2D] Adding PC parameters to ${nodeIndices.length} nodes (includeS=${includeS}, includeT=${includeT})`);
+    if (STATUS) console.log(`[Graph2D] pcData length: ${pcData.length}, dimensions: ${pcData.length} x ${pcData[0]?.length}`);
+
+    // First, add PCA parameters to nodes that were included in PCA
+    for (let i = 0; i < nodeIndices.length; i++) {
+      const nodeIdx = nodeIndices[i];
+      const node = this.nodes[nodeIdx];
+
+      if (!pcData[i]) {
+        console.error(`[Graph2D] pcData[${i}] is undefined. pcData length: ${pcData.length}, nodeIndices length: ${nodeIndices.length}`);
+        throw new Error(`PCA data missing for node index ${i}`);
+      }
+
+      // Only add PCA parameters to nodes whose type was selected
+      const shouldAddToNode = (node.type === 's' && includeS) || (node.type === 't' && includeT);
+      if (!shouldAddToNode) {
+        console.warn(`[Graph2D] Skipping node ${nodeIdx} (type=${node.type}) - not included in selected types`);
+        continue;
+      }
+
+      // Create PCA category if it doesn't exist
+      if (!node.parameters['PCA']) {
+        node.parameters['PCA'] = {};
+      }
+
+      // Add PC1, PC2, PC3 values
+      // pcData[i] is an array: [PC1, PC2, PC3, ...]
+      node.parameters['PCA']['PC1'] = pcData[i][0] ?? 0;
+      node.parameters['PCA']['PC2'] = pcData[i][1] ?? 0;
+      node.parameters['PCA']['PC3'] = pcData[i][2] ?? 0;
+
+      // Log first few nodes for debugging
+      if (i < 3) {
+        if (STATUS) console.log(`[Graph2D] Node ${nodeIdx} (${node.id}, type=${node.type}): PC1=${node.parameters['PCA']['PC1']}, PC2=${node.parameters['PCA']['PC2']}, PC3=${node.parameters['PCA']['PC3']}`);
+      }
+
+      // Update progress periodically and yield to event loop
+      if (i % 5000 === 0 && i > 0) {
+        const progress = (i / nodeIndices.length) * 70; // Use 0-70% for this step
+        this.prismAPI.progressIndicator.updateProgress(progress);
+        await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
+      }
+    }
+
+    this.prismAPI.progressIndicator.updateProgress(70);
+    if (STATUS) console.log(`[Graph2D] Added PC1, PC2, PC3 parameters to nodes`);
+  }
+
+  /**
    * Apply parameter view with PC1 (x-axis), PC2 (y-axis), PC3 (color)
    * @param includeS Whether S nodes were included in PCA
    * @param includeT Whether T nodes were included in PCA
    */
-  private applyPCAView(includeS: boolean, includeT: boolean): void {
+  private async applyPCAView(includeS: boolean, includeT: boolean): Promise<void> {
     if (STATUS) console.log(`[Graph2D] Applying PCA view (includeS=${includeS}, includeT=${includeT})...`);
 
     // Check a few nodes to verify PCA data was added
@@ -968,13 +1163,13 @@ export class Graph2D {
     });
 
     // Apply parameter view with PC1 (x), PC2 (y), PC3 (color)
-    this.rearrangeByParameters('PCA::PC1', 'PCA::PC2', 'PCA::PC3');
+    await this.rearrangeByParameters('PCA::PC1', 'PCA::PC2', 'PCA::PC3');
 
     if (STATUS) console.log('[Graph2D] Applied PCA view (PC1=X, PC2=Y, PC3=Color)');
   }
 
 
-  public filterNodes(filterFn: (node: NodeData) => boolean): void{
+  public async filterNodes(filterFn: (node: NodeData) => boolean): Promise<void>{
     const alphas = this.pointCloud?.geometry.getAttribute('alpha') as THREE.BufferAttribute;
 
     if (!alphas) return;
@@ -983,10 +1178,13 @@ export class Graph2D {
     this.currentFilterFn = filterFn;
 
     // Show progress indicator for large datasets
-    const showProgress = this.geometryToNodesMap.size > 1000;
+    const totalGeometryPoints = this.geometryToNodesMap.size;
+    const showProgress = totalGeometryPoints > 1000;
     if (showProgress) {
       this.prismAPI.progressIndicator.show({ title: 'Filtering nodes' });
-      this.prismAPI.progressIndicator.setIndeterminate('Applying filter...');
+      this.prismAPI.progressIndicator.updateProgress(0);
+      this.prismAPI.progressIndicator.setStatus('Applying filter...');
+      await new Promise(resolve => setTimeout(resolve, 0)); // Yield to show progress indicator
     }
 
     let geometryPointsHidden = 0;
@@ -994,9 +1192,16 @@ export class Graph2D {
     let nodesHidden = 0;
     let nodesVisible = 0;
 
+    // Convert map to array for progress tracking
+    const geometryEntries = Array.from(this.geometryToNodesMap.entries());
+    let processedCount = 0;
+
     // Iterate over geometry points (stacks), not individual nodes
-    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
-      if (nodeIndices.length === 0) continue;
+    for (const [geometryIndex, nodeIndices] of geometryEntries) {
+      if (nodeIndices.length === 0) {
+        processedCount++;
+        continue;
+      }
 
       // Check all nodes in this stack
       let allHidden = true;
@@ -1042,6 +1247,16 @@ export class Graph2D {
         // (even if some match the filter criteria, they're still rendered)
         nodesVisible += nodeIndices.length;
       }
+
+      processedCount++;
+
+      // Update progress periodically and yield to event loop
+      if (showProgress && processedCount % 5000 === 0) {
+        const progress = (processedCount / totalGeometryPoints) * 100;
+        this.prismAPI.progressIndicator.updateProgress(progress);
+        this.prismAPI.progressIndicator.setStatus(`Filtering: ${processedCount.toLocaleString()} / ${totalGeometryPoints.toLocaleString()} stacks processed...`);
+        await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
+      }
     }
 
     alphas.needsUpdate = true;
@@ -1058,6 +1273,7 @@ export class Graph2D {
     this.updateOverlapLabels();
 
     if (showProgress) {
+      this.prismAPI.progressIndicator.updateProgress(100);
       this.prismAPI.progressIndicator.hide();
     }
   }
@@ -3652,7 +3868,8 @@ export class Graph2D {
       this.prismAPI.progressIndicator.setStatus(`Found ${tNodeIndices.size.toLocaleString()} transition nodes, categorizing edges...`);
 
       // Categorize edges by t-nodes
-      for (const edge of this.edges) {
+      for (let i = 0; i < this.edges.length; i++) {
+        const edge = this.edges[i];
         const fromNode = this.nodes[edge.from];
         const toNode = this.nodes[edge.to];
 
@@ -3663,6 +3880,14 @@ export class Graph2D {
             edgesByTNode.get(edge.to)?.push({ from: edge.from, to: edge.to });
           }
         }
+
+        // Update progress periodically and yield to event loop
+        if (i % 10000 === 0 && i > 0) {
+          const progress = 20 + (i / this.edges.length) * 20; // 20-40%
+          this.prismAPI.progressIndicator.updateProgress(progress);
+          this.prismAPI.progressIndicator.setStatus(`Categorizing edges: ${i.toLocaleString()} / ${this.edges.length.toLocaleString()}...`);
+          await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
+        }
       }
 
       this.prismAPI.progressIndicator.updateProgress(40);
@@ -3670,7 +3895,10 @@ export class Graph2D {
 
       // Create new edges connecting s-nodes that were connected via t-nodes
       const newEdges: EdgeData[] = [];
-      for (const [tNodeIndex, connectedEdges] of edgesByTNode) {
+      const tNodeArray = Array.from(edgesByTNode.entries());
+      for (let idx = 0; idx < tNodeArray.length; idx++) {
+        const [tNodeIndex, connectedEdges] = tNodeArray[idx];
+
         // Find all s-nodes connected to this t-node
         const connectedSNodes: number[] = [];
         for (const edge of connectedEdges) {
@@ -3689,6 +3917,14 @@ export class Graph2D {
               to: connectedSNodes[j]
             });
           }
+        }
+
+        // Update progress periodically and yield to event loop
+        if (idx % 5000 === 0 && idx > 0) {
+          const progress = 40 + (idx / tNodeArray.length) * 20; // 40-60%
+          this.prismAPI.progressIndicator.updateProgress(progress);
+          this.prismAPI.progressIndicator.setStatus(`Processing t-nodes: ${idx.toLocaleString()} / ${tNodeArray.length.toLocaleString()}...`);
+          await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
         }
       }
 
@@ -3783,7 +4019,8 @@ export class Graph2D {
       this.prismAPI.progressIndicator.setStatus(`Found ${sNodeIndices.size.toLocaleString()} state nodes, categorizing edges...`);
 
       // Categorize edges by s-nodes
-      for (const edge of this.edges) {
+      for (let i = 0; i < this.edges.length; i++) {
+        const edge = this.edges[i];
         const fromNode = this.nodes[edge.from];
         const toNode = this.nodes[edge.to];
 
@@ -3794,6 +4031,14 @@ export class Graph2D {
             edgesBySNode.get(edge.to)?.push({ from: edge.from, to: edge.to });
           }
         }
+
+        // Update progress periodically and yield to event loop
+        if (i % 10000 === 0 && i > 0) {
+          const progress = 20 + (i / this.edges.length) * 20; // 20-40%
+          this.prismAPI.progressIndicator.updateProgress(progress);
+          this.prismAPI.progressIndicator.setStatus(`Categorizing edges: ${i.toLocaleString()} / ${this.edges.length.toLocaleString()}...`);
+          await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
+        }
       }
 
       this.prismAPI.progressIndicator.updateProgress(40);
@@ -3801,7 +4046,10 @@ export class Graph2D {
 
       // Create new edges connecting t-nodes that were connected via s-nodes
       const newEdges: EdgeData[] = [];
-      for (const [sNodeIndex, connectedEdges] of edgesBySNode) {
+      const sNodeArray = Array.from(edgesBySNode.entries());
+      for (let idx = 0; idx < sNodeArray.length; idx++) {
+        const [sNodeIndex, connectedEdges] = sNodeArray[idx];
+
         // Find all t-nodes connected to this s-node
         const connectedTNodes: number[] = [];
         for (const edge of connectedEdges) {
@@ -3820,6 +4068,14 @@ export class Graph2D {
               to: connectedTNodes[j]
             });
           }
+        }
+
+        // Update progress periodically and yield to event loop
+        if (idx % 5000 === 0 && idx > 0) {
+          const progress = 40 + (idx / sNodeArray.length) * 20; // 40-60%
+          this.prismAPI.progressIndicator.updateProgress(progress);
+          this.prismAPI.progressIndicator.setStatus(`Processing s-nodes: ${idx.toLocaleString()} / ${sNodeArray.length.toLocaleString()}...`);
+          await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
         }
       }
 
@@ -5121,7 +5377,7 @@ export class Graph2D {
     this.ui.updateStatus(`Colored by parameter ${colorParamIndex}`);
   }
 
-  public rearrangeByParameters(xParam: string, yParam: string, colorParamIndex: string = ""): void {
+  public async rearrangeByParameters(xParam: string, yParam: string, colorParamIndex: string = ""): Promise<void> {
     // Validation
     if (this.nodes.length === 0) {
       this.ui.updateStatus("Load a project first!");
@@ -5130,6 +5386,12 @@ export class Graph2D {
 
     if (STATUS) console.log(`[Parameter View] Rebuilding visualization for parameters ${xParam} and ${yParam}...`);
     this.ui.updateStatus(`Rearranging nodes by parameters ${xParam} and ${yParam}...`);
+
+    // Show progress indicator
+    this.prismAPI.progressIndicator.show({ title: 'Filtering by Parameters' });
+    this.prismAPI.progressIndicator.updateProgress(0);
+    this.prismAPI.progressIndicator.setStatus('Preparing parameter view...');
+    await new Promise(resolve => setTimeout(resolve, 0)); // Yield to show progress indicator
 
     // Store configuration for rebuild
     this.config.parameterXAxis = xParam;
@@ -5143,16 +5405,28 @@ export class Graph2D {
     // parameter values to be incorrectly grouped in the same stack.
     // By rebuilding from scratch, we ensure geometryToNodesMap is correctly
     // constructed based on the actual parameter-based positions.
+    this.prismAPI.progressIndicator.updateProgress(10);
+    this.prismAPI.progressIndicator.setStatus('Clearing visualization...');
+    await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
     this.clearPointCloud();
 
     // Re-render with new parameters
     // This will recalculate all positions and rebuild geometryToNodesMap correctly
-    this.renderLoadedData();
+    this.prismAPI.progressIndicator.updateProgress(20);
+    this.prismAPI.progressIndicator.setStatus('Recalculating positions...');
+    await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
+    await this.renderLoadedData();
 
     // Apply color parameter after rendering if specified
     if (colorParamIndex && colorParamIndex !== "" && colorParamIndex !== "-1") {
+      this.prismAPI.progressIndicator.updateProgress(90);
+      this.prismAPI.progressIndicator.setStatus('Applying colors...');
+      await new Promise(resolve => setTimeout(resolve, 0)); // Yield to event loop
       this.applyColorParameter(colorParamIndex);
     }
+
+    this.prismAPI.progressIndicator.updateProgress(100);
+    this.prismAPI.progressIndicator.hide();
   }
 
   /**

@@ -705,7 +705,7 @@ export class ProjectManager {
   /**
    * Handle Apply ML-PCA button click
    */
-  private handleApplyMLPCA(): void {
+  private async handleApplyMLPCA(): Promise<void> {
     console.log('[ProjectManager] Apply ML-PCA clicked');
 
     // Get all checked checkboxes
@@ -757,7 +757,7 @@ export class ProjectManager {
 
     // Call the ML-PCA function on Graph2D
     try {
-      const result = this.graph.doMLPCAWithSelection(selectedParams, center, scale);
+      const result = await this.graph.doMLPCAWithSelection(selectedParams, center, scale);
 
       // Hide progress indicator
       this.prismAPI.progressIndicator.hide();
@@ -1407,7 +1407,7 @@ export class ProjectManager {
     this.paramStatusContent.appendChild(categoryDiv);
   }
 
-  private toggleFilterOptions(category: string, paramName: string, valueToChange: string): void {
+  private async toggleFilterOptions(category: string, paramName: string, valueToChange: string): Promise<void> {
     const buttons = document.querySelectorAll(`.param-nominal-button.${category}.${paramName}`) as NodeListOf<HTMLElement>;
     //console.log("Toggle: button count of " + buttons.length);
     //console.log(`.param-nominal-button.${category}.${paramName}`)
@@ -1422,18 +1422,18 @@ export class ProjectManager {
       button.classList.add('filtered');
     }
 
-    this.graph.filterNodes(this.nodeFilterFn.bind(this));
+    await this.graph.filterNodes(this.nodeFilterFn.bind(this));
   }
   /**
    * Display parameter range set by user
    */
-  private displayParameterRange(): void {
+  private async displayParameterRange(): Promise<void> {
     console.log("[ProjectManager] Applying filters");
     // Reset the flag so filters will be logged again
     this.hasLoggedFilters = false;
     // Apply the filter function to all nodes in the graph
     // The nodeFilterFn will check all the input values and button states
-    this.graph.filterNodes(this.nodeFilterFn.bind(this));
+    await this.graph.filterNodes(this.nodeFilterFn.bind(this));
   }
 
   //Returns true if node should be hidden

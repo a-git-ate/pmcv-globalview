@@ -523,7 +523,7 @@ export class UIManager {
     this.updateZoomDisplay(zoom);
   }
 
-  private handleApplyParameters(): void {
+  private async handleApplyParameters(): Promise<void> {
     const xSelect = this.getElement('param-x-select') as HTMLSelectElement;
     const ySelect = this.getElement('param-y-select') as HTMLSelectElement;
     const colorSelect = this.getElement('param-color-select') as HTMLSelectElement;
@@ -537,7 +537,7 @@ export class UIManager {
     const yParamIndex = ySelect.value;
     const colorParamIndex = colorSelect.value;
 
-    this.graph.rearrangeByParameters(xParamIndex, yParamIndex, colorParamIndex);
+    await this.graph.rearrangeByParameters(xParamIndex, yParamIndex, colorParamIndex);
   }
 
   private handleApplyColor(): void {
