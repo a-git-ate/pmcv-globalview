@@ -191,6 +191,21 @@
       font-size: 16px;
       color: #3498db;
     }
+
+    .btn-share-node {
+      padding: 4px 8px;
+      background: #3498db;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: background 0.2s;
+    }
+
+    .btn-share-node:hover {
+      background: #2980b9;
+    }
   </style>
 </head>
 <body>
@@ -282,15 +297,26 @@
 
       const allColumns = [...columns, ...Array.from(parameterColumns).sort()];
 
-      // Build header with checkbox column
+      // Build header with checkbox column and actions column (second position)
       const thead = document.getElementById('table-head');
-      thead.innerHTML = '<tr><th style="width: 40px;"><input type="checkbox" id="select-all-checkbox"></th>' + allColumns.map(col => {
-        const displayName = col === 'id' ? 'ID' :
-                           col === 'x' ? 'X' :
-                           col === 'y' ? 'Y' :
-                           col === 'type' ? 'Type' :
-                           col === 'cluster' ? 'Cluster' :
-                           col;
+      thead.innerHTML = '<tr><th style="width: 40px;"><input type="checkbox" id="select-all-checkbox"></th><th style="width: 60px;">Actions</th>' + allColumns.map(col => {
+        let displayName;
+        if (col === 'id') {
+          displayName = 'ID';
+        } else if (col === 'x') {
+          displayName = 'X';
+        } else if (col === 'y') {
+          displayName = 'Y';
+        } else if (col === 'type') {
+          displayName = 'Type';
+        } else if (col === 'cluster') {
+          displayName = 'Cluster';
+        } else if (col.includes('::')) {
+          // Remove category prefix for parameter columns
+          displayName = col.split('::')[1];
+        } else {
+          displayName = col;
+        }
         return `<th class="sortable" data-column="${col}">${displayName}</th>`;
       }).join('') + '</tr>';
 
@@ -308,7 +334,13 @@
       }
 
       tbody.innerHTML = nodes.map(node => {
-        return '<tr><td><input type="checkbox" class="row-checkbox" data-node-id="' + node.id + '"></td>' + columns.map(col => {
+        // Check if node is a transition node (type 't')
+        const isTransition = node.type === 't';
+        const shareButtonHtml = isTransition
+          ? '<td>-</td>'
+          : '<td><button class="btn-share-node" data-node-id="' + node.id + '" title="Open in Local View">↗</button></td>';
+
+        return '<tr><td><input type="checkbox" class="row-checkbox" data-node-id="' + node.id + '"></td>' + shareButtonHtml + columns.map(col => {
           let value = '';
 
           if (col === 'id') {
@@ -505,14 +537,52 @@
         return;
       }
 
+      // Filter out transition nodes (type 't')
+      const filteredNodeIds = nodeIds.filter(nodeId => {
+        const node = allNodes.find(n => n.id.toString() === nodeId.toString());
+        return node && node.type !== 't';
+      });
+
+      if (filteredNodeIds.length === 0) {
+        alert('No valid nodes selected. Transition nodes cannot be opened in local view.');
+        return;
+      }
+
       // Get project ID from localStorage or URL
       const projectId = localStorage.getItem('currentProjectId') || 'unknown';
 
       // Build URL: /{project}?nodes=id1,id2,id3
       // Local view runs on port 3000 (separate project)
       const baseUrl = 'http://localhost:3000';
-      const nodeIdsParam = nodeIds.join(',');
+      const nodeIdsParam = filteredNodeIds.join(',');
       const url = `${baseUrl}/${projectId}?nodes=${nodeIdsParam}`;
+
+      // Open in new tab
+      window.open(url, '_blank');
+
+      // Show info if some nodes were skipped
+      const skippedCount = nodeIds.length - filteredNodeIds.length;
+      if (skippedCount > 0) {
+        alert(`Opening ${filteredNodeIds.length} node(s). ${skippedCount} transition node(s) were skipped.`);
+      }
+    }
+
+    // Open a single node in local view
+    function openLocalViewForNode(nodeId) {
+      // Check if node is a transition node (shouldn't happen due to UI, but safety check)
+      const node = allNodes.find(n => n.id.toString() === nodeId.toString());
+      if (node && node.type === 't') {
+        alert('Transition nodes cannot be opened in local view');
+        return;
+      }
+
+      // Get project ID from localStorage or URL
+      const projectId = localStorage.getItem('currentProjectId') || 'unknown';
+
+      // Build URL: /{project}?nodes=id
+      // Local view runs on port 3000 (separate project)
+      const baseUrl = 'http://localhost:3000';
+      const url = `${baseUrl}/${projectId}?nodes=${nodeId}`;
 
       // Open in new tab
       window.open(url, '_blank');
@@ -524,6 +594,16 @@
       document.getElementById('table-head').addEventListener('click', (e) => {
         if (e.target.tagName === 'TH' && e.target.dataset.column) {
           sortTable(e.target.dataset.column);
+        }
+      });
+
+      // Share button clicks
+      document.addEventListener('click', (e) => {
+        if (e.target.classList.contains('btn-share-node')) {
+          const nodeId = e.target.dataset.nodeId;
+          if (nodeId) {
+            openLocalViewForNode(nodeId);
+          }
         }
       });
 

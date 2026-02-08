@@ -4409,21 +4409,34 @@ export class Graph2D {
    */
   private createSelectedNodeElement(node: NodeData, index: number): HTMLDivElement {
     const nodeDiv = document.createElement('div');
-    nodeDiv.className = 'selected-node-item has-checkbox';
+    nodeDiv.className = 'selected-node-item';
     nodeDiv.dataset.index = index.toString();
     nodeDiv.dataset.nodeId = node.id.toString();
 
+    // Check if node is a transition node (type 't')
+    const isTransition = node.type === 't';
+
     // Build HTML using array join for better performance
     const htmlParts: string[] = [
-      `<input type="checkbox" class="selected-node-checkbox" data-index="${index}" data-node-id="${node.id}">`,
       '<div class="selected-node-header">',
-      `Node #${node.id}`,
-      `<button class="selected-node-remove" data-index="${index}">×</button>`,
+      `<input type="checkbox" class="selected-node-checkbox" data-index="${index}" data-node-id="${node.id}">`,
+      `<span class="selected-node-title">Node #${node.id}</span>`,
+      '<div class="selected-node-buttons">'
+    ];
+
+    // Add share button only for non-transition nodes
+    if (!isTransition) {
+      htmlParts.push(`<button class="selected-node-share" data-index="${index}" data-node-id="${node.id}" title="Open in Local View">↗</button>`);
+    }
+
+    htmlParts.push(
+      `<button class="selected-node-remove" data-index="${index}" title="Remove from selection">×</button>`,
+      '</div>',
       '</div>',
       `<div class="selected-node-property">Position: (${node.x.toFixed(2)}, ${node.y.toFixed(2)})</div>`,
       `<div class="selected-node-property">Cluster: ${node.cluster}</div>`,
       `<div class="selected-node-property">Type: ${node.type}</div>`
-    ];
+    );
 
     // Add parameters by category (optimized)
     for (const category in node.parameters) {
@@ -4450,6 +4463,15 @@ export class Graph2D {
       checkbox.addEventListener('click', (e) => {
         e.stopPropagation();
         this.updateCheckedNodesCounter();
+      });
+    }
+
+    // Add click handler for share button
+    const shareBtn = nodeDiv.querySelector('.selected-node-share') as HTMLButtonElement;
+    if (shareBtn) {
+      shareBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.openLocalViewForNode(node.id);
       });
     }
 
@@ -4530,12 +4552,24 @@ export class Graph2D {
 
   /**
    * Open checked nodes in local view (subgraph view)
+   * Filters out transition nodes (type 't')
    */
   public openLocalView(): void {
     const nodeIds = this.getCheckedNodeIds();
 
     if (nodeIds.length === 0) {
       this.ui.showError('No nodes selected. Please check at least one node.');
+      return;
+    }
+
+    // Filter out transition nodes (type 't')
+    const filteredNodeIds = nodeIds.filter(nodeId => {
+      const node = this.nodes.find(n => n.id.toString() === nodeId.toString());
+      return node && node.type !== 't';
+    });
+
+    if (filteredNodeIds.length === 0) {
+      this.ui.showError('No valid nodes selected. Transition nodes cannot be opened in local view.');
       return;
     }
 
@@ -4549,13 +4583,52 @@ export class Graph2D {
     // Build the URL: /{project}?nodes=id1,id2,id3
     // Local view runs on port 3000 (separate project)
     const baseUrl = 'http://localhost:3000';
-    const nodeIdsParam = nodeIds.join(',');
+    const nodeIdsParam = filteredNodeIds.join(',');
     const url = `${baseUrl}/${projectId}?nodes=${nodeIdsParam}`;
 
     // Open in new tab
     window.open(url, '_blank');
 
-    this.ui.updateStatus(`Opening local view with ${nodeIds.length} node${nodeIds.length > 1 ? 's' : ''}`);
+    const skippedCount = nodeIds.length - filteredNodeIds.length;
+    const statusMsg = skippedCount > 0
+      ? `Opening local view with ${filteredNodeIds.length} node${filteredNodeIds.length > 1 ? 's' : ''} (${skippedCount} transition node${skippedCount > 1 ? 's' : ''} skipped)`
+      : `Opening local view with ${filteredNodeIds.length} node${filteredNodeIds.length > 1 ? 's' : ''}`;
+    this.ui.updateStatus(statusMsg);
+  }
+
+  /**
+   * Open a single node in local view
+   * Does not open if the node is a transition node (type 't')
+   */
+  public openLocalViewForNode(nodeId: string | number): void {
+    // Check if node is a transition node
+    const node = this.nodes.find(n => n.id.toString() === nodeId.toString());
+    if (!node) {
+      this.ui.showError('Node not found');
+      return;
+    }
+
+    if (node.type === 't') {
+      this.ui.showError('Transition nodes cannot be opened in local view');
+      return;
+    }
+
+    // Get the current project ID
+    const projectId = this.projectManager.getCurrentProjectId();
+    if (!projectId) {
+      this.ui.showError('No project loaded');
+      return;
+    }
+
+    // Build the URL: /{project}?nodes=id
+    // Local view runs on port 3000 (separate project)
+    const baseUrl = 'http://localhost:3000';
+    const url = `${baseUrl}/${projectId}?nodes=${nodeId}`;
+
+    // Open in new tab
+    window.open(url, '_blank');
+
+    this.ui.updateStatus(`Opening local view for node #${nodeId}`);
   }
 
   // Public API methods
