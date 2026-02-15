@@ -150,7 +150,7 @@ export class Graph2D {
   }
 
   private init(): void {
-    this.ui.updateStatus("Initializing 2D graph...");
+    this.ui.updateStatus("Initializing PMC-Vis GlobalView...");
 
     try {
       this.setupRenderer();
@@ -163,7 +163,7 @@ export class Graph2D {
       // Notify UI of initial layout state
       this.ui.onLayoutChange(this.currentLayout);
 
-      this.ui.updateStatus("2D system ready");
+      this.ui.updateStatus("PMC-Vis GlobalView ready");
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       this.ui.showError(message);
@@ -292,6 +292,11 @@ export class Graph2D {
 
       this.updateCameraPosition();
       this.ui.updateZoomDisplay(this.zoomLevel);
+
+      // Recreate edges to update arrow sizes for zoom-independent screen size
+      if (this.config.edgesVisible && this.edges.length > 0) {
+        this.createEdgeLines();
+      }
     });
 
     // Click (node selection)
@@ -311,6 +316,35 @@ export class Graph2D {
   private updateCameraPosition(): void {
     const aspect = window.innerWidth / window.innerHeight;
     const viewSize = 50 / this.zoomLevel;
+
+    // Clamp pan offset if we're in parameter positioning mode to prevent going beyond data bounds
+    if (this.currentAxisInfo && this.config.useParameterPositioning) {
+      const { minValues, maxValues, spread } = this.currentAxisInfo;
+
+      // Convert parameter bounds to world coordinates
+      const minXWorld = this.paramToWorld(minValues.x, minValues.x, maxValues.x, spread);
+      const maxXWorld = this.paramToWorld(maxValues.x, minValues.x, maxValues.x, spread);
+      const minYWorld = this.paramToWorld(minValues.y, minValues.y, maxValues.y, spread);
+      const maxYWorld = this.paramToWorld(maxValues.y, minValues.y, maxValues.y, spread);
+
+      // Calculate viewport size in world coordinates
+      const viewWidth = aspect > 1 ? viewSize * aspect * 2 : viewSize * 2;
+      const viewHeight = aspect > 1 ? viewSize * 2 : (viewSize / aspect) * 2;
+
+      // Add some margin (100% of view size for more flexible panning)
+      const marginX = viewWidth * 1.0;
+      const marginY = viewHeight * 1.0;
+
+      // Clamp pan offset so viewport doesn't go too far beyond data bounds
+      // Allow some panning beyond bounds for better UX, but not unlimited
+      const maxPanRight = maxXWorld + marginX - (aspect > 1 ? viewSize * aspect : viewSize);
+      const maxPanLeft = minXWorld - marginX + (aspect > 1 ? viewSize * aspect : viewSize);
+      const maxPanUp = maxYWorld + marginY - (aspect > 1 ? viewSize : viewSize / aspect);
+      const maxPanDown = minYWorld - marginY + (aspect > 1 ? viewSize : viewSize / aspect);
+
+      this.panOffset.x = Math.max(maxPanLeft, Math.min(maxPanRight, this.panOffset.x));
+      this.panOffset.y = Math.max(maxPanDown, Math.min(maxPanUp, this.panOffset.y));
+    }
 
     // For 1:1 aspect ratio, use the same scale for both X and Y
     // Only adjust horizontal extent based on aspect ratio
@@ -363,6 +397,35 @@ export class Graph2D {
     if (selectedParams.length < 2) {
       console.warn('[Graph2D] PCA requires at least 2 parameters');
       alert('Please select at least 2 parameters for PCA');
+      return { success: false, zeroVarianceParams: [] };
+    }
+
+    // Check if any Model Checking Results parameters are selected
+    const modelCheckingParams = selectedParams.filter(p => p.category === 'Model Checking Results');
+    if (modelCheckingParams.length > 0 && !this.prismAPI.hasModelCheckingResults(this.nodes)) {
+      const paramNames = modelCheckingParams.map(p => p.paramName).join(', ');
+      const message = `The following selected parameters are from Model Checking Results, but no values are available yet:\n\n` +
+                      `${paramNames}\n\n` +
+                      `Please run "Check Model" first to calculate model checking results.\n\n` +
+                      `If you already ran "Check Model", you may need to reload the project to see the results.`;
+      alert(message);
+      return { success: false, zeroVarianceParams: [] };
+    }
+
+    // Check if selected parameters have values
+    const missingParams: string[] = [];
+    for (const param of selectedParams) {
+      const fullParamName = `${param.category}::${param.paramName}`;
+      if (!this.prismAPI.hasParameterValues(fullParamName, this.nodes)) {
+        missingParams.push(fullParamName);
+      }
+    }
+
+    if (missingParams.length > 0) {
+      const message = `The following selected parameters have no values available:\n\n` +
+                      `${missingParams.join('\n')}\n\n` +
+                      `Please check the model or reload the project.`;
+      alert(message);
       return { success: false, zeroVarianceParams: [] };
     }
 
@@ -710,6 +773,9 @@ export class Graph2D {
         if (STATUS) console.log('[Graph2D] Cleared PCA from T node metadata');
       }
     }
+
+    // Clear PCA parameters from availability cache
+    this.prismAPI.removeParametersFromCache('PCA', ['PC1', 'PC2', 'PC3']);
 
     if (STATUS) console.log('[Graph2D] Cleared existing PCA data from nodes and metadata');
   }
@@ -1135,6 +1201,9 @@ export class Graph2D {
 
     this.prismAPI.progressIndicator.updateProgress(70);
     if (STATUS) console.log(`[Graph2D] Added PC1, PC2, PC3 parameters to nodes`);
+
+    // Update parameter availability cache for PCA parameters
+    this.prismAPI.updateParameterAvailabilityCache('PCA', ['PC1', 'PC2', 'PC3'], this.nodes);
   }
 
   /**
@@ -1388,7 +1457,6 @@ export class Graph2D {
         }
 
         this.createEdgeLines();
-        this.updateArrowScales();
         if (PERFORMANCE) console.log(`[Performance] Edge rendering: ${(performance.now() - edgeStart).toFixed(2)}ms`);
       }
 
@@ -1403,6 +1471,9 @@ export class Graph2D {
       const totalTime = (performance.now() - startTime).toFixed(2);
       //if (PERFORMANCE) console.log(`[Performance] Total load time: ${totalTime}ms`);
       if (PERFORMANCE) console.log(`Loaded ${nodeCount.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API (${totalTime}ms)`);
+
+      // Update edges button state based on node types
+      this.updateEdgesButtonState();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load graph from API';
       this.ui.showError(message);
@@ -1446,6 +1517,9 @@ export class Graph2D {
 
       const totalTime = (performance.now() - startTime).toFixed(2);
       this.ui.updateStatus(`Loaded ${this.nodes.length.toLocaleString()} nodes and ${this.edges.length.toLocaleString()} edges from API (${totalTime}ms). Select a layout to visualize.`);
+
+      // Update edges button state based on node types
+      this.updateEdgesButtonState();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load graph from API';
       this.ui.showError(message);
@@ -1589,7 +1663,6 @@ export class Graph2D {
         }
 
         this.createEdgeLines();
-        this.updateArrowScales();
         if (PERFORMANCE) console.log(`[Performance] Edge rendering: ${(performance.now() - edgeStart).toFixed(2)}ms`);
       }
 
@@ -1625,8 +1698,16 @@ export class Graph2D {
           minX = Infinity; maxX = -Infinity;
           for (let i = 0; i < this.nodes.length; i++) {
             const val = PrismAPI.getParameterValue(this.nodes[i], xParam);
-            minX = Math.min(minX, val);
-            maxX = Math.max(maxX, val);
+            if (typeof val === 'number' && isFinite(val)) {
+              minX = Math.min(minX, val);
+              maxX = Math.max(maxX, val);
+            }
+          }
+          // If no valid values found, use defaults
+          if (!isFinite(minX) || !isFinite(maxX)) {
+            console.warn(`[Graph2D] No valid numeric values found for X parameter "${xParam}", using defaults`);
+            minX = 0;
+            maxX = 1;
           }
         }
 
@@ -1638,8 +1719,16 @@ export class Graph2D {
           minY = Infinity; maxY = -Infinity;
           for (let i = 0; i < this.nodes.length; i++) {
             const val = PrismAPI.getParameterValue(this.nodes[i], yParam);
-            minY = Math.min(minY, val);
-            maxY = Math.max(maxY, val);
+            if (typeof val === 'number' && isFinite(val)) {
+              minY = Math.min(minY, val);
+              maxY = Math.max(maxY, val);
+            }
+          }
+          // If no valid values found, use defaults
+          if (!isFinite(minY) || !isFinite(maxY)) {
+            console.warn(`[Graph2D] No valid numeric values found for Y parameter "${yParam}", using defaults`);
+            minY = 0;
+            maxY = 1;
           }
         }
 
@@ -2480,6 +2569,9 @@ export class Graph2D {
   private createEdgeLines(): void {
     console.log(`[createEdgeLines] Starting with ${this.edges.length} edges, ${this.nodes.length} nodes`);
 
+    // Clear existing edges first to avoid duplicates
+    this.clearEdgeLines();
+
     if (!this.edges.length || !this.nodes.length) {
       console.log(`[createEdgeLines] Early return - no edges or nodes`);
       return;
@@ -2578,28 +2670,25 @@ export class Graph2D {
 
     console.log(`[createEdgeLines] Built ${validEdgeCount} line segments, creating arrows...`);
 
-    // Arrow geometry - create using instanced mesh for better performance
-    const viewHeight = this.camera.top - this.camera.bottom;
-    const screenHeight = window.innerHeight;
-    const worldUnitsPerPixel = viewHeight / screenHeight;
-    const arrowPixelSize = 1.3 / 3; // Reduced to 1/3 of original size
-    const arrowSize = arrowPixelSize * worldUnitsPerPixel;
+    // Simple arrow implementation - constant screen size regardless of zoom
+    // Calculate arrow size based on current viewport size
+    const viewSize = 50 / this.zoomLevel; // Current viewport size in world units
+    const arrowSizeInViewport = 0.02; // Arrow should be 1.5% of viewport height
+    const arrowHeight = viewSize * arrowSizeInViewport;
+    const arrowWidth = arrowHeight * 0.6; // 60% width-to-height ratio
 
-    // Create single triangle geometry for all arrows
+    // Create triangle geometry for arrows (points up by default)
     const arrowGeometry = new THREE.BufferGeometry();
     const arrowVertices = new Float32Array([
-      0, arrowSize * 0.8, 0,           // Tip of arrow
-      -arrowSize * 0.5, -arrowSize * 0.4, 0,  // Bottom left
-      arrowSize * 0.5, -arrowSize * 0.4, 0    // Bottom right
+      0, arrowHeight, 0,                    // Tip (top)
+      -arrowWidth / 2, 0, 0,                // Bottom left
+      arrowWidth / 2, 0, 0                  // Bottom right
     ]);
     arrowGeometry.setAttribute('position', new THREE.BufferAttribute(arrowVertices, 3));
     arrowGeometry.setIndex([0, 1, 2]);
 
-    // Use InstancedMesh for arrows (much more efficient than individual meshes)
     const arrowMaterial = new THREE.MeshBasicMaterial({
       color: 0x666666,
-      transparent: false,
-      opacity: 1.0,
       side: THREE.DoubleSide
     });
 
@@ -2607,18 +2696,32 @@ export class Graph2D {
     instancedArrows.renderOrder = -2; // Render behind nodes
     instancedArrows.raycast = () => {}; // Disable raycasting for arrows
 
-    // Store edge data for dynamic updates
-    (instancedArrows as any).userData = {
-      edgeData: edgeData,
-      baseArrowSize: arrowSize
-    };
-
-    // Set up transformation matrix for each arrow instance
+    // Position each arrow so the tip points at the target node
     const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const rotation = new THREE.Euler();
+    const scale = new THREE.Vector3(1, 1, 1);
+
     for (let i = 0; i < edgeData.length; i++) {
       const data = edgeData[i];
-      matrix.makeRotationZ(data.angle - Math.PI / 2);
-      matrix.setPosition(data.toX, data.toY, 0.1);
+
+      // Calculate direction from angle
+      const dirX = Math.cos(data.angle);
+      const dirY = Math.sin(data.angle);
+
+      // Position arrow so the tip (not the base) is at the target node
+      // Offset backwards by arrow height along the edge direction
+      const arrowX = data.toX - dirX * arrowHeight;
+      const arrowY = data.toY - dirY * arrowHeight;
+      position.set(arrowX, arrowY, 0.1);
+
+      // Rotate to point from source to target
+      // Subtract Math.PI/2 because our arrow points up (0,1) by default
+      // but angle 0 means pointing right (1,0)
+      rotation.set(0, 0, data.angle - Math.PI / 2);
+
+      // Build transformation matrix
+      matrix.compose(position, new THREE.Quaternion().setFromEuler(rotation), scale);
       instancedArrows.setMatrixAt(i, matrix);
     }
     instancedArrows.instanceMatrix.needsUpdate = true;
@@ -2649,78 +2752,6 @@ export class Graph2D {
     console.log(`[createEdgeLines] Complete - added ${validEdgeCount} edges to scene`);
   }
 
-  /**
-   * Update arrow scales and positions to maintain constant screen-space size during zoom
-   */
-  private updateArrowScales(): void {
-    if (!this.edgeLines || !(this.edgeLines instanceof THREE.Group)) return;
-
-    // For screen-space sizing, arrows should scale INVERSELY with zoom
-    const scale = 1 / this.zoomLevel;
-
-    // Calculate current world units per pixel for positioning
-    const viewHeight = this.camera.top - this.camera.bottom;
-    const screenHeight = window.innerHeight;
-    const worldUnitsPerPixel = viewHeight / screenHeight;
-
-    // Node size in pixels
-    const nodePixelSize = 9.0;
-    const offsetDistance = (nodePixelSize * 0.5) * worldUnitsPerPixel;
-
-    // Update arrow instances in the edge group
-    this.edgeLines.children.forEach(child => {
-      if (child instanceof THREE.InstancedMesh) {
-        // Handle instanced mesh (optimized path)
-        const userData = child.userData as {
-          edgeData: Array<{fromX: number, fromY: number, toX: number, toY: number, angle: number}>;
-          baseArrowSize: number;
-        };
-
-        if (!userData || !userData.edgeData) return;
-
-        const matrix = new THREE.Matrix4();
-        const scaledArrowTipOffset = userData.baseArrowSize * 0.8 * scale;
-
-        for (let i = 0; i < userData.edgeData.length; i++) {
-          const data = userData.edgeData[i];
-
-          // Calculate direction from angle
-          const dirX = Math.cos(data.angle);
-          const dirY = Math.sin(data.angle);
-
-          // Position arrow tip offset from target node
-          const arrowX = data.toX - dirX * (offsetDistance + scaledArrowTipOffset);
-          const arrowY = data.toY - dirY * (offsetDistance + scaledArrowTipOffset);
-
-          // Build transformation matrix with rotation and scale
-          matrix.makeRotationZ(data.angle - Math.PI / 2);
-          matrix.scale(new THREE.Vector3(scale, scale, scale));
-          matrix.setPosition(arrowX, arrowY, 0.1);
-
-          child.setMatrixAt(i, matrix);
-        }
-
-        child.instanceMatrix.needsUpdate = true;
-      } else if (child instanceof THREE.Mesh && child.geometry.index && child.userData) {
-        // Legacy path: individual arrow meshes (for backwards compatibility)
-        const userData = child.userData as {
-          fromX: number;
-          fromY: number;
-          toX: number;
-          toY: number;
-          dirX: number;
-          dirY: number;
-          baseArrowSize: number;
-        };
-
-        child.scale.set(scale, scale, scale);
-        const scaledArrowTipOffset = userData.baseArrowSize * 0.8 * scale;
-        const arrowX = userData.toX - userData.dirX * (offsetDistance + scaledArrowTipOffset);
-        const arrowY = userData.toY - userData.dirY * (offsetDistance + scaledArrowTipOffset);
-        child.position.set(arrowX, arrowY, 0.1);
-      }
-    });
-  }
 
   private clearEdgeLines(): void {
     if (this.edgeLines) {
@@ -3436,7 +3467,6 @@ export class Graph2D {
     if (this.config.edgesVisible && this.edges.length > 0) {
       this.clearEdgeLines();
       this.createEdgeLines();
-      this.updateArrowScales();
     } else {
       if (STATUS) console.log(`[relayoutExistingNodes] Skipping edge creation (edgesVisible=${this.config.edgesVisible}, edges.length=${this.edges.length})`);
     }
@@ -3509,9 +3539,6 @@ export class Graph2D {
       const material = this.pointCloud.material as THREE.PointsMaterial;
       material.size = scale;
     }
-
-    // Update arrow scales to maintain constant screen-space size
-    this.updateArrowScales();
 
     // Render scene
     if (this.renderer) {
@@ -3982,6 +4009,20 @@ export class Graph2D {
   }
 
   /**
+   * Announce selected nodes to the rest of pmcvis via WebSocket
+   * This method is called whenever the selection changes
+   */
+  private announceSelectionChange(): void {
+    // Only announce if we have a loaded project and socket is connected
+    if (!this.loadedProjectId) {
+      return;
+    }
+
+    const selectedNodes = this.getSelectedNodes();
+    this.prismAPI.announceSelectedNodes(this.loadedProjectId, selectedNodes);
+  }
+
+  /**
    * Remove all transition (t-type) nodes and create direct edges between connected state (s-type) nodes
    */
   public async removeTransitionNodes(): Promise<void> {
@@ -4118,13 +4159,28 @@ export class Graph2D {
       this.prismAPI.progressIndicator.updateProgress(80);
       this.prismAPI.progressIndicator.setStatus('Reloading graph with filtered data...');
 
-      // Clear selection and reload graph with filtered data
+      // Clear selection
       this.clearSelection();
-      await this.loadGraph('0', filteredNodes, reindexedEdges);
 
-      this.prismAPI.progressIndicator.updateProgress(100);
-      this.prismAPI.progressIndicator.hide();
-      this.ui.updateStatus(`Ignored ${tNodeIndices.size.toLocaleString()} transition nodes, added ${newEdges.length.toLocaleString()} new edges`);
+      // If no layout has been selected yet, just update the data without rendering
+      if (this.currentLayout === 'none') {
+        this.nodes = filteredNodes;
+        this.edges = reindexedEdges;
+        this.nodeCount = filteredNodes.length;
+        this.ui.updateNodeCount(this.nodeCount);
+        this.ui.updateModelInfo('0', this.nodeCount, reindexedEdges.length);
+        this.updateEdgesButtonState(true); // Always enable after filtering (edges reprocessed)
+        this.prismAPI.progressIndicator.updateProgress(100);
+        this.prismAPI.progressIndicator.hide();
+        this.ui.updateStatus(`Ignored ${tNodeIndices.size.toLocaleString()} transition nodes, added ${newEdges.length.toLocaleString()} new edges. Select a layout to visualize.`);
+      } else {
+        // Layout is selected, reload and render the graph
+        await this.loadGraph('0', filteredNodes, reindexedEdges);
+        this.updateEdgesButtonState(true); // Always enable after filtering (edges reprocessed)
+        this.prismAPI.progressIndicator.updateProgress(100);
+        this.prismAPI.progressIndicator.hide();
+        this.ui.updateStatus(`Ignored ${tNodeIndices.size.toLocaleString()} transition nodes, added ${newEdges.length.toLocaleString()} new edges`);
+      }
     } catch (error) {
       console.error('Error ignoring transition nodes:', error);
       this.prismAPI.progressIndicator.hide();
@@ -4269,13 +4325,28 @@ export class Graph2D {
       this.prismAPI.progressIndicator.updateProgress(80);
       this.prismAPI.progressIndicator.setStatus('Reloading graph with filtered data...');
 
-      // Clear selection and reload graph with filtered data
+      // Clear selection
       this.clearSelection();
-      await this.loadGraph('0', filteredNodes, reindexedEdges);
 
-      this.prismAPI.progressIndicator.updateProgress(100);
-      this.prismAPI.progressIndicator.hide();
-      this.ui.updateStatus(`Ignored ${sNodeIndices.size.toLocaleString()} state nodes, added ${newEdges.length.toLocaleString()} new edges`);
+      // If no layout has been selected yet, just update the data without rendering
+      if (this.currentLayout === 'none') {
+        this.nodes = filteredNodes;
+        this.edges = reindexedEdges;
+        this.nodeCount = filteredNodes.length;
+        this.ui.updateNodeCount(this.nodeCount);
+        this.ui.updateModelInfo('0', this.nodeCount, reindexedEdges.length);
+        this.updateEdgesButtonState(true); // Always enable after filtering (edges reprocessed)
+        this.prismAPI.progressIndicator.updateProgress(100);
+        this.prismAPI.progressIndicator.hide();
+        this.ui.updateStatus(`Ignored ${sNodeIndices.size.toLocaleString()} state nodes, added ${newEdges.length.toLocaleString()} new edges. Select a layout to visualize.`);
+      } else {
+        // Layout is selected, reload and render the graph
+        await this.loadGraph('0', filteredNodes, reindexedEdges);
+        this.updateEdgesButtonState(true); // Always enable after filtering (edges reprocessed)
+        this.prismAPI.progressIndicator.updateProgress(100);
+        this.prismAPI.progressIndicator.hide();
+        this.ui.updateStatus(`Ignored ${sNodeIndices.size.toLocaleString()} state nodes, added ${newEdges.length.toLocaleString()} new edges`);
+      }
     } catch (error) {
       console.error('Error ignoring state nodes:', error);
       this.prismAPI.progressIndicator.hide();
@@ -4317,6 +4388,8 @@ export class Graph2D {
       listElement.innerHTML = '<div class="no-selection-message">Click on a node to select it</div>';
       // Reset checked counter
       this.updateCheckedNodesCounter();
+      // Announce empty selection to pmcvis
+      this.announceSelectionChange();
       return;
     }
 
@@ -4330,6 +4403,9 @@ export class Graph2D {
 
     // Update checked nodes counter after rendering
     setTimeout(() => this.updateCheckedNodesCounter(), 0);
+
+    // Announce selection change to pmcvis
+    this.announceSelectionChange();
   }
 
   /**
@@ -4656,12 +4732,55 @@ export class Graph2D {
         this.clearEdgeLines();
       }
       this.createEdgeLines();
-      this.updateArrowScales();
       this.ui.updateStatus('Edges visible');
     } else {
       this.clearEdgeLines();
       this.ui.updateStatus('Edges hidden');
     }
+  }
+
+  /**
+   * Check if nodes contain only one type (all 's' or all 't')
+   * and update the edges button state accordingly
+   *
+   * @param afterFiltering - If true, button is always enabled (edges were reprocessed after filtering)
+   */
+  private updateEdgesButtonState(afterFiltering: boolean = false): void {
+    // After filtering operations (ignore transition/state nodes), always enable the button
+    // because edges are reprocessed between remaining nodes
+    if (afterFiltering) {
+      this.ui.setEdgesButtonEnabled(true);
+      return;
+    }
+
+    if (this.nodes.length === 0) {
+      // No nodes, enable button (default state)
+      this.ui.setEdgesButtonEnabled(true);
+      return;
+    }
+
+    // Check if all nodes are the same type
+    let hasStateNodes = false;
+    let hasTransitionNodes = false;
+
+    for (const node of this.nodes) {
+      if (node.type === 's') {
+        hasStateNodes = true;
+      } else if (node.type === 't') {
+        hasTransitionNodes = true;
+      }
+
+      // If we have both types, we can enable the button
+      if (hasStateNodes && hasTransitionNodes) {
+        this.ui.setEdgesButtonEnabled(true);
+        return;
+      }
+    }
+
+    // Only one type exists - disable button only if we're in parameter positioning mode
+    // In layout mode or after filtering, edges can still exist between same-type nodes
+    const shouldDisable = this.config.useParameterPositioning;
+    this.ui.setEdgesButtonEnabled(!shouldDisable);
   }
 
   public toggleClusters(): void {
@@ -4711,54 +4830,77 @@ export class Graph2D {
     // Show the display
     displayElement.classList.remove('hidden');
 
-    // Build HTML for each principal component
-    let html = '';
+    // Find max absolute value across all eigenvectors for color scaling
+    let maxAbsValue = 0;
+    this.pcaResults.eigenvectors.forEach(pc => {
+      pc.eigenvector.forEach(val => {
+        maxAbsValue = Math.max(maxAbsValue, Math.abs(val));
+      });
+    });
 
+    // Build HTML with scrollable table layout
+    let html = '<div class="pca-eigenvectors-table-container">';
+    html += '<table class="pca-eigenvectors-table">';
+    html += '<thead><tr>';
+    html += '<th class="pca-param-header">Parameter</th>';
+
+    // Header row with PC names and variance
     this.pcaResults.eigenvectors.forEach((pc, pcIndex) => {
       const pcName = `PC${pcIndex + 1}`;
       const variance = (pc.eigenvalue / this.pcaResults!.eigenvectors.reduce((sum, v) => sum + v.eigenvalue, 0) * 100).toFixed(1);
-
-      html += `<div class="pca-component">`;
-      html += `<div class="pca-component-title">
-        <span>${pcName}</span>
-        <span class="pca-variance">${variance}% variance</span>
-      </div>`;
-      html += `<div class="pca-parameter-list">`;
-
-      // Create array of {name, loading} and sort by absolute loading value
-      const loadings = this.pcaResults!.parameterNames.map((name, i) => ({
-        name: name,
-        loading: pc.eigenvector[i]
-      }));
-
-      // Sort by absolute value descending
-      loadings.sort((a, b) => Math.abs(b.loading) - Math.abs(a.loading));
-
-      // Show ALL parameters (no threshold filtering)
-      loadings.forEach(item => {
-        const absLoading = Math.abs(item.loading);
-        const isPositive = item.loading > 0;
-        const cssClass = isPositive ? 'positive' : 'negative';
-        const sign = isPositive ? '+' : '−';
-
-        // Use big plus/minus icons
-        const iconSvg = isPositive
-          ? '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
-          : '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3 8h10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>';
-
-        // Extract parameter name only (remove category prefix if present)
-        const paramName = item.name.includes('::') ? item.name.split('::')[1] : item.name;
-
-        html += `<div class="pca-parameter-item ${cssClass}">
-          <span class="pca-icon">${iconSvg}</span>
-          <span class="pca-parameter-name">${paramName}</span>
-          <span class="pca-loading-value">${item.loading.toFixed(3)}</span>
-        </div>`;
-      });
-
-      html += `</div></div>`;
+      html += `<th class="pca-pc-header">${pcName}<br><span class="pca-variance">${variance}%</span></th>`;
     });
 
+    html += '</tr></thead><tbody>';
+
+    // Create rows for each parameter (keep PCA menu order)
+    this.pcaResults.parameterNames.forEach((paramFullName, paramIndex) => {
+      // Extract parameter name only (remove category prefix if present)
+      const paramName = paramFullName.includes('::') ? paramFullName.split('::')[1] : paramFullName;
+
+      html += '<tr>';
+      html += `<td class="pca-param-name-cell">${paramName}</td>`;
+
+      // Add a cell for each principal component
+      this.pcaResults!.eigenvectors.forEach(pc => {
+        const loading = pc.eigenvector[paramIndex];
+        const absLoading = Math.abs(loading);
+        const isPositive = loading > 0;
+
+        // Calculate color intensity based on ratio to max value
+        // Use minimum 30% intensity to ensure legibility
+        const intensityRatio = Math.max(0.3, absLoading / maxAbsValue);
+
+        // Max intensity colors (darker for better contrast)
+        const maxPositiveColor = { r: 0, g: 100, b: 0 }; // Dark green
+        const maxNegativeColor = { r: 139, g: 0, b: 0 }; // Dark red
+
+        // Max background colors (stronger but still readable)
+        const maxPositiveBg = { r: 200, g: 255, b: 200 }; // Light green
+        const maxNegativeBg = { r: 255, g: 200, b: 200 }; // Light red
+
+        // Interpolate from white/light to max color
+        // Text color always has good contrast
+        const textColor = isPositive
+          ? `rgb(${Math.round(255 - (255 - maxPositiveColor.r) * intensityRatio)}, ${Math.round(255 - (255 - maxPositiveColor.g) * intensityRatio)}, ${Math.round(255 - (255 - maxPositiveColor.b) * intensityRatio)})`
+          : `rgb(${Math.round(255 - (255 - maxNegativeColor.r) * intensityRatio)}, ${Math.round(255 - (255 - maxNegativeColor.g) * intensityRatio)}, ${Math.round(255 - (255 - maxNegativeColor.b) * intensityRatio)})`;
+
+        const bgColor = isPositive
+          ? `rgb(${Math.round(255 - (255 - maxPositiveBg.r) * intensityRatio)}, ${Math.round(255 - (255 - maxPositiveBg.g) * intensityRatio)}, ${Math.round(255 - (255 - maxPositiveBg.b) * intensityRatio)})`
+          : `rgb(${Math.round(255 - (255 - maxNegativeBg.r) * intensityRatio)}, ${Math.round(255 - (255 - maxNegativeBg.g) * intensityRatio)}, ${Math.round(255 - (255 - maxNegativeBg.b) * intensityRatio)})`;
+
+        // Icon for sign (only show + for positive, negative numbers already have -)
+        const icon = isPositive ? '+' : '';
+
+        html += `<td class="pca-value-cell" style="background: ${bgColor}; color: ${textColor};">
+          <span class="pca-sign">${icon}</span>${loading.toFixed(3)}
+        </td>`;
+      });
+
+      html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
     contentElement.innerHTML = html;
 
     if (STATUS) console.log('[Graph2D] Updated PCA eigenvectors display');
@@ -5342,13 +5484,15 @@ export class Graph2D {
     }
 
     // X-axis positioning: Use minValues.y position if visible, otherwise snap to viewBottom
+    // Add offset to prevent axis from being hidden behind taskbar
+    const bottomOffset = labelHeight * 0.5; // Offset to keep axis above taskbar
     let xAxisY: number;
     if (minYWorldPos >= viewBottom && minYWorldPos <= viewTop) {
       // Minimum Y value is visible on screen, position X-axis there
       xAxisY = minYWorldPos;
     } else {
-      // Minimum Y value is off-screen, snap X-axis to bottom edge
-      xAxisY = viewBottom;
+      // Minimum Y value is off-screen, snap X-axis above bottom edge (accounting for taskbar)
+      xAxisY = viewBottom + bottomOffset;
     }
     // X-axis: horizontal line starting from Y-axis position (minValues.x) extending right
     // Ends at the last tick position
@@ -5535,10 +5679,11 @@ export class Graph2D {
     // Add axis titles positioned at screen edges
     // Get parameter names from API metadata
     const paramLabels = this.prismAPI.getAllParameterLabels();
-    const xParamLabel = xParamIndex;
-    const yParamLabel = yParamIndex;
+    // Extract parameter name only (remove category:: prefix if present)
+    const xParamLabel = xParamIndex.includes('::') ? xParamIndex.split('::')[1] : xParamIndex;
+    const yParamLabel = yParamIndex.includes('::') ? yParamIndex.split('::')[1] : yParamIndex;
 
-    // X-axis title: centered horizontally at bottom of screen
+    // X-axis title: centered horizontally, positioned below axis (sticks to bottom)
     const { texture: xTitleTexture, aspectRatio: xTitleAspect } = this.createTextTexture(xParamLabel, 64);
     const xTitleMaterial = new THREE.SpriteMaterial({
       map: xTitleTexture,
@@ -5547,8 +5692,9 @@ export class Graph2D {
       sizeAttenuation: false
     });
     const xTitle = new THREE.Sprite(xTitleMaterial);
-    const xTitleX = (yAxisX + maxXWorldPos) / 2; // Center of screen
-    xTitle.position.set(xTitleX, xAxisY + labelScale * -0.4, 0);
+    const xTitleX = (yAxisX + maxXWorldPos) / 2; // Center horizontally between y-axis and right edge
+    // Position x-axis title below the axis line (follows axis, sticks to bottom when axis is at bottom)
+    xTitle.position.set(xTitleX, xAxisY - labelScale * 0.8, 0);
     // Scale proportionally to aspect ratio
     const xTitleHeight = labelScale * 0.7;
     xTitle.scale.set(xTitleHeight * xTitleAspect, xTitleHeight, 1);
@@ -5699,6 +5845,42 @@ export class Graph2D {
       return;
     }
 
+    // Check if parameters are from Model Checking Results and have no values
+    const isXModelChecking = xParam.startsWith('Model Checking Results::');
+    const isYModelChecking = yParam.startsWith('Model Checking Results::');
+    const isColorModelChecking = colorParamIndex.startsWith('Model Checking Results::');
+
+    if ((isXModelChecking || isYModelChecking || isColorModelChecking) &&
+        !this.prismAPI.hasModelCheckingResults(this.nodes)) {
+      const message = 'The selected parameter(s) are from Model Checking Results, but no values are available yet.\n\n' +
+                      'Please run "Check Model" first to calculate model checking results.\n\n' +
+                      'If you already ran "Check Model", you may need to reload the project to see the results.';
+      alert(message);
+      this.ui.updateStatus("Model checking results not available");
+      return;
+    }
+
+    // Check if individual parameters have values
+    if (!this.prismAPI.hasParameterValues(xParam, this.nodes)) {
+      alert(`X-axis parameter "${xParam}" has no values available.\n\nPlease check the model or reload the project.`);
+      this.ui.updateStatus(`Parameter ${xParam} not available`);
+      return;
+    }
+
+    if (!this.prismAPI.hasParameterValues(yParam, this.nodes)) {
+      alert(`Y-axis parameter "${yParam}" has no values available.\n\nPlease check the model or reload the project.`);
+      this.ui.updateStatus(`Parameter ${yParam} not available`);
+      return;
+    }
+
+    if (colorParamIndex && colorParamIndex !== "" && colorParamIndex !== "-1" && colorParamIndex !== "__type__") {
+      if (!this.prismAPI.hasParameterValues(colorParamIndex, this.nodes)) {
+        alert(`Color parameter "${colorParamIndex}" has no values available.\n\nPlease check the model or reload the project.`);
+        this.ui.updateStatus(`Parameter ${colorParamIndex} not available`);
+        return;
+      }
+    }
+
     if (STATUS) console.log(`[Parameter View] Rebuilding visualization for parameters ${xParam} and ${yParam}...`);
     this.ui.updateStatus(`Rearranging nodes by parameters ${xParam} and ${yParam}...`);
 
@@ -5819,7 +6001,7 @@ export class Graph2D {
 
     try {
       const link = document.createElement('a');
-      link.download = `2d-graph-${this.nodeCount}-nodes.png`;
+      link.download = `pmcvis-globalview-${this.nodeCount}-nodes.png`;
       link.href = this.renderer.domElement.toDataURL();
       link.click();
       this.ui.updateStatus("Image exported");
@@ -5900,7 +6082,6 @@ export class Graph2D {
       // Create edge lines if edges are visible
       if (this.config.edgesVisible) {
         this.createEdgeLines();
-        this.updateArrowScales();
       }
 
       // Create point cloud
@@ -5966,6 +6147,10 @@ export class Graph2D {
     return this.nodeCount;
   }
 
+  public getNodes(): NodeData[] {
+    return this.nodes;
+  }
+
   public getGeometryPointCount(): number {
     return this.geometryToNodesMap.size;
   }
@@ -6026,6 +6211,7 @@ export class Graph2D {
       material.uniforms.pointSize.value = size;
       material.needsUpdate = true;
       if (DEBUG) console.log(`[Graph2D] Node point size set to: ${size}`);
+
     }
   }
 

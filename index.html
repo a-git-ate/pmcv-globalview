@@ -2,9 +2,8 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>2D Million Node Graph - TypeScript</title>
+    <title>PMC-Vis GlobalView</title>
   </head>
   <body>
     <!-- Project Task Bar -->
@@ -74,9 +73,9 @@
       <table id="pca-table">
         <thead class="pca-type-section">
           <tr>
-            <th class="pca-section-title">Knotentyp:</th>
-            <th><label>s<input type="checkbox" id="pca-node-type-s" checked /></label></th>
-            <th><label>t<input type="checkbox" id="pca-node-type-t" checked /></label></th>
+            <th class="pca-section-title">Node Type:</th>
+            <th><label>States<input type="checkbox" id="pca-node-type-s" checked /></label></th>
+            <th><label>Transitions<input type="checkbox" id="pca-node-type-t" checked /></label></th>
           </tr>
           <tr>
             <th class="pca-section-title">Select All:</th>
@@ -135,7 +134,7 @@
               <div class="slider-container">
                 <label class="slider-label">
                   <span>Stack Label Size:</span>
-                  <input type="range" id="label-size-slider" min="20" max="140" value="80" step="5" />
+                  <input type="range" id="label-size-slider" min="7" max="140" value="80" step="5" />
                   <span class="slider-value" id="label-size-value">80</span>
                 </label>
               </div>

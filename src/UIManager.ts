@@ -485,6 +485,20 @@ export class UIManager {
     });
   }
 
+  public setEdgesButtonEnabled(enabled: boolean): void {
+    const edgesButton = this.getElement('btn-edges') as HTMLButtonElement | null;
+    if (edgesButton) {
+      edgesButton.disabled = !enabled;
+      if (!enabled) {
+        edgesButton.style.opacity = '0.5';
+        edgesButton.style.cursor = 'not-allowed';
+      } else {
+        edgesButton.style.opacity = '1';
+        edgesButton.style.cursor = 'pointer';
+      }
+    }
+  }
+
   public updateProgress(percent: number): void {
     const progressBar = this.getElement('progress-bar') as HTMLElement | null;
     const progressContainer = this.getElement('progress') as HTMLElement | null;

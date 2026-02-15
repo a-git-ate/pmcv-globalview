@@ -93,15 +93,15 @@ body {
 }
 
 .check-button {
-  background: #27ae60;
-  border: 1px solid #229954;
+  background: #3498db;
+  border: 1px solid #2980b9;
   margin-left: 10px;
   padding: 8px 20px;
   font-weight: bold;
 }
 
 .check-button:hover:not(:disabled) {
-  background: #229954;
+  background: #2980b9;
 }
 .param-nominal-button.filtered:hover:not(:disabled) {
   background: #999999;
@@ -116,15 +116,15 @@ body {
 }
 
 .reset-button {
-  background: #e74c3c;
-  border: 1px solid #c0392b;
+  background: #3498db;
+  border: 1px solid #2980b9;
   margin-left: 5px;
   padding: 8px 20px;
   font-weight: bold;
 }
 
 .reset-button:hover:not(:disabled) {
-  background: #c0392b;
+  background: #2980b9;
 }
 
 .reset-button:disabled {
@@ -698,16 +698,23 @@ button[id*="toggle"] {
 }
 
 .pca-category-row {
-  background: #ecf0f1;
+  background: #cdcdcd !important;
+}
+
+.pca-category-row:hover {
+  background: #d5dbdb !important;
+}
+
+.pca-category-row td {
+  border-top: 1px solid #bdc3c7;
+  border-bottom: 1px solid #bdc3c7;
 }
 
 .pca-category-name {
   font-weight: bold;
-  font-size: 11px;
+  font-size: 12px;
   color: #2c3e50;
   padding: 8px 10px;
-  border-top: 1px solid #bdc3c7;
-  border-bottom: 1px solid #bdc3c7;
 }
 
 .pca-param-row {
@@ -918,13 +925,13 @@ button[id*="toggle"] {
 }
 
 #btn-show-all-nodes {
-  background: #27ae60;
-  border-color: #229954;
+  background: #3498db;
+  border-color: #2980b9;
   color: white;
 }
 
 #btn-show-all-nodes:hover:not(:disabled) {
-  background: #229954;
+  background: #2980b9;
 }
 
 #btn-select-all-list, #btn-deselect-all-list {
@@ -938,24 +945,24 @@ button[id*="toggle"] {
 }
 
 .btn-table-view {
-  background: #9b59b6;
-  border-color: #8e44ad;
+  background: #3498db;
+  border-color: #2980b9;
   color: white;
 }
 
 .btn-table-view:hover:not(:disabled) {
-  background: #8e44ad;
+  background: #2980b9;
 }
 
 .btn-local-view {
-  background: #e67e22;
-  border-color: #d35400;
+  background: #3498db;
+  border-color: #2980b9;
   color: white;
   font-weight: bold;
 }
 
 .btn-local-view:hover:not(:disabled) {
-  background: #d35400;
+  background: #2980b9;
 }
 
 .btn-local-view:disabled {
@@ -1111,12 +1118,12 @@ button[id*="toggle"] {
 }
 
 #btn-clear-selection {
-  background: #95a5a6;
-  border-color: #7f8c8d;
+  background: #3498db;
+  border-color: #2980b9;
 }
 
 #btn-clear-selection:hover:not(:disabled) {
-  background: #7f8c8d;
+  background: #2980b9;
 }
 
 /* Collapsible Control Sections */
@@ -1194,73 +1201,82 @@ button[id*="toggle"] {
   border-bottom: 2px solid #3498db;
 }
 
-.pca-component {
-  margin-bottom: 15px;
-  padding: 8px;
-  background: white;
-  border-radius: 3px;
-  border: 1px solid #ecf0f1;
+/* Scrollable container for PCA table */
+.pca-eigenvectors-table-container {
+  overflow-x: auto;
+  overflow-y: visible;
+  max-width: 100%;
+  margin-top: 10px;
 }
 
-.pca-component-title {
+/* PCA eigenvectors table */
+.pca-eigenvectors-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+  background: white;
+  border: 1px solid #ddd;
+}
+
+.pca-eigenvectors-table th,
+.pca-eigenvectors-table td {
+  padding: 6px 10px;
+  border: 1px solid #ddd;
+  text-align: left;
+}
+
+.pca-eigenvectors-table thead {
+  background: #f8f9fa;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.pca-param-header {
+  font-weight: bold;
+  font-size: 11px;
+  color: #2c3e50;
+  min-width: 60px;
+  position: sticky;
+  left: 0;
+  background: #f8f9fa;
+  z-index: 11;
+}
+
+.pca-pc-header {
   font-weight: bold;
   font-size: 11px;
   color: #34495e;
-  margin-bottom: 8px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  text-align: center;
+  min-width: 30px;
+  white-space: nowrap;
 }
 
 .pca-variance {
-  font-size: 10px;
+  font-size: 9px;
   color: #7f8c8d;
   font-weight: normal;
 }
 
-.pca-parameter-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 5px;
-}
-
-.pca-parameter-item {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 8px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-family: 'Courier New', monospace;
+.pca-param-name-cell {
+  font-weight: 500;
+  color: #2c3e50;
+  position: sticky;
+  left: 0;
+  background: white;
+  z-index: 5;
   white-space: nowrap;
-  gap: 4px;
+  min-width: 60px;
 }
 
-.pca-parameter-item.positive {
-  background: #d4edda;
-  border: 1px solid #c3e6cb;
-  color: #155724;
-}
-
-.pca-parameter-item.negative {
-  background: #f8d7da;
-  border: 1px solid #f5c6cb;
-  color: #721c24;
-}
-
-.pca-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-}
-
-.pca-parameter-name {
-  flex: 1;
-}
-
-.pca-loading-value {
+.pca-value-cell {
+  text-align: center;
   font-weight: bold;
-  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.pca-sign {
+  font-weight: bold;
+  margin-right: 2px;
 }

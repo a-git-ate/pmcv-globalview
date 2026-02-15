@@ -392,15 +392,37 @@ export class ProjectManager {
 
     // Create table rows grouped by category
     for (const [categoryName, params] of paramsByCategory.entries()) {
-      // Create category header row
+      // Create category header row (clickable, no checkbox)
       const categoryRow = document.createElement('tr');
       categoryRow.className = 'pca-category-row';
+      categoryRow.dataset.category = categoryName;
+      categoryRow.style.cursor = 'pointer';
 
       const categoryCell = document.createElement('td');
       categoryCell.className = 'pca-category-name';
       categoryCell.textContent = categoryName;
-      categoryCell.colSpan = 3;
+      categoryCell.colSpan = 3; // Span all three columns
       categoryRow.appendChild(categoryCell);
+
+      // Add click event to toggle all checkboxes in this category
+      categoryRow.addEventListener('click', () => {
+        // Find all parameter checkboxes in this category that are NOT disabled
+        const paramCheckboxes = document.querySelectorAll(
+          `.pca-param-checkbox[data-category="${categoryName}"]:not(:disabled)`
+        ) as NodeListOf<HTMLInputElement>;
+
+        if (paramCheckboxes.length === 0) return;
+
+        // Determine if we should check or uncheck (based on if ANY are unchecked)
+        const anyUnchecked = Array.from(paramCheckboxes).some(cb => !cb.checked);
+        const newState = anyUnchecked;
+
+        paramCheckboxes.forEach(paramCheckbox => {
+          paramCheckbox.checked = newState;
+        });
+
+        this.updatePCAApplyButton();
+      });
 
       this.PCAOptionsContent.appendChild(categoryRow);
 
@@ -426,36 +448,34 @@ export class ProjectManager {
         nameCell.textContent = displayName;
         row.appendChild(nameCell);
 
-        // S node checkbox cell
+        // S node checkbox cell - always create, but disable if not available
         const sCell = document.createElement('td');
         sCell.className = 'pca-checkbox-cell';
-        if (param.inS) {
-          const sCheckbox = document.createElement('input');
-          sCheckbox.type = 'checkbox';
-          sCheckbox.className = 'pca-param-checkbox';
-          sCheckbox.dataset.nodeType = 's';
-          sCheckbox.dataset.category = categoryName;
-          sCheckbox.dataset.paramName = param.paramName;
-          sCheckbox.checked = true;
-          sCheckbox.addEventListener('change', () => this.updatePCAApplyButton());
-          sCell.appendChild(sCheckbox);
-        }
+        const sCheckbox = document.createElement('input');
+        sCheckbox.type = 'checkbox';
+        sCheckbox.className = 'pca-param-checkbox';
+        sCheckbox.dataset.nodeType = 's';
+        sCheckbox.dataset.category = categoryName;
+        sCheckbox.dataset.paramName = param.paramName;
+        sCheckbox.checked = param.inS;
+        sCheckbox.disabled = !param.inS;
+        sCheckbox.addEventListener('change', () => this.updatePCAApplyButton());
+        sCell.appendChild(sCheckbox);
         row.appendChild(sCell);
 
-        // T node checkbox cell
+        // T node checkbox cell - always create, but disable if not available
         const tCell = document.createElement('td');
         tCell.className = 'pca-checkbox-cell';
-        if (param.inT) {
-          const tCheckbox = document.createElement('input');
-          tCheckbox.type = 'checkbox';
-          tCheckbox.className = 'pca-param-checkbox';
-          tCheckbox.dataset.nodeType = 't';
-          tCheckbox.dataset.category = categoryName;
-          tCheckbox.dataset.paramName = param.paramName;
-          tCheckbox.checked = true;
-          tCheckbox.addEventListener('change', () => this.updatePCAApplyButton());
-          tCell.appendChild(tCheckbox);
-        }
+        const tCheckbox = document.createElement('input');
+        tCheckbox.type = 'checkbox';
+        tCheckbox.className = 'pca-param-checkbox';
+        tCheckbox.dataset.nodeType = 't';
+        tCheckbox.dataset.category = categoryName;
+        tCheckbox.dataset.paramName = param.paramName;
+        tCheckbox.checked = param.inT;
+        tCheckbox.disabled = !param.inT;
+        tCheckbox.addEventListener('change', () => this.updatePCAApplyButton());
+        tCell.appendChild(tCheckbox);
         row.appendChild(tCell);
 
         this.PCAOptionsContent.appendChild(row);
@@ -509,6 +529,8 @@ export class ProjectManager {
         this.updatePCAApplyButton();
       });
     }
+
+    // Note: Category row click handlers are now added directly when creating the rows
   }
 
   /**
@@ -538,16 +560,15 @@ export class ProjectManager {
       // Case 1: Both node types checked - only parameters in both are active
       if (sChecked && tChecked) {
         if (inBoth) {
-          // Enable both checkboxes
-          if (sCheckbox) {
+          // Enable both checkboxes (if they exist for that parameter)
+          if (sCheckbox && inS) {
             sCheckbox.disabled = false;
           }
-          if (tCheckbox) {
+          if (tCheckbox && inT) {
             tCheckbox.disabled = false;
           }
-          rowElement.style.opacity = '1';
         } else {
-          // Disable and uncheck
+          // Disable and uncheck (but keep checkbox visible)
           if (sCheckbox) {
             sCheckbox.disabled = true;
             sCheckbox.checked = false;
@@ -556,19 +577,19 @@ export class ProjectManager {
             tCheckbox.disabled = true;
             tCheckbox.checked = false;
           }
-          rowElement.style.opacity = '0.4';
         }
       }
       // Case 2: Only S checked
       else if (sChecked && !tChecked) {
-        if (sCheckbox) {
+        if (sCheckbox && inS) {
           sCheckbox.disabled = false;
+        } else if (sCheckbox) {
+          sCheckbox.disabled = true;
         }
         if (tCheckbox) {
           tCheckbox.disabled = true;
           tCheckbox.checked = false;
         }
-        rowElement.style.opacity = inS ? '1' : '0.4';
       }
       // Case 3: Only T checked
       else if (!sChecked && tChecked) {
@@ -576,10 +597,11 @@ export class ProjectManager {
           sCheckbox.disabled = true;
           sCheckbox.checked = false;
         }
-        if (tCheckbox) {
+        if (tCheckbox && inT) {
           tCheckbox.disabled = false;
+        } else if (tCheckbox) {
+          tCheckbox.disabled = true;
         }
-        rowElement.style.opacity = inT ? '1' : '0.4';
       }
       // Case 4: Both unchecked
       else {
@@ -591,7 +613,6 @@ export class ProjectManager {
           tCheckbox.disabled = true;
           tCheckbox.checked = false;
         }
-        rowElement.style.opacity = '0.4';
       }
     });
 
@@ -1429,6 +1450,52 @@ export class ProjectManager {
    */
   private async displayParameterRange(): Promise<void> {
     console.log("[ProjectManager] Applying filters");
+
+    // Check if any Model Checking Results parameters are being filtered
+    const minInputs = document.querySelectorAll('.param-min-input') as NodeListOf<HTMLInputElement>;
+    const maxInputs = document.querySelectorAll('.param-max-input') as NodeListOf<HTMLInputElement>;
+    const nominalButtons = document.querySelectorAll('.param-nominal-button.filtered') as NodeListOf<HTMLElement>;
+
+    const allInputs = [...Array.from(minInputs), ...Array.from(maxInputs), ...Array.from(nominalButtons)];
+    const modelCheckingInputs = allInputs.filter(input => {
+      const category = input.dataset?.category;
+      return category === 'Model Checking Results';
+    });
+
+    if (modelCheckingInputs.length > 0) {
+      // Check if model checking results are available
+      if (!this.prismAPI.hasModelCheckingResults(this.graph.getNodes())) {
+        const message = 'You are trying to filter by Model Checking Results, but no values are available yet.\n\n' +
+                        'Please run "Check Model" first to calculate model checking results.\n\n' +
+                        'If you already ran "Check Model", you may need to reload the project to see the results.';
+        alert(message);
+        return;
+      }
+    }
+
+    // Check if filtered parameters have values
+    const missingParams: string[] = [];
+    for (const input of allInputs) {
+      const category = input.dataset?.category;
+      const paramName = input.dataset?.paramName;
+
+      if (category && paramName) {
+        const fullParamName = `${category}::${paramName}`;
+        if (!this.prismAPI.hasParameterValues(fullParamName, this.graph.getNodes())) {
+          missingParams.push(fullParamName);
+        }
+      }
+    }
+
+    if (missingParams.length > 0) {
+      const uniqueMissing = [...new Set(missingParams)];
+      const message = `The following filtered parameters have no values available:\n\n` +
+                      `${uniqueMissing.join('\n')}\n\n` +
+                      `Please check the model or reload the project.`;
+      alert(message);
+      return;
+    }
+
     // Reset the flag so filters will be logged again
     this.hasLoggedFilters = false;
     // Apply the filter function to all nodes in the graph

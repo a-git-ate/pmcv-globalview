@@ -425,8 +425,8 @@
         return currentSort.direction === 'asc' ? comparison : -comparison;
       });
 
-      // Re-render
-      const columns = Array.from(headers).map(th => th.dataset.column);
+      // Re-render - filter out undefined columns (checkbox and actions columns)
+      const columns = Array.from(headers).map(th => th.dataset.column).filter(c => c !== undefined);
       renderTableBody(filteredNodes, columns);
     }
 

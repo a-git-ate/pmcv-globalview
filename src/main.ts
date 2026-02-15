@@ -16,17 +16,21 @@ const graphConfig: Partial<GraphConfig> = {
 };
 
 /**
- * Initialize the 2D graph application
+ * Initialize the PMC-Vis GlobalView application
  */
-function initializeApp(): void {
+async function initializeApp(): Promise<void> {
   try {
-    console.log('[Main] Initializing PMCV-Global');
-    
+    console.log('[Main] Initializing PMC-Vis GlobalView');
+
     // Create graph instance with configuration
     graph = new Graph2D(graphConfig);
-    
-    console.log('[Main] Graph initialized successfully');
-    
+
+    // Initialize WebSocket connection for pmcvis synchronization
+    console.log('[Main] Initializing WebSocket connection...');
+    await graph.prismAPI.initializeSocket();
+
+    console.log('[Main] PMC-Vis GlobalView initialized successfully');
+
   } catch (error) {
     handleInitializationError(error);
   }
@@ -48,7 +52,7 @@ function handleInitializationError(error: unknown): void {
   }
   
   // Show error alert
-  alert(`Failed to initialize 2D Graph:\n${message}\n\nPlease check your browser's WebGL support.`);
+  alert(`Failed to initialize PMC-Vis GlobalView:\n${message}\n\nPlease check your browser's WebGL support.`);
 }
 
 /**
@@ -240,7 +244,7 @@ function logSystemInfo(): void {
  * Main entry point
  */
 function main(): void {
-  console.log('Starting 2D Million Node Graph application...');
+  console.log('Starting PMC-Vis GlobalView application...');
   
   // Log system information
   logSystemInfo();

@@ -1,6 +1,7 @@
 import type { NodeData, EdgeData } from './types';
 import type { ProgressIndicator } from './UIManager';
 import { JSONParser } from '@streamparser/json';
+import { socketManager } from './socket';
 
 export interface ParameterMetadata {
   type: 'number' | 'boolean' | 'nominal';
@@ -39,6 +40,11 @@ export class PrismAPI {
   public progressIndicator: ProgressIndicator; // Public so other classes can use it
   private currentAbortController: AbortController | null = null; // For aborting fetch operations
 
+  // Cache for parameter availability - tracks which parameters have actual values
+  // Format: "category::paramName" -> { hasValues: boolean, sampleCount: number }
+  private parameterAvailabilityCache: Map<string, { hasValues: boolean; sampleCount: number }> = new Map();
+  private hasModelCheckingResultsCache: boolean = false;
+
   constructor(baseUrl: string = 'http://localhost:8080', useWorker: boolean = true, progressIndicator?: ProgressIndicator) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.useWorker = useWorker;
@@ -72,6 +78,8 @@ export class PrismAPI {
   clearParameterMetadata(): void {
     console.log('[PrismAPI] Clearing parameterMetadata');
     this.parameterMetadata = null;
+    this.parameterAvailabilityCache.clear();
+    this.hasModelCheckingResultsCache = false;
   }
 
   /**
@@ -529,6 +537,11 @@ export class PrismAPI {
     // Track min/max for numeric parameters
     const paramStats: Record<string, { min: number; max: number }> = {};
 
+    // Track parameter availability - which parameters have actual values
+    // Format: "category::paramName" -> count of nodes with values
+    const paramValueCounts: Map<string, number> = new Map();
+    let modelCheckingResultsCount = 0;
+
     // For large graphs, use sampling for nominal values (but still calculate min/max for all)
     const SAMPLE_THRESHOLD = 50000;
     const SAMPLE_SIZE = 10000;
@@ -576,6 +589,17 @@ export class PrismAPI {
             if (!category.hasOwnProperty(paramName)) continue;
 
             const value = category[paramName];
+
+            // Track parameter availability (check if value is not null/undefined)
+            if (value !== undefined && value !== null) {
+              const paramKey = `${categoryName}::${paramName}`;
+              paramValueCounts.set(paramKey, (paramValueCounts.get(paramKey) || 0) + 1);
+
+              // Track Model Checking Results specifically
+              if (categoryName === 'Model Checking Results') {
+                modelCheckingResultsCount++;
+              }
+            }
 
             // Collect nominal values (with sampling for large graphs)
             if (shouldSampleThisNode && sNominalKeys.includes(paramName)) {
@@ -642,6 +666,17 @@ export class PrismAPI {
             if (!category.hasOwnProperty(paramName)) continue;
 
             const value = category[paramName];
+
+            // Track parameter availability (check if value is not null/undefined)
+            if (value !== undefined && value !== null) {
+              const paramKey = `${categoryName}::${paramName}`;
+              paramValueCounts.set(paramKey, (paramValueCounts.get(paramKey) || 0) + 1);
+
+              // Track Model Checking Results specifically
+              if (categoryName === 'Model Checking Results') {
+                modelCheckingResultsCount++;
+              }
+            }
 
             // Collect nominal values (with sampling for large graphs)
             if (shouldSampleThisNode && tNominalKeys.includes(paramName)) {
@@ -733,6 +768,26 @@ export class PrismAPI {
           param.max = stats.max;
         }
       }
+
+      // Build parameter availability cache
+      // Consider a parameter available if at least 5% of nodes have it (to handle sparse parameters)
+      const minRequiredNodes = Math.max(5, Math.floor(totalNodes * 0.05));
+      console.log(`[PrismAPI] Building parameter availability cache (threshold: ${minRequiredNodes} nodes)...`);
+
+      this.parameterAvailabilityCache.clear();
+      for (const [paramKey, count] of paramValueCounts.entries()) {
+        const hasValues = count >= minRequiredNodes;
+        this.parameterAvailabilityCache.set(paramKey, {
+          hasValues: hasValues,
+          sampleCount: count
+        });
+      }
+
+      // Cache Model Checking Results availability
+      this.hasModelCheckingResultsCache = modelCheckingResultsCount >= minRequiredNodes;
+
+      console.log(`[PrismAPI] Cached availability for ${this.parameterAvailabilityCache.size} parameters`);
+      console.log(`[PrismAPI] Model Checking Results available: ${this.hasModelCheckingResultsCache} (${modelCheckingResultsCount} nodes with values)`);
     }
 
     // Convert numeric nominal parameters
@@ -859,6 +914,10 @@ export class PrismAPI {
     // Track min/max for numeric parameters
     const paramStats: Record<string, { min: number; max: number }> = {};
 
+    // Track parameter availability - which parameters have actual values
+    const paramValueCounts: Map<string, number> = new Map();
+    let modelCheckingResultsCount = 0;
+
     // Sampling for large graphs
     const SAMPLE_THRESHOLD = 50000;
     const SAMPLE_SIZE = 10000;
@@ -884,6 +943,17 @@ export class PrismAPI {
           if (!category.hasOwnProperty(paramName)) continue;
 
           const value = category[paramName];
+
+          // Track parameter availability (check if value is not null/undefined)
+          if (value !== undefined && value !== null) {
+            const paramKey = `${categoryName}::${paramName}`;
+            paramValueCounts.set(paramKey, (paramValueCounts.get(paramKey) || 0) + 1);
+
+            // Track Model Checking Results specifically
+            if (categoryName === 'Model Checking Results') {
+              modelCheckingResultsCount++;
+            }
+          }
 
           // Collect nominal values (with sampling)
           if (shouldSampleThisNode && nominalKeys.includes(paramName)) {
@@ -955,6 +1025,26 @@ export class PrismAPI {
         param.max = stats.max;
       }
     }
+
+    // Build parameter availability cache
+    const totalNodes = nodes.length;
+    const minRequiredNodes = Math.max(5, Math.floor(totalNodes * 0.05));
+    console.log(`[PrismAPI] Building parameter availability cache (threshold: ${minRequiredNodes} nodes)...`);
+
+    this.parameterAvailabilityCache.clear();
+    for (const [paramKey, count] of paramValueCounts.entries()) {
+      const hasValues = count >= minRequiredNodes;
+      this.parameterAvailabilityCache.set(paramKey, {
+        hasValues: hasValues,
+        sampleCount: count
+      });
+    }
+
+    // Cache Model Checking Results availability
+    this.hasModelCheckingResultsCache = modelCheckingResultsCount >= minRequiredNodes;
+
+    console.log(`[PrismAPI] Cached availability for ${this.parameterAvailabilityCache.size} parameters`);
+    console.log(`[PrismAPI] Model Checking Results available: ${this.hasModelCheckingResultsCache} (${modelCheckingResultsCount} nodes with values)`);
 
     // Convert numeric nominal parameters
     this.convertNumericNominalParameters();
@@ -1839,5 +1929,156 @@ export class PrismAPI {
     }
 
     return false;
+  }
+
+  /**
+   * Check if a specific parameter has actual values available (uses cache)
+   * Returns true if the parameter has values, false if missing or empty
+   * @param paramName Parameter name in "category::paramName" format or just "paramName"
+   * @param nodes Not used anymore (kept for backward compatibility), uses cached data instead
+   */
+  public hasParameterValues(paramName: string, nodes?: any[]): boolean {
+    // If cache is empty, return false (data not loaded yet)
+    if (this.parameterAvailabilityCache.size === 0) {
+      return false;
+    }
+
+    // If paramName already includes category (category::paramName), check directly
+    if (paramName.includes('::')) {
+      const cached = this.parameterAvailabilityCache.get(paramName);
+      if (cached !== undefined) {
+        return cached.hasValues;
+      }
+      // Not in cache means it doesn't exist or has no values
+      return false;
+    }
+
+    // If paramName doesn't include category, search all categories for this parameter
+    // This handles the case where we just pass "paramName" without category
+    for (const [cacheKey, cacheValue] of this.parameterAvailabilityCache.entries()) {
+      // cacheKey format: "category::paramName"
+      const parts = cacheKey.split('::');
+      if (parts.length === 2 && parts[1] === paramName) {
+        if (cacheValue.hasValues) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if model checking results category has any values (uses cache)
+   * Returns true if model checking results are available
+   * @param nodes Not used anymore (kept for backward compatibility), uses cached data instead
+   */
+  public hasModelCheckingResults(nodes?: any[]): boolean {
+    return this.hasModelCheckingResultsCache;
+  }
+
+  /**
+   * Update the parameter availability cache for dynamically added parameters (like PCA)
+   * @param category The category name (e.g., "PCA")
+   * @param paramNames Array of parameter names (e.g., ["PC1", "PC2", "PC3"])
+   * @param nodes The nodes array to check
+   */
+  public updateParameterAvailabilityCache(category: string, paramNames: string[], nodes: NodeData[]): void {
+    if (!nodes || nodes.length === 0) return;
+
+    const totalNodes = nodes.length;
+    const minRequiredNodes = Math.max(5, Math.floor(totalNodes * 0.05));
+
+    for (const paramName of paramNames) {
+      const paramKey = `${category}::${paramName}`;
+
+      // Count how many nodes have this parameter with non-null values
+      let count = 0;
+      for (const node of nodes) {
+        const value = node.parameters?.[category]?.[paramName];
+        if (value !== undefined && value !== null) {
+          count++;
+        }
+      }
+
+      const hasValues = count >= minRequiredNodes;
+      this.parameterAvailabilityCache.set(paramKey, {
+        hasValues: hasValues,
+        sampleCount: count
+      });
+
+      console.log(`[PrismAPI] Updated cache for "${paramKey}": hasValues=${hasValues}, sampleCount=${count}`);
+    }
+  }
+
+  /**
+   * Remove parameters from the availability cache (for dynamically computed parameters like PCA)
+   * @param category The category name (e.g., "PCA")
+   * @param paramNames Array of parameter names to remove (e.g., ["PC1", "PC2", "PC3"])
+   */
+  public removeParametersFromCache(category: string, paramNames: string[]): void {
+    for (const paramName of paramNames) {
+      const paramKey = `${category}::${paramName}`;
+      const wasDeleted = this.parameterAvailabilityCache.delete(paramKey);
+      if (wasDeleted) {
+        console.log(`[PrismAPI] Removed "${paramKey}" from cache`);
+      }
+    }
+  }
+
+  /**
+   * Announce selected nodes to other clients via WebSocket
+   * This broadcasts the selection to the rest of pmcvis for synchronization
+   * @param projectId The project ID
+   * @param selectedNodes Array of selected node data
+   */
+  public announceSelectedNodes(projectId: string, selectedNodes: NodeData[]): void {
+    if (!socketManager.isConnected()) {
+      console.warn('[PrismAPI] Socket not connected - cannot announce selection');
+      return;
+    }
+
+    // Emit in the format expected by pmcvis (STATE_SELECTED event)
+    const payload = {
+      id: projectId,
+      states: selectedNodes
+    };
+
+    socketManager.emitStateSelected(payload, (err, resp) => {
+      if (err) {
+        console.error('[PrismAPI] Error announcing selection:', err);
+      } else {
+        console.log(`[PrismAPI] Successfully announced ${selectedNodes.length} selected nodes`);
+        if (resp) console.log('[PrismAPI] Server response:', resp);
+      }
+    });
+  }
+
+  /**
+   * Initialize the WebSocket connection
+   * Should be called during application startup
+   * @param url Optional custom socket server URL (defaults to baseUrl)
+   */
+  public async initializeSocket(url?: string): Promise<void> {
+    const socketUrl = url || this.baseUrl;
+    socketManager.connect(socketUrl);
+
+    // Wait for connection to establish
+    await socketManager.waitForConnection();
+    console.log('[PrismAPI] Socket initialization complete');
+  }
+
+  /**
+   * Check if WebSocket is connected
+   */
+  public isSocketConnected(): boolean {
+    return socketManager.isConnected();
+  }
+
+  /**
+   * Get the socket manager instance for advanced usage
+   */
+  public getSocketManager() {
+    return socketManager;
   }
 }

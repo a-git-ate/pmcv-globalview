@@ -1,5 +1,5 @@
 {
-  "name": "million-node-graph",
+  "name": "pmcvis-globalview",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -13,6 +13,7 @@
     "@streamparser/json": "^0.0.22",
     "ml-pca": "^4.1.1",
     "pca-js": "^2.0.6",
+    "socket.io-client": "^4.8.3",
     "three": "^0.158.0"
   },
   "devDependencies": {
