@@ -1,5 +1,4 @@
 import type { Graph2D } from './Graph2D.ts';
-import type { LayoutType } from './types';
 
 export interface ProgressConfig {
   title?: string;
@@ -295,8 +294,7 @@ export class UIManager {
 
   private cacheElements(): void {
     const elementIds = [
-      'btn-force-directed',
-      'btn-lod', 'btn-edges', 'btn-reset', 'btn-clusters', 'btn-gridlines', 'btn-export',
+      'btn-lod', 'btn-edges', 'btn-reset', 'btn-gridlines', 'btn-export',
       'param-x-select', 'param-y-select', 'param-color-select', 'btn-apply-params', 'btn-apply-color', 'btn-reset-layout',
       'progress', 'progress-bar',
       // Debug menu elements
@@ -343,13 +341,9 @@ export class UIManager {
   }
 
   private setupEventListeners(): void {
-    // Layout button (force-directed only)
-    this.addClickListener('btn-force-directed', () => this.graph.applyLayout('force'));
-
     // View control buttons
     this.addClickListener('btn-edges', () => this.graph.toggleEdges());
     this.addClickListener('btn-reset', () => this.graph.resetView());
-    this.addClickListener('btn-clusters', () => this.graph.toggleClusters());
     this.addClickListener('btn-gridlines', () => this.graph.toggleGrid());
     this.addClickListener('btn-export', () => this.graph.exportImage());
 
@@ -529,10 +523,6 @@ export class UIManager {
   }
 
   // Event handlers for future extensibility
-  public onLayoutChange(layoutType: LayoutType): void {
-    console.log(`Layout changed to: ${layoutType}`);
-  }
-
   public onNodeCountChange(count: number): void {
     this.updateNodeCount(count);
   }

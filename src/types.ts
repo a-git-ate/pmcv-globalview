@@ -24,10 +24,6 @@ export interface GraphConfig {
   minZoom: number;
   maxZoom: number;
   edgesVisible: boolean;
-  clusterMode: boolean;
-  forceStrength?: number;
-  springLength?: number;
-  iterations?: number;
   parameterXAxis?: string;
   parameterYAxis?: string;
   parameterColorAxis?: string;
@@ -35,7 +31,7 @@ export interface GraphConfig {
   renderDistance: number;
 }
 
-export type LayoutType = 'none' | 'grid' | 'force';
+export type LayoutType = 'none' | 'grid';
 
 export interface ViewportBounds {
   left: number;

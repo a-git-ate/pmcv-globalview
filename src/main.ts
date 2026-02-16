@@ -12,7 +12,6 @@ const graphConfig: Partial<GraphConfig> = {
   minZoom: 0.001, // Allow zooming out much further (was 0.05)
   maxZoom: 100.0,
   edgesVisible: false, // Show edges by default
-  clusterMode: false,
 };
 
 /**

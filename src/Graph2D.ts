@@ -7,9 +7,7 @@ import { PCA as MLPCA } from 'ml-pca';
 import type {
   NodeData,
   EdgeData,
-  GraphConfig,
-  LayoutType,
-  NodeClickEvent
+  GraphConfig
 } from './types';
 import { min } from 'three/examples/jsm/nodes/Nodes.js';
 
@@ -32,7 +30,6 @@ export class Graph2D {
   // private fullNodes : NodeData[] = [];
   // private fullEdges : EdgeData[] = [];
   private nodeCount: number = 0;
-  private currentLayout: LayoutType = 'none';
   private loadedProjectId: string | null = null;
   private edgeLines: THREE.Group | THREE.LineSegments | null = null;
 
@@ -115,10 +112,6 @@ export class Graph2D {
       minZoom: 0.001, // Allow zooming out much further (was 0.1)
       maxZoom: 10000.0, // Allow extreme zoom in (was 100.0)
       edgesVisible: true, // Show edges by default
-      clusterMode: false,
-      forceStrength: 0.1,
-      springLength: 30,
-      iterations: 100,
       ...config
     };
 
@@ -159,9 +152,6 @@ export class Graph2D {
       this.setupTooltip();
       this.setupRectSelectionElement();
       this.startAnimationLoop();
-
-      // Notify UI of initial layout state
-      this.ui.onLayoutChange(this.currentLayout);
 
       this.ui.updateStatus("PMC-Vis GlobalView ready");
     } catch (error) {
@@ -1760,7 +1750,7 @@ export class Graph2D {
         console.log(`[NodePlacement] [PERF] ======================================`);
       }
 
-      this.ui.updateStatus(`Rendered ${nodeCount.toLocaleString()} nodes with ${this.currentLayout} layout (${totalTime.toFixed(0)}ms)`);
+      this.ui.updateStatus(`Rendered ${nodeCount.toLocaleString()} nodes (${totalTime.toFixed(0)}ms)`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to render graph';
       this.ui.showError(message);
@@ -1781,8 +1771,7 @@ export class Graph2D {
    * Process:
    * 1. Determine coordinate system bounds (parameter-based or layout-based)
    * 2. Position each node in the coordinate system
-   * 3. Apply optional force-directed layout
-   * 4. Generate visual attributes (colors, sizes)
+   * 3. Generate visual attributes (colors, sizes)
    *
    * Note: Stack generation happens later in deduplicateStackedNodes()
    */
@@ -1833,20 +1822,7 @@ export class Graph2D {
     if (PERFORMANCE) console.log(`[NodePlacement] [PERF] Node positioning + stack grouping: ${posTime.toFixed(2)}ms (${(posTime / count * 1000).toFixed(2)}µs per node)`);
 
     // ============================================================
-    // STEP 3: Apply Force-Directed Layout (Optional)
-    // ============================================================
-    let forceTime = 0;
-    if (this.currentLayout === 'force' && count > 0) {
-      if (showProgress) this.prismAPI.progressIndicator.setStatus('Computing force-directed layout...');
-      this.ui.updateStatus('Computing force-directed layout...');
-      const forceStart = performance.now();
-      this.applyForceDirectedLayout(count, positions, spread);
-      forceTime = performance.now() - forceStart;
-      if (PERFORMANCE) console.log(`[NodePlacement] [PERF] Force-directed layout: ${forceTime.toFixed(2)}ms`);
-    }
-
-    // ============================================================
-    // STEP 4: Generate Visual Attributes
+    // STEP 3: Generate Visual Attributes
     // ============================================================
     if (showProgress) this.prismAPI.progressIndicator.setStatus('Generating visual attributes...');
     const attrStart = performance.now();
@@ -1855,7 +1831,7 @@ export class Graph2D {
     if (PERFORMANCE) console.log(`[NodePlacement] [PERF] Visual attributes: ${attrTime.toFixed(2)}ms`);
 
     // ============================================================
-    // STEP 5: Store Stack Map for Later Use
+    // STEP 4: Store Stack Map for Later Use
     // ============================================================
     // Store the stack map so createPointCloud can use it instead of recomputing
     this.cachedStackMap = stackMap;
@@ -1879,9 +1855,6 @@ export class Graph2D {
     console.log(`[NodePlacement] [PERF] Breakdown:`);
     console.log(`[NodePlacement] [PERF]   - Coordinate system: ${coordTime.toFixed(2)}ms (${(coordTime/totalTime*100).toFixed(1)}%)`);
     console.log(`[NodePlacement] [PERF]   - Node positioning: ${posTime.toFixed(2)}ms (${(posTime/totalTime*100).toFixed(1)}%)`);
-    if (forceTime > 0) {
-      console.log(`[NodePlacement] [PERF]   - Force layout: ${forceTime.toFixed(2)}ms (${(forceTime/totalTime*100).toFixed(1)}%)`);
-    }
     console.log(`[NodePlacement] [PERF]   - Visual attributes: ${attrTime.toFixed(2)}ms (${(attrTime/totalTime*100).toFixed(1)}%)`);
     console.log(`[NodePlacement] [PERF] Time per node: ${(totalTime / count * 1000).toFixed(2)}µs`);
     if (memUsed !== 0) {
@@ -2049,11 +2022,15 @@ export class Graph2D {
         positions[i * 3 + 2] = z;
 
         // OPTIMIZATION: Build stack map during placement (not after!)
-        const positionKey = this.createPositionKey(x, y, z, POSITION_EPSILON);
-        if (!positionToNodesMap.has(positionKey)) {
-          positionToNodesMap.set(positionKey, []);
+        // Skip nodes that are positioned off-screen (filtered out)
+        const isFilteredOut = (x === -999999 && y === -999999);
+        if (!isFilteredOut) {
+          const positionKey = this.createPositionKey(x, y, z, POSITION_EPSILON);
+          if (!positionToNodesMap.has(positionKey)) {
+            positionToNodesMap.set(positionKey, []);
+          }
+          positionToNodesMap.get(positionKey)!.push(i);
         }
-        positionToNodesMap.get(positionKey)!.push(i);
       }
 
       // Yield control and update progress for large graphs
@@ -2089,6 +2066,12 @@ export class Graph2D {
     }
   ): THREE.Vector2 {
     const { xParamIndex, yParamIndex, minValues, maxValues, spread } = coordinateSystem;
+
+    // Check if node is filtered out by the current filter function
+    if (this.currentFilterFn && this.currentFilterFn(node)) {
+      // Hide filtered nodes off-screen
+      return new THREE.Vector2(-999999, -999999);
+    }
 
     // Check if node is visible (has valid parameter values)
     const isVisible = this.isNodeVisibleForParameters(node, xParamIndex, yParamIndex);
@@ -2153,6 +2136,12 @@ export class Graph2D {
     count: number,
     spread: number
   ): THREE.Vector2 {
+    // Check if node is filtered out by the current filter function
+    if (this.currentFilterFn && this.currentFilterFn(node)) {
+      // Hide filtered nodes off-screen
+      return new THREE.Vector2(-999999, -999999);
+    }
+
     // If node already has a position from API, use it
     if (node.x !== 0 || node.y !== 0) {
       return new THREE.Vector2(node.x, node.y);
@@ -2364,20 +2353,9 @@ export class Graph2D {
   }
 
   private calculateNodePosition(index: number, _count: number, spread: number): THREE.Vector2 {
-    let x: number, y: number;
-
-    if (this.currentLayout === 'force') {
-      // Force layout starts with a distributed initial position
-      const hash = (index * 2654435761) % 2147483647;
-      const initAngle = (hash / 2147483647) * Math.PI * 2;
-      const initRadius = spread * 0.5 * Math.sqrt((hash % 10000) / 10000);
-      x = Math.cos(initAngle) * initRadius;
-      y = Math.sin(initAngle) * initRadius;
-    } else {
-      // Random position for other layouts
-      x = (Math.random() - 0.5) * spread;
-      y = (Math.random() - 0.5) * spread;
-    }
+    // Random position
+    const x = (Math.random() - 0.5) * spread;
+    const y = (Math.random() - 0.5) * spread;
 
     return new THREE.Vector2(x, y);
   }
@@ -2390,181 +2368,6 @@ export class Graph2D {
     return baseSize;
   }
 
-
-  private applyForceDirectedLayout(_nodeCount: number, positions: Float32Array, spread: number): void {
-    const nodeCount = this.nodes.length;
-
-    // Maximum iterations before stopping - increased for large graphs
-    const maxIterations = nodeCount > 10000 ? 400 : nodeCount > 1000 ? 500 : 700;
-
-    // Force parameters - optimized for sparse graphs (0.5x edges)
-    const repulsionStrength = 500; // Moderate repulsion
-    const attractionStrength = 0.2; // Strong attraction to keep connected nodes together
-    const targetLinkLength = spread * 0.15; // Moderate desired edge length
-    const centeringStrength = 0.005; // Very weak centering
-    const damping = 0.85; // Higher damping for stability
-
-    // Convergence threshold - stop when movement is small (relaxed for large graphs)
-    const convergenceThreshold = nodeCount > 10000 ? 0.08 : 0.015;
-
-    // For large graphs (>10k nodes), use approximate repulsion with sampling
-    const useFullRepulsion = nodeCount < 10000;
-    const repulsionSampleSize = 50; // Sample this many random nodes for repulsion calculation
-
-    // Initialize simulation nodes with typed arrays for better performance
-    const simX = new Float32Array(nodeCount);
-    const simY = new Float32Array(nodeCount);
-    const simVX = new Float32Array(nodeCount);
-    const simVY = new Float32Array(nodeCount);
-
-    for (let i = 0; i < nodeCount; i++) {
-      simX[i] = positions[i * 3] || (Math.random() - 0.5) * spread;
-      simY[i] = positions[i * 3 + 1] || (Math.random() - 0.5) * spread;
-      simVX[i] = 0;
-      simVY[i] = 0;
-    }
-
-    // Simulation loop with convergence detection
-    for (let iter = 0; iter < maxIterations; iter++) {
-      // Reset forces
-      simVX.fill(0);
-      simVY.fill(0);
-
-      // 1. REPULSION: All nodes repel each other
-      if (useFullRepulsion) {
-        // Full O(n^2) repulsion for smaller graphs
-        for (let i = 0; i < nodeCount; i++) {
-          for (let j = i + 1; j < nodeCount; j++) {
-            const dx = simX[i] - simX[j];
-            const dy = simY[i] - simY[j];
-            const distSq = dx * dx + dy * dy + 0.01; // Small epsilon to avoid division by zero
-            const dist = Math.sqrt(distSq);
-
-            // Coulomb's law: F = k / r^2
-            const repulsionForce = repulsionStrength / distSq;
-            const fx = (dx / dist) * repulsionForce;
-            const fy = (dy / dist) * repulsionForce;
-
-            simVX[i] += fx;
-            simVY[i] += fy;
-            simVX[j] -= fx;
-            simVY[j] -= fy;
-          }
-        }
-      } else {
-        // Approximate repulsion using random sampling for large graphs
-        // Each node samples a subset of other nodes to reduce from O(n^2) to O(n*k)
-        for (let i = 0; i < nodeCount; i++) {
-          // Sample random nodes for repulsion calculation
-          for (let s = 0; s < repulsionSampleSize; s++) {
-            const j = Math.floor(Math.random() * nodeCount);
-            if (i === j) continue; // Skip self
-
-            const dx = simX[i] - simX[j];
-            const dy = simY[i] - simY[j];
-            const distSq = dx * dx + dy * dy + 0.01;
-            const dist = Math.sqrt(distSq);
-
-            // Scale up the force to compensate for sampling
-            // We're only seeing ~sampleSize nodes instead of all nodeCount nodes
-            const scaleFactor = nodeCount / repulsionSampleSize;
-            const repulsionForce = (repulsionStrength * scaleFactor) / distSq;
-            const fx = (dx / dist) * repulsionForce;
-            const fy = (dy / dist) * repulsionForce;
-
-            simVX[i] += fx;
-            simVY[i] += fy;
-          }
-        }
-      }
-
-      // 2. ATTRACTION: Connected nodes attract each other (Hooke's law)
-      for (let e = 0; e < this.edges.length; e++) {
-        const edge = this.edges[e];
-        const i = edge.from;
-        const j = edge.to;
-
-        if (i >= nodeCount || j >= nodeCount) continue;
-
-        const dx = simX[j] - simX[i];
-        const dy = simY[j] - simY[i];
-        const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
-
-        // Spring force: F = k * (distance - targetLength)
-        const displacement = dist - targetLinkLength;
-        const attractionForce = attractionStrength * displacement;
-        const fx = (dx / dist) * attractionForce;
-        const fy = (dy / dist) * attractionForce;
-
-        simVX[i] += fx;
-        simVY[i] += fy;
-        simVX[j] -= fx;
-        simVY[j] -= fy;
-      }
-
-      // 3. CENTER FORCE: Gentle pull towards center to keep graph compact
-      // Only apply to nodes that are far from center to prevent central clumping
-      const centerThreshold = spread * 0.5; // Only pull nodes beyond this distance
-      for (let i = 0; i < nodeCount; i++) {
-        const distFromCenter = Math.sqrt(simX[i] * simX[i] + simY[i] * simY[i]);
-
-        if (distFromCenter > centerThreshold) {
-          // Only apply centering force to outliers
-          const excessDist = distFromCenter - centerThreshold;
-          const centerForce = centeringStrength * excessDist;
-          const dist = distFromCenter + 0.1;
-          simVX[i] -= (simX[i] / dist) * centerForce;
-          simVY[i] -= (simY[i] / dist) * centerForce;
-        }
-      }
-
-      // 4. UPDATE POSITIONS: Apply forces with damping
-      let maxMovement = 0;
-      for (let i = 0; i < nodeCount; i++) {
-        // Apply velocity with damping
-        simVX[i] *= damping;
-        simVY[i] *= damping;
-
-        // Clamp velocities to prevent explosions (increased limit for better spreading)
-        const maxVelocity = spread * 0.2;
-        simVX[i] = Math.max(-maxVelocity, Math.min(maxVelocity, simVX[i]));
-        simVY[i] = Math.max(-maxVelocity, Math.min(maxVelocity, simVY[i]));
-
-        // Update positions
-        simX[i] += simVX[i];
-        simY[i] += simVY[i];
-
-        // Safety check: ensure positions are valid numbers
-        if (!isFinite(simX[i]) || !isFinite(simY[i])) {
-          simX[i] = (Math.random() - 0.5) * spread * 0.5;
-          simY[i] = (Math.random() - 0.5) * spread * 0.5;
-          simVX[i] = 0;
-          simVY[i] = 0;
-        }
-
-        // Track maximum movement for convergence detection
-        const movement = Math.sqrt(simVX[i] * simVX[i] + simVY[i] * simVY[i]);
-        maxMovement = Math.max(maxMovement, movement);
-
-        // Update positions array
-        positions[i * 3] = simX[i];
-        positions[i * 3 + 1] = simY[i];
-      }
-
-      // Check for convergence - stop if nodes barely moving
-      if (maxMovement < convergenceThreshold) {
-        this.ui.updateStatus(`Force simulation converged after ${iter + 1} iterations`);
-        break;
-      }
-
-    }
-
-    // Update node data with final positions
-    for (let i = 0; i < nodeCount; i++) {
-      this.nodes[i].x = simX[i];
-      this.nodes[i].y = simY[i];
-    }
-  }
 
   private createEdgeLines(): void {
     console.log(`[createEdgeLines] Starting with ${this.edges.length} edges, ${this.nodes.length} nodes`);
@@ -3341,183 +3144,6 @@ export class Graph2D {
     console.log('[Graph2D] Canvas cleared - memory freed - ready for new project');
   }
 
-  public applyLayout(layoutType: LayoutType): void {
-    // Ignore 'none' layout selection
-    if (layoutType === 'none') {
-      return;
-    }
-
-    this.currentLayout = layoutType;
-    this.config.useParameterPositioning = false;
-    this.clearAxisVisualization();
-    this.ui.onLayoutChange(layoutType);
-
-    // If data is loaded but not yet rendered, render it now
-    if (this.nodeCount > 0 && this.nodes.length > 0 && !this.pointCloud) {
-      this.ui.updateStatus(`Rendering with ${layoutType} layout...`);
-      this.renderLoadedData();
-      return;
-    }
-
-    // If already rendered, just re-layout
-    if (this.nodeCount === 0 || !this.pointCloud) {
-      this.ui.updateStatus("Load a project first!");
-      return;
-    }
-
-    this.ui.updateStatus(`Applying ${layoutType} layout...`);
-    this.relayoutExistingNodes();
-  }
-
-  /**
-   * Re-layout existing nodes without regenerating them (preserves API data)
-   */
-  private async relayoutExistingNodes(): Promise<void> {
-    if (!this.pointCloud || this.nodes.length === 0 || !this.geometryToNodesMap) return;
-
-    const count = this.nodes.length;
-    const spread = Math.sqrt(count) * 0.5;
-    const positions = this.pointCloud.geometry.attributes.position as THREE.BufferAttribute;
-    const colors = this.pointCloud.geometry.attributes.color as THREE.BufferAttribute;
-    const sizes = this.pointCloud.geometry.attributes.size as THREE.BufferAttribute;
-    const alphas = this.pointCloud.geometry.getAttribute('alpha') as THREE.BufferAttribute;
-
-    // Reposition nodes by iterating through geometry points (after deduplication)
-    // Each geometry point represents one or more stacked nodes
-    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
-      if (nodeIndices.length === 0) continue;
-
-      // Use the first node in the stack as representative for positioning
-      const firstNodeIndex = nodeIndices[0];
-      const position = this.calculateNodePosition(firstNodeIndex, count, spread);
-
-      // Update all nodes in this stack with the same position
-      for (const nodeIndex of nodeIndices) {
-        const nodeData = this.nodes[nodeIndex];
-        nodeData.x = position.x;
-        nodeData.y = position.y;
-      }
-
-      // Update geometry positions buffer
-      positions.setXYZ(geometryIndex, position.x, position.y, 0);
-
-      // Check if this geometry should be visible (respecting filters)
-      let hasVisibleNode = false;
-      for (const nodeIndex of nodeIndices) {
-        const node = this.nodes[nodeIndex];
-        // Check filter function
-        if (this.currentFilterFn && this.currentFilterFn(node)) {
-          continue; // Node is filtered out
-        }
-        hasVisibleNode = true;
-        break;
-      }
-
-      // Set alpha based on filter visibility
-      if (alphas) {
-        alphas.setX(geometryIndex, hasVisibleNode ? 1.0 : 0.0);
-      }
-    }
-
-    // Apply force-directed layout if selected (both 'force' and 'force_directed' use physics simulation)
-    if (this.currentLayout === 'force') {
-      this.ui.updateStatus('Computing force-directed layout...');
-      await this.applyForceDirectedLayoutToBuffer(positions, spread);
-    }
-
-    // Update colors and sizes based on connectivity
-    // Iterate through geometry points, not nodes
-    const colorCache = new Map<number, { r: number; g: number; b: number }>();
-    const getColorForDegree = (degree: number): { r: number; g: number; b: number } => {
-      const key = Math.min(degree, 20);
-      if (!colorCache.has(key)) {
-        const hue = key > 0 ? Math.min(0.3, key * 0.05) : 0.6;
-        const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
-        colorCache.set(key, { r: color.r, g: color.g, b: color.b });
-      }
-      return colorCache.get(key)!;
-    };
-
-    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
-      if (nodeIndices.length === 0) continue;
-
-      const x = positions.getX(geometryIndex);
-      const y = positions.getY(geometryIndex);
-      const size = this.calculateNodeSize(x, y, spread);
-
-      // Use first node's degree as representative
-      const degree = (this.nodes[nodeIndices[0]] as any).degree || 0;
-      const adjustedSize = size + (degree * 0.2);
-
-      const color = getColorForDegree(degree);
-      colors.setXYZ(geometryIndex, color.r, color.g, color.b);
-      sizes.setX(geometryIndex, adjustedSize);
-    }
-
-    // Mark buffers as needing update
-    positions.needsUpdate = true;
-    colors.needsUpdate = true;
-    sizes.needsUpdate = true;
-    if (alphas) {
-      alphas.needsUpdate = true;
-    }
-
-    // Redraw edges if visible
-    if (STATUS) console.log(`[relayoutExistingNodes] Before edge redraw: ${this.edges.length} edges, edgesVisible: ${this.config.edgesVisible}, edgeLines exists: ${!!this.edgeLines}`);
-    if (this.config.edgesVisible && this.edges.length > 0) {
-      this.clearEdgeLines();
-      this.createEdgeLines();
-    } else {
-      if (STATUS) console.log(`[relayoutExistingNodes] Skipping edge creation (edgesVisible=${this.config.edgesVisible}, edges.length=${this.edges.length})`);
-    }
-
-    this.resetView();
-
-    // Update overlap labels after layout
-    this.updateOverlapLabels();
-
-    this.ui.updateStatus(`${this.currentLayout} layout applied`);
-  }
-
-  /**
-   * Apply force-directed layout directly to position buffer
-   * Works with deduplicated geometry - operates on geometry points, not individual nodes
-   */
-  private async applyForceDirectedLayoutToBuffer(positions: THREE.BufferAttribute, spread: number): Promise<void> {
-    if (!this.geometryToNodesMap) return;
-
-    const geometryCount = this.geometryToNodesMap.size;
-    const positionsArray = positions.array as Float32Array;
-
-    // Create a temporary array sized for the deduplicated geometry
-    const tempPositions = new Float32Array(geometryCount * 3);
-
-    // Copy current positions to temp array
-    for (let i = 0; i < geometryCount * 3; i++) {
-      tempPositions[i] = positionsArray[i];
-    }
-
-    // Call force-directed layout on the deduplicated geometry
-    this.applyForceDirectedLayout(geometryCount, tempPositions, spread);
-
-    // Copy back to the actual buffer
-    for (let i = 0; i < geometryCount * 3; i++) {
-      positionsArray[i] = tempPositions[i];
-    }
-
-    // Update node data with final positions (iterate through geometry map)
-    for (const [geometryIndex, nodeIndices] of this.geometryToNodesMap.entries()) {
-      const x = positionsArray[geometryIndex * 3];
-      const y = positionsArray[geometryIndex * 3 + 1];
-
-      // Update all nodes in this stack with the same position
-      for (const nodeIndex of nodeIndices) {
-        this.nodes[nodeIndex].x = x;
-        this.nodes[nodeIndex].y = y;
-      }
-    }
-  }
-
   private startAnimationLoop(): void {
     this.animate();
   }
@@ -4162,25 +3788,16 @@ export class Graph2D {
       // Clear selection
       this.clearSelection();
 
-      // If no layout has been selected yet, just update the data without rendering
-      if (this.currentLayout === 'none') {
-        this.nodes = filteredNodes;
-        this.edges = reindexedEdges;
-        this.nodeCount = filteredNodes.length;
-        this.ui.updateNodeCount(this.nodeCount);
-        this.ui.updateModelInfo('0', this.nodeCount, reindexedEdges.length);
-        this.updateEdgesButtonState(true); // Always enable after filtering (edges reprocessed)
-        this.prismAPI.progressIndicator.updateProgress(100);
-        this.prismAPI.progressIndicator.hide();
-        this.ui.updateStatus(`Ignored ${tNodeIndices.size.toLocaleString()} transition nodes, added ${newEdges.length.toLocaleString()} new edges. Select a layout to visualize.`);
-      } else {
-        // Layout is selected, reload and render the graph
-        await this.loadGraph('0', filteredNodes, reindexedEdges);
-        this.updateEdgesButtonState(true); // Always enable after filtering (edges reprocessed)
-        this.prismAPI.progressIndicator.updateProgress(100);
-        this.prismAPI.progressIndicator.hide();
-        this.ui.updateStatus(`Ignored ${tNodeIndices.size.toLocaleString()} transition nodes, added ${newEdges.length.toLocaleString()} new edges`);
-      }
+      // Update the data without rendering
+      this.nodes = filteredNodes;
+      this.edges = reindexedEdges;
+      this.nodeCount = filteredNodes.length;
+      this.ui.updateNodeCount(this.nodeCount);
+      this.ui.updateModelInfo('0', this.nodeCount, reindexedEdges.length);
+      this.updateEdgesButtonState(true); // Always enable after filtering (edges reprocessed)
+      this.prismAPI.progressIndicator.updateProgress(100);
+      this.prismAPI.progressIndicator.hide();
+      this.ui.updateStatus(`Ignored ${tNodeIndices.size.toLocaleString()} transition nodes, added ${newEdges.length.toLocaleString()} new edges. Select a layout to visualize.`);
     } catch (error) {
       console.error('Error ignoring transition nodes:', error);
       this.prismAPI.progressIndicator.hide();
@@ -4328,25 +3945,16 @@ export class Graph2D {
       // Clear selection
       this.clearSelection();
 
-      // If no layout has been selected yet, just update the data without rendering
-      if (this.currentLayout === 'none') {
-        this.nodes = filteredNodes;
-        this.edges = reindexedEdges;
-        this.nodeCount = filteredNodes.length;
-        this.ui.updateNodeCount(this.nodeCount);
-        this.ui.updateModelInfo('0', this.nodeCount, reindexedEdges.length);
-        this.updateEdgesButtonState(true); // Always enable after filtering (edges reprocessed)
-        this.prismAPI.progressIndicator.updateProgress(100);
-        this.prismAPI.progressIndicator.hide();
-        this.ui.updateStatus(`Ignored ${sNodeIndices.size.toLocaleString()} state nodes, added ${newEdges.length.toLocaleString()} new edges. Select a layout to visualize.`);
-      } else {
-        // Layout is selected, reload and render the graph
-        await this.loadGraph('0', filteredNodes, reindexedEdges);
-        this.updateEdgesButtonState(true); // Always enable after filtering (edges reprocessed)
-        this.prismAPI.progressIndicator.updateProgress(100);
-        this.prismAPI.progressIndicator.hide();
-        this.ui.updateStatus(`Ignored ${sNodeIndices.size.toLocaleString()} state nodes, added ${newEdges.length.toLocaleString()} new edges`);
-      }
+      // Update the data without rendering
+      this.nodes = filteredNodes;
+      this.edges = reindexedEdges;
+      this.nodeCount = filteredNodes.length;
+      this.ui.updateNodeCount(this.nodeCount);
+      this.ui.updateModelInfo('0', this.nodeCount, reindexedEdges.length);
+      this.updateEdgesButtonState(true); // Always enable after filtering (edges reprocessed)
+      this.prismAPI.progressIndicator.updateProgress(100);
+      this.prismAPI.progressIndicator.hide();
+      this.ui.updateStatus(`Ignored ${sNodeIndices.size.toLocaleString()} state nodes, added ${newEdges.length.toLocaleString()} new edges. Select a layout to visualize.`);
     } catch (error) {
       console.error('Error ignoring state nodes:', error);
       this.prismAPI.progressIndicator.hide();
@@ -4781,11 +4389,6 @@ export class Graph2D {
     // In layout mode or after filtering, edges can still exist between same-type nodes
     const shouldDisable = this.config.useParameterPositioning;
     this.ui.setEdgesButtonEnabled(!shouldDisable);
-  }
-
-  public toggleClusters(): void {
-    this.config.clusterMode = !this.config.clusterMode;
-    this.ui.updateStatus(`Cluster mode ${this.config.clusterMode ? 'enabled' : 'disabled'}`);
   }
 
   /**
@@ -5895,7 +5498,6 @@ export class Graph2D {
     this.config.parameterYAxis = yParam;
     this.config.parameterColorAxis = colorParamIndex;
     this.config.useParameterPositioning = true;
-    this.currentLayout = 'grid'; // Use grid as base for parameter view
 
     // BUGFIX: Clear and rebuild point cloud to ensure correct stack assignments
     // The old approach of updating positions in-place caused nodes with different
@@ -5971,11 +5573,6 @@ export class Graph2D {
 
     // Update counter to show all nodes are visible again
     this.updateVisibleNodeCounter(this.nodes.length);
-
-    // Optionally regenerate layout
-    if (this.nodes.length > 0) {
-      this.applyLayout(this.currentLayout);
-    }
   }
 
   public changeColors(): void {
